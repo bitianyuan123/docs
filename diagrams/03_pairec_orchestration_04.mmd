@@ -21,4 +21,4 @@ sequenceDiagram
     P->>P: 检查两条路径都成功
     P->>D: request_id、user_id、候选item_id列表
     D-->>P: items含score，trace含kv_hit
-    P->>P: 校验、后置排序、响应
+    P->>P: 校验、重排、响应

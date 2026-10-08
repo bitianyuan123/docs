@@ -6,7 +6,7 @@ flowchart TB
     Semantic --> Generate[调用生成式召回]
     Input --> History[从现有历史提供器取得OneTrans历史]
     History --> Ingest[调用OneTrans历史计算]
-    Vector --> Fuse[候选融合和前置排序]
+    Vector --> Fuse[候选合并、去重与已看过滤]
     Sparse --> Fuse
     Generate --> Fuse
     Fuse --> Items[向特征服务批量查询候选业务特征]
@@ -14,5 +14,5 @@ flowchart TB
     Filter --> Join[汇合候选和历史调用结果]
     Ingest --> Join
     Join --> Rank[只传用户ID和候选ID调用OneTrans精排]
-    Rank --> Post[校验分数并执行后置排序]
+    Rank --> Post[校验分数并执行重排]
     Post --> Return[返回推荐列表]

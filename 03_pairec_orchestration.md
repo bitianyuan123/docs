@@ -26,13 +26,13 @@ OneTrans本轮例外:
 ```mermaid
 flowchart LR
     Request[推荐请求] --> Recall[召回]
-    Recall --> PreSort[前置排序]
-    PreSort --> Rank[精排]
-    Rank --> PostSort[后置排序]
-    PostSort --> Response[推荐列表]
+    Recall --> RecallMerge[召回合并]
+    RecallMerge --> Rank[精排]
+    Rank --> Rerank[重排]
+    Rerank --> Response[推荐列表]
 ```
 
-前置排序负责候选融合、去重、已看过滤和限量，本期没有新增粗排模型。精排负责模型打分；后置排序根据分数、人工屏蔽规则和返回数量形成列表。
+召回合并负责候选融合、去重、已看过滤和限量，本期没有新增粗排模型。精排负责模型打分；重排根据分数、人工屏蔽规则和返回数量形成列表。
 
 ### 1.2 PaiRec 内部的目标步骤
 
@@ -47,7 +47,7 @@ flowchart TB
     Semantic --> Generate[调用生成式召回]
     Input --> History[从现有历史提供器取得OneTrans历史]
     History --> Ingest[调用OneTrans历史计算]
-    Vector --> Fuse[候选融合和前置排序]
+    Vector --> Fuse[候选合并、去重与已看过滤]
     Sparse --> Fuse
     Generate --> Fuse
     Fuse --> Items[向特征服务批量查询候选业务特征]
@@ -55,7 +55,7 @@ flowchart TB
     Filter --> Join[汇合候选和历史调用结果]
     Ingest --> Join
     Join --> Rank[只传用户ID和候选ID调用OneTrans精排]
-    Rank --> Post[校验分数并执行后置排序]
+    Rank --> Post[校验分数并执行重排]
     Post --> Return[返回推荐列表]
 ```
 
@@ -70,7 +70,7 @@ flowchart TB
 | PaiRec | `GetUserContext(release_id, user_id)` | 用户字段、历史、DSSM 查询向量、稀疏词项 | 三路召回输入与已看过滤 |
 | PaiRec 的生成分支 | `BatchGetItemRepresentations`，输入历史 ID 和所需 SID 版本 | 与历史 ID 对齐的语义编码及缺失项 | 构造生成模型输入 |
 | 生成式召回服务 | `BatchGetItemRepresentations`，按生成 SID 反向查询 | 每个 SID 对应的原始物品 ID 集合 | 输出业务候选；同一 SID 可能对应多个物品 |
-| PaiRec | `BatchGetItemFeatures(release_id, item_ids)` | 候选类型、类型是否已知、统计特征及缺失项 | 资格检查、后置排序和结果解释 |
+| PaiRec | `BatchGetItemFeatures(release_id, item_ids)` | 候选类型、类型是否已知、统计特征及缺失项 | 资格检查、重排和结果解释 |
 | 各召回服务 | PaiRec 传入的必要字段 | 本路计算所需输入 | 不重复查询同一用户和历史 |
 | 子服务，可选 | 特征服务的批量查询接口 | 尚未取得的专属字段或物品表示 | 使用相同 `release_id`，不得自行读取 Redis |
 | OneTrans 历史提供器，当前例外 | Kafka 历史缓存；未命中再读本地用户 JSON | `click_history` 中的物品 ID 序列 | 构造 `/ingest` 输入 |
@@ -109,7 +109,7 @@ flowchart TB
     Engine --> Recall[三路召回客户端]
     Engine --> History[现有OneTrans历史提供器]
     Engine --> Ranking[OneTrans客户端]
-    Engine --> Rules[前后排序函数]
+    Engine --> Rules[召回合并与重排函数]
     Feature --> Transport[原生通信封装]
     Recall --> Transport
     Ranking --> Http[现有HTTP调用封装]
@@ -181,7 +181,7 @@ sequenceDiagram
     P->>P: 检查两条路径都成功
     P->>D: request_id、user_id、候选item_id列表
     D-->>P: items含score，trace含kv_hit
-    P->>P: 校验、后置排序、响应
+    P->>P: 校验、重排、响应
 ```
 
 此处 `/ingest` 的 `accepted=true` 来自历史前向及 KV 写入完成后的返回。它不是新设计的 ready 句柄，也不证明稍后 `/rank` 读取的仍是这次历史：现有 KV 按模型版本与用户 ID 存储，同用户并发写可能覆盖。
@@ -211,7 +211,7 @@ require_same_candidate_ids_and_finite_scores(result, rankable)
 return post_sort_with_rules(result, item_features, request.size)
 ```
 
-本期融合规则保持：生成候选最多 10 个；稀疏与向量按轮询补至最多 50 个；原始分数不跨来源相加；各候选保留全部来源。后置排序按 OneTrans 返回 `score` 降序，同分按融合次序、原始 ID 确定顺序；人工屏蔽规则默认空。
+本期融合规则保持：生成候选最多 10 个；稀疏与向量按轮询补至最多 50 个；原始分数不跨来源相加；各候选保留全部来源。重排按 OneTrans 返回 `score` 降序，同分按融合次序、原始 ID 确定顺序；人工屏蔽规则默认空。
 
 | 情形 | 目标编排行为 | 当前代码的边界 |
 |---|---|---|
@@ -267,7 +267,7 @@ flowchart LR
 | 候选特征查询 | 融合候选 ID | 对齐的物品属性、状态、缺失信息 |
 | OneTrans 历史计算 | 现有历史提供器对用户 1 的实际返回 | 写入结果；本地历史是否覆盖用户 1 尚需验证 |
 | OneTrans 精排 | 用户 1 与合格候选 ID | TSV 装配后的实际排序分及 `kv_hit` |
-| 后置排序 | 排序分、候选属性和人工规则 | 最多 10 个实际物品，实际数量及不足标记 |
+| 重排 | 排序分、候选属性和人工规则 | 最多 10 个实际物品，实际数量及不足标记 |
 
 完整逐服务时序见[一次请求](08_request_walkthrough.md)。其中特征服务历史有真实数据证据，但不能用它推断现有 OneTrans JSON 与 TSV 已覆盖用户 1。
 

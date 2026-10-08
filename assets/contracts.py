@@ -158,7 +158,7 @@ class FeatureService(Protocol):
 
 
 # 当前OneTrans HTTP字段投影，与上方FeatureService类型没有继承关系。
-# /ingest timestamps由当前调用方生成0..n-1；不改称真实时间。
+# /ingest timestamps由当前调用方生成0..n-1；不是事件时间，也不参与模型位置编码。
 class OneTransIngestRequest(TypedDict):
     user_id: str
     item_ids: list[int]

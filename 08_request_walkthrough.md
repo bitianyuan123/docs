@@ -1,14 +1,12 @@
 # 一次请求：用户 1 的时序、输入与输出
 
-图中符号与连线遵循[图法与 UML 约定](DIAGRAM_NOTATION.md)，每张图前注明使用的图法。
+本文沿着用户 1 的请求，展示取特征、三路召回、召回合并、精排、重排与返回。特征服务和召回使用目标接口；OneTrans 保留当前 `/ingest`、`/rank` 和本地取数方式。
 
-本文用一组**教学样例**贯穿请求、取特征、三路召回、融合、精排和返回。用户与历史沿用已有样例；向量、语义编码、召回结果和模型分数为便于读图而设定，**不是数据库读回或模型运行记录**。所有 ID、顺序和字段对应关系在本文内保持一致。
+本文是**教学样例，不是服务运行记录**：用户和历史沿用已有样例，向量、语义编码、召回结果和模型分数用于说明格式与字段传递。完整数据见[本次请求 JSON](assets/walkthrough_sample.json)，逐接口查看见[完整请求与响应](assets/request_example/README.md)。正文用 Python 表达数据构造、JSON 表达接口内容；它们共同说明流程，不是一份可直接运行的客户端。
 
-特征服务和召回按目标接口设计；OneTrans 保留当前 HTTP `/ingest`、`/rank` 及本地取数路径。完整对象见[本次请求的 JSON 样例](assets/walkthrough_sample.json)，也可以直接查看[各业务接口的完整请求与响应](assets/request_example/README.md)。本文展示与理解流程有关的字段，省略重复版本头和计时字段时会注明。
+## 1. 请求怎样变成调用参数
 
-代码采用 Python 表达数据构造，HTTP 和 JSON 表达服务接口；它们是设计样例，不是一份可直接运行的客户端。`{**header, ...}` 表示把公共字段合入对象，`[a, b] * 32` 表示重复这两个元素 32 次；Python 的 `True/None` 在 JSON 中对应 `true/null`。
-
-## 1. 固定请求与配置
+### 1.1 原始请求与场景配置
 
 ```http
 POST /api/recommend HTTP/1.1
@@ -17,47 +15,53 @@ Content-Type: application/json
 {"uid":"1","scene_id":"home_feed","size":10}
 ```
 
+PaiRec 生成本次 `request_id`，按 `scene_id` 选择场景，并固定该场景绑定的发布版本。`topk` 来自场景配置，是各路召回的候选上限；`size=10` 来自客户端，经场景校验后用于最终截断。
+
 ```python
 external_request = {"uid":"1", "scene_id":"home_feed", "size":10}
-request_id = "demo-user-1-001"          # PaiRec为本请求生成
-release_id = "demo_tenrec_v1"          # 教学版本名，不是已发布数据
+request_id = "demo-user-1-001"       # PaiRec在请求入口生成
 user_id = external_request["uid"]
 scene = {"vector_topk": 50, "sparse_topk": 50,
          "generative_topk": 10, "candidate_limit": 50, "size": 10}
-versions = {"embedding_space_id": "demo_dssm_64_v1",
-            "sparse_recipe_id": "video_type_binary_v1",
-            "sid_version": "demo_sid_v1"}
-record_header = {"release_id": release_id, "schema_version": "feature_v1"}
 
-# 以下两个函数是本文示意辅助函数：只拼装公共字段，不调用服务。
-# remaining_budget_ms()读取编排层为本次请求维护的剩余总时间。
+# 从场景绑定的发布清单取得；以下均为教学版本名。
+release_id = "demo_tenrec_v1"        # 固定整套特征与索引数据
+versions = {"embedding_space_id": "demo_dssm_64_v1",     # 向量计算方式
+            "sparse_recipe_id": "video_type_binary_v1", # 兴趣词项配方
+            "sid_version": "demo_sid_v1"}              # 物品语义编码规则
+record_header = {"release_id": release_id,
+                 "schema_version": "feature_v1"}       # 特征接口约定的字段格式
+```
+
+原始用户、物品 ID 在目标接口中使用字符串；OneTrans `/ingest` 沿用现有协议，其历史物品 ID 使用整数。
+
+### 1.2 公共字段与每次调用的超时
+
+`call_meta` 和 `feature_meta` 是本文定义的**辅助函数，不是 SDK 方法或 RPC 接口**。它们只生成公共字段，省去后文重复填写请求标识、发布版本和超时。
+
+```python
+# remaining_budget_ms()读取PaiRec为本次请求维护的剩余总时间。
 def call_meta(stage_limit_ms):
     return {**record_header, "request_id": request_id,
             "remaining_timeout_ms": min(stage_limit_ms, remaining_budget_ms())}
 
 def feature_meta():
-    return call_meta(1000)
+    return call_meta(1000)  # 特征查询最多使用1000毫秒
 ```
 
-上述常量是用户 1 请求选中配置后的教学值。PaiRec 在请求入口生成 `request_id`，用 `scene_id="home_feed"` 选择场景；从该场景绑定的发布清单取得 `release_id` 及三个表示版本，从特征接口约定取得 `schema_version`。`release_id` 固定整套特征与索引数据，`schema_version` 指字段格式；三个表示版本分别标识向量计算方式、兴趣词项配方和物品语义编码规则。
-
-`call_meta` 和 `feature_meta` **都是本文定义的示意辅助函数，不是 SDK 方法或 RPC 接口**。后续代码省去重复公共字段时，都按这里的定义展开：
-
-| 代码 | 含义 |
+| 代码 | 展开后的含义 |
 |---|---|
-| `call_meta(5000)` | 生成含 `request_id/release_id/schema_version/remaining_timeout_ms` 的字典；`5000` 是本阶段的超时上限，单位为毫秒 |
-| `**call_meta(5000)` | 在 Python 字典中展开上述四个字段，例如把返回的 `request_id` 直接放入召回请求；线上 JSON 中没有 `**` 或 `call_meta` 字段 |
-| `feature_meta()` | 调用 `call_meta(1000)`，为特征查询设置最多 1000 毫秒的阶段上限；`**feature_meta()` 同样展开返回字典 |
+| `call_meta(5000)` | 生成 `request_id/release_id/schema_version/remaining_timeout_ms` 四个字段；5000 是本阶段超时上限，单位为毫秒 |
+| `**call_meta(5000)` | Python 字典展开：将这四个字段直接并入请求；发送的 JSON 中没有 `**` 或 `call_meta` 字段 |
+| `**feature_meta()` | 同样展开四个字段，阶段上限改为 1000 毫秒 |
 
-剩余时间来自 PaiRec：进入请求时，以单调时钟的当前值加上场景总超时，得到本次截止时刻；发起每次调用前，重新计算“截止时刻减当前值”。单调时钟用于计时，不受系统日期调整影响。`remaining_timeout_ms` 取剩余总时间和阶段上限中的较小值；例如本次只剩 900 毫秒，`call_meta(5000)` 也只能给下游 900 毫秒。时间已耗尽时，编排层应停止调用。
-
-`topk` 是场景配置规定的每路候选上限；本例 `size=10` 来自客户端请求，经场景校验后用于最终截断。物品与用户原始 ID 使用字符串；OneTrans `/ingest` 的历史数组按现有接口转为整数。
+PaiRec 在入口用“单调时钟当前值＋场景总超时”确定截止时刻。每次调用前，`remaining_budget_ms()` 重新计算“截止时刻－当前值”；单调时钟用于计时，不受系统日期调整影响。剩余时间和阶段上限取较小者，耗尽时停止调用。第 4.1 节给出了这些字段完全展开后的请求和响应。
 
 ## 2. 完整主时序
 
-图中使用实际字段路径；`items[*].item_id` 表示“items 数组中各项的 item_id”，不是新增响应字段。`vector_request` 等对象在后文逐个构造。数据库调用在第 3～5 节子图展开，避免在同一主图中加入十几个数据库和计算模块。
+图法：UML 时序图，符号见[图法约定](DIAGRAM_NOTATION.md)。实线消息发起调用，虚线消息返回结果；`par` 内各分支并行推进，各分支内按顺序等待。PaiRec 在提交 `/rank` 前等待候选和历史两路完成。
 
-图法：UML 时序图。 PaiRec 代表含并行子任务的编排进程，各分支内同步等待，分支之间可以交错。
+图中 `items[*].item_id` 表示数组内各项的物品 ID，`vector_request` 等对象在后文展开。数据库交互放在第 3～5 节子图。
 
 ```mermaid
 sequenceDiagram
@@ -99,13 +103,13 @@ sequenceDiagram
         P->>P: rankable_ids=["4","1201","9002","9001"]
     and 历史计算；数据来自现有Provider
         P->>P: GetUserHistory("1")，本例另行设定返回同10项历史
-        P->>H: POST /ingest {user_id:"1",<br/>item_ids:[2,3,...,1202],timestamps:[0,...,9]}
+        P->>H: POST /ingest {user_id:"1",<br/>item_ids:[2,3,...,1202],timestamps:[0,...,9]}<br/>timestamps为序号占位，非事件时间
         H-->>P: ingest_response {accepted:true,checksum,reason:""}
     end
     P->>P: require(ingest_response.accepted)；候选与历史两路汇合
     P->>R: POST /rank，user_id="1"，items[*].item_id=rankable_ids
     R-->>P: items[*].score=[0.72,0.86,0.63,0.91]；trace.kv_hit=true
-    P->>P: 按score降序，items[*].item_id=["9001","1201","4","9002"]
+    P->>P: 重排：按score降序，items[*].item_id=["9001","1201","4","9002"]
     P-->>N: final_response {returned_size:4,shortfall:true,items}
     N-->>U: 同一推荐JSON响应
 ```
@@ -124,16 +128,19 @@ sequenceDiagram
 | `history_repr_request.item_ids` | `user_context.history.item_ids` | 10 个历史 ID |
 | `generation_request.history[i].value` | `history_repr_response.results[i].value.semantic_id` | 一个物品的 4 个整数 |
 | `generated_sid_lookup_request.semantic_ids` | 生成模型输出解析出的 `generated_sids` | 两个完整 SID |
-| `item_request.item_ids` | PaiRec 融合、去重和已看过滤后的 `candidate_ids` | 5 个候选 ID |
+| `item_request.item_ids` | PaiRec 召回合并、去重和已看过滤后的 `candidate_ids` | 5 个候选 ID |
 | `rank_request.items[i].item_id` | 特征存在且通过资格规则的 `rankable_ids[i]` | 4 个候选 ID |
 | `ingest_request.item_ids` | **现有历史 Provider** 的返回值 | 整数数组；不从特征服务响应赋值 |
+| `ingest_request.timestamps` | 调用方生成 `list(range(len(provider_history_ids)))` | `0..9`；与物品逐项对应，不是点击时间 |
 | `*.topk` | `scene` 中对应一路的配置 | 向量 50、稀疏 50、生成 10 |
 
 新特征接口携带 `request_id/release_id/schema_version/remaining_timeout_ms`；本例召回目标封装复用此调用头，并携带本路表示版本。**当前生成 protobuf 没有完整版本头**，需新增字段或明确的服务绑定；当前 OneTrans HTTP 也不接受这套特征版本头。不能将公共字段无条件塞进所有旧接口。
 
 ## 3. 用户特征：从 Redis 值到召回输入
 
-`required_views` 指本次要查的四类数据：用户属性 `USER`、历史 `HISTORY`、向量查询输入 `DENSE_QUERY`、词项查询输入 `SPARSE_QUERY`。这里的“视图”是接口的数据类别，与 4+1 架构视图无关。两个查询输入都由离线任务预先计算，在线查询只取出并检查版本。
+`required_views` 指接口中要查询的数据类别：用户属性 `USER`、历史 `HISTORY`、向量输入 `DENSE_QUERY` 和词项输入 `SPARSE_QUERY`。后两项由离线任务预先计算，在线只读取并检查版本。这里的“视图”与 4+1 架构视图无关。
+
+下面先给出请求，再给出用户 1 的响应。`positions=1..10` 表示历史次序，不是事件时间；`history_hash` 是按约定格式计算的历史摘要，用于检查预计算向量、词项是否对应同一份历史。`source_data_row` 标记来源文件行，便于追溯。
 
 ```python
 user_request = {
@@ -147,7 +154,7 @@ history = {**record_header, "user_id": "1", "item_ids": history_ids,
            "positions": list(range(1, 11)), "valid_length": 10,
            "time_semantics": "ordinal", "source_data_row": 1,
            "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177"}
-# user_context：目标GetUserContext响应。向量为演示值；长度和单位范数真实可检验。
+# user_context为目标响应；[0.125,-0.125]*32重复32次，组成64维教学向量。
 user_context = {
     **record_header, "request_id": request_id,
     "view_status": {v: "FOUND" for v in user_request["required_views"]},
@@ -192,11 +199,9 @@ dense_key   = prefix + ":user_rep:dense:demo_dssm_64_v1:1"
 sparse_key  = prefix + ":user_rep:sparse:video_type_binary_v1:1"
 ```
 
-Redis 的 `MGET` 按键顺序返回四个值，特征服务解析成响应中的 `user/history/dense_query/sparse_query`；它们是同一在线库中的四类记录。`FOUND` 表示对应记录存在，`missing_fields=[]` 表示这条记录没有已知的字段缺失。
+Redis 的 `MGET` 按键顺序返回四个值，特征服务将其解析成 `user/history/dense_query/sparse_query`。这些是同一在线库中的四类记录；只有记录都为 `FOUND`，版本和历史摘要均匹配，才继续召回。`missing_fields=[]` 表示没有已知的字段缺失。
 
-`history_hash` 是按约定格式计算的历史摘要，用来核对预计算向量和词项是否基于这份历史。只有所需记录全部存在、版本与摘要均一致，PaiRec 才发起本例召回。历史位置 1～10 是序位，不是真实时间；`gender_code/age_code` 是数据集编码，`age_code=4` 不表示 4 岁。
-
-`video_type_0/1` 是视频长短类型码，不是主题标签：本例 10 项历史中 9 项类型已知，其中 2 项为类型 0、7 项为类型 1，因此词项权重为 `2/9`、`7/9`。未知类型的物品仍保留在原始历史中。
+业务值按数据集编码解释：`age_code=4` 不是 4 岁，`video_type_0/1` 是视频长短类型而非主题。本例历史中 9 项类型已知，其中类型 0 有 2 项、类型 1 有 7 项，所以词项权重为 `2/9`、`7/9`。类型未知的物品仍保留在原始历史中。
 
 ## 4. 三路召回：同一上下文怎样形成不同请求
 
@@ -216,7 +221,7 @@ sparse_request = {
 }
 ```
 
-下面把 `sparse_request` 和对应响应完全展开为 JSON，不再使用辅助函数、变量或省略号。它们是目标 RPC 消息的可读形式，不表示新增一个 HTTP 接口。词项来自 `GetUserContext(user_id="1")` 的 `sparse_query.tokens`；稀疏服务接收查询词项而不另传 `user_id`，共同的 `request_id="demo-user-1-001"` 将它与用户 1 的原始请求关联。本例发送时剩余 900 毫秒，因此超时字段为 `min(5000, 900)=900`。
+以下是稀疏召回目标 RPC 的完整 JSON 表示。词项来自用户 1 的 `sparse_query.tokens`，因此无需再传 `user_id`；相同的 `request_id` 将它关联到原请求。此时只剩 900 毫秒，故 `call_meta(5000)` 展开后的超时为 `min(5000, 900)=900`。
 
 PaiRec → 稀疏召回的完整请求：
 
@@ -252,9 +257,7 @@ PaiRec → 稀疏召回的完整请求：
 }
 ```
 
-以下子图说明上述服务请求如何转换成数据库查询：
-
-图法：UML 时序图。 PaiRec 代表含并行子任务的编排进程，各分支内同步等待，分支之间可以交错。
+图法：UML 时序图。两路召回并行查询各自索引，再把结果转成统一候选字段。
 
 ```mermaid
 sequenceDiagram
@@ -282,7 +285,9 @@ sequenceDiagram
 
 ### 4.2 历史原始 ID → SID → 生成候选原始 ID
 
-`SID`（语义编码）是生成模型使用的物品表示，本例每个物品用四个整数表示。先把用户历史的原始物品 ID 转为 SID 供模型输入，再把模型新生成的 SID 反查成可推荐的原始物品 ID；两个查询方向由 `lookup_by` 区分。
+`SID`（语义编码）是生成模型使用的物品表示，本例由四个整数组成。该分支先把历史物品 ID 转成 SID 供模型输入，再将新生成 SID 反查成原始物品 ID。`lookup_by` 分别取 `raw_item_id`、`semantic_id`，表示这两个查询方向。
+
+先查历史编码：输入仍是用户 1 的十项历史，结果保持原顺序。
 
 ```python
 history_ids = user_context["history"]["item_ids"]  # 沿用前面的10项，保留顺序
@@ -302,18 +307,27 @@ history_repr_response = {
     "sid_version": versions["sid_version"],
     "results": history_results,
 }
-# 批量结果与输入等长、同顺序；这里只取每项编码，适配生成接口的value字段。
+```
+
+然后构造生成输入：从每项结果中取出编码，包装成协议要求的 `{value: [...]}`。第一项物品 `2` 变成 `{value:[1,11,21,31]}`，最后一项 `1202` 变成 `{value:[10,20,30,40]}`。
+
+```python
 generation_history = []
 for result in history_repr_response["results"]:
     assert result["status"] == "FOUND"  # 任一历史编码缺失，生成分支失败
     generation_history.append({"value": result["value"]["semantic_id"]})
-# 第1项为{"value":[1,11,21,31]}；第10项为{"value":[10,20,30,40]}。
 generation_request = {
     **call_meta(10000), "user_id": "1", "sid_version": versions["sid_version"],
     "history": generation_history,
-    "topk": 10, "temperature": 1.0, "beam_width": 1,
+    "topk": 10,
+    "temperature": 1.0,  # 接口中的生成采样温度
+    "beam_width": 1,     # 接口中的保留生成路径数
 }
-# 推理后的教学输出；反查时semantic_ids是二维数组，而非history的{value:...}结构。
+```
+
+模型输出两个完整 SID，生成服务再查询它们对应哪些物品。反查接口用 `semantic_ids` 二维数组，不使用生成输入的 `{value: [...]}` 包装。下面是本例的输出与反查结果；具体参数不证明后端采用了哪种生成算法。
+
+```python
 generated_sids = [[21,31,41,51], [22,32,42,52]]
 generated_sid_lookup_request = {
     **feature_meta(), "lookup_by": "semantic_id", "semantic_ids": generated_sids,
@@ -329,7 +343,7 @@ generated_sid_lookup_response = {
 }
 ```
 
-特征服务分别批读 `item_rep:<sid_version>:<item_id>` 和 `sid_map:<sid_version>:<四位编码>`，省略的公共前缀就是第 3 节的 `prefix`。第一个生成 SID 对应两个物品，因此按数值 ID 升序展开为 `4,1201`，再接第二个 SID 的 `9002`。这里两个 SID 得到三个原始物品，是因为一个编码允许关联多个物品；最终仍受 `topk` 限制。`temperature` 是生成采样温度，`beam_width` 是同时保留的生成路径数；这里只说明接口配置，不据此证明后端执行了哪种生成算法。这些绑定是演示数据，不声称已有编码资产与之相符。
+正查使用 `item_rep:<sid_version>:<item_id>`，反查使用 `sid_map:<sid_version>:<四位编码>`，二者都带第 3 节的 Redis 公共前缀。一个 SID 可以关联多个物品：本例第一个编码按数值 ID 升序展开为 `4,1201`，第二个得到 `9002`，形成三个候选，最终数量仍受 `topk` 限制。
 
 ```python
 # 生成服务保留现有protobuf响应形状；省略计时/trace。
@@ -338,7 +352,7 @@ generation_wire_response = {"code": 200, "user_id": "1", "recommendations": [
     {"item_id": 1201, "semantic_id": [21,31,41,51], "score": 1.0},
     {"item_id": 9002, "semantic_id": [22,32,42,52], "score": 1.0},
 ]}
-# PaiRec客户端做显式转换，后续融合才能统一使用items与字符串ID。
+# PaiRec客户端做显式转换，后续召回合并才能统一使用items与字符串ID。
 generative_response = {"items": [
     {"item_id": str(x["item_id"]), "score": x["score"]}
     for x in generation_wire_response["recommendations"]]}
@@ -346,9 +360,9 @@ generative_response = {"items": [
 
 目标生成服务新增特征反查；现有实现仍是本地映射。既有 protobuf 的 `history` 每项确为 `{value:[...]}`，返回确为 `recommendations`；目标版本头需要另外补齐。[生成协议源码](assets/source_snapshots/pairec4tigerllm/proto/recommend.proto.html#L7)。TensorRT-LLM 的模型缓存由实际块生命周期触发 DataSystem 读写，与上述业务映射查询分开，内部细节见[生成服务视图](04_generative_recall.md)。
 
-### 4.3 三路完整候选与融合结果
+### 4.3 三路候选与召回合并
 
-下面各行都是 `response.items` 的完整教学值，数组次序就是该来源的返回次序。
+以下节选各路响应的 `items`，省略第 4.1 节已展示的公共响应头；候选数组完整，次序与各来源返回次序相同。
 
 ```python
 vector_response = {"items": [
@@ -362,14 +376,14 @@ sparse_response = {"items": [
 candidate_ids = ["4", "1201", "9002", "9001", "9003"]
 ```
 
-| 融合动作 | 本例变化 |
+| 召回合并动作 | 本例变化 |
 |---|---|
 | 先取生成路，最多 10 个 | 得到 `4,1201,9002` |
 | 稀疏、向量逐项轮询补充 | 重复 ID 不重复加入；新增 `9001,9003` |
 | 按特征服务历史过滤已看 | `3` 已在用户历史中，排除 |
 | 总候选最多 50 个 | 本例只有 5 个，不补造不足的候选 |
 
-本例的“融合”就是按上述来源优先级合并候选名单、去掉重复和已看物品，此时尚未按精排分数排序。同一物品保留全部来源用于解释；三路原始分数不直接相加。目标来源分数含义不同，生成路当前常量 `1.0` 也不能当作点击概率。
+这里按来源优先级合并名单、去重并过滤已看物品，不使用精排分数。同一物品保留全部来源以便追溯；三路原始分数含义不同，不直接相加，生成路当前的常量 `1.0` 也不是点击概率。
 
 ## 5. 候选取特征、OneTrans 打分与返回
 
@@ -378,7 +392,7 @@ candidate_ids = ["4", "1201", "9002", "9001", "9003"]
 ```python
 item_request = {**feature_meta(), "item_ids": candidate_ids,
     "fields": ["category_code", "metadata_available", "statistics", "missing_fields"]}
-# 以下为item_response.results；省略与其他特征响应相同的顶层版本头。
+# 以下为item_response.results；省略公共响应头。Python True/None对应JSON true/null。
 item_results = [
     {"item_id":"4", "status":"FOUND", "value":{"category_code":1,
      "metadata_available":True,"statistics":{"n":36,"ctr":1/6},"missing_fields":[]}},
@@ -397,21 +411,27 @@ rankable_ids = [r["item_id"] for r in item_results if r["status"] == "FOUND"]
 
 特征服务批读 `prefix + ':item:' + item_id`，返回五个对应位置。`category_code` 仍是视频类型码，`metadata_available` 只表示该类型是否已知；`statistics.n` 是聚合曝光行数，`ctr` 是这些行的点击比例。它们是离线统计，不是本次精排分数。
 
-“资格规则”决定物品是否允许进入打分。本例没有人工屏蔽物品，只排除整条特征缺失的 `9003`，所以候选从 5 个变为 4 个。上述命名业务属性供资格规则和后排序使用，**不传进当前 OneTrans `/rank`**。
+PaiRec 用这些业务属性判断候选是否允许进入打分，必要时也用于重排。本例人工屏蔽名单为空，只排除整条特征缺失的 `9003`，候选从 5 个变为 4 个。这些属性**不传进当前 OneTrans `/rank`**。
 
 ### 5.2 OneTrans 历史与候选计算：现有字段，教学输入
 
 OneTrans 的现有历史 Provider 是配套调用方的取历史组件：优先使用消息流缓存的点击历史，缺失时查询本地用户文件。本例另行假定它返回下面十项历史，且 OneTrans 已装载的本地 TSV（制表符分隔文件）覆盖四个候选；特征服务查到了用户 1，并不能证明这两个独立来源也具备相同数据。
 
-下图的模型参数服务 `PS` 按模型表名和 ID 返回模型向量参数；`history_kv` 是历史 Transformer 计算产生的注意力键、值张量，存入 DataSystem 供候选计算复用。它不是原始历史，也不是特征服务的 key/value 记录。图中的计算函数只描述业务动作，不代表对外 RPC 接口。
-
 ```python
 provider_history_ids = [2,3,80936,781,111774,1230,26403,991,2362,1202]
 ingest_request = {"user_id":"1", "item_ids":provider_history_ids,
-                  "timestamps":list(range(10))}  # 0..9；现有调用方的序位规则
+                  "timestamps":list(range(10))}  # 调用方生成的0..9，占位序号
 rank_request = {"request_id":request_id, "user_id":"1",
                 "items":[{"item_id":i} for i in rankable_ids]}
 ```
+
+`timestamps` 在当前 C++ `/ingest` 主链中是**为满足现有接口要求生成的等长序号数组，不是点击事件时间**。取到十项 `item_ids` 后，调用方生成 `0..9`：第一项物品 `2` 对应 `0`，最后一项 `1202` 对应 `9`。它不来自数据集时间列，也不从特征服务的 `positions` 字段赋值。[调用方构造](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L82)。
+
+服务端要求两个数组等长；否则返回 HTTP 400，错误为 `item_ids 与 timestamps 必须等长`，但没有时间递增校验。[接口解析](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/json_io.cpp.html#L12)。历史前处理只使用 `item_ids` 构建输入，`timestamps` 未传入后续模型计算，也不参与排序、截断、掩码或位置编码。历史顺序来自 `item_ids` 数组；位置嵌入取补齐后的数组下标，本例十项占 50 位输入的 `40..49`。[历史编码](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/frontend.cpp.html#L84)。
+
+历史处理代码仅把末项序号记入 `seq_ts_last`，本例为 `9`。[历史处理实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp.html#L103)。本地内存存储保留该记录字段；DataSystem 实际只存模型结果字节 `payload`，不保存 `seq_ts_last`。[DataSystem 写入](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp.html#L46)。因此不能用 `timestamps` 判断历史新旧或证明读到了本次历史。
+
+下图的模型参数服务 `PS` 按模型表名和 ID 返回模型向量参数；`history_kv` 是历史 Transformer 计算产生的注意力键、值张量，存入 DataSystem 供候选计算复用。它不是原始历史，也不是特征服务的 key/value 记录。图中的计算函数只描述业务动作，不代表对外 RPC 接口。
 
 图法：UML 时序图。
 
@@ -471,14 +491,14 @@ kv_key = "kv:" + base64url_no_padding(model_version) + ":MQ"  # MQ是用户"1"�
 }
 ```
 
-`logit` 是模型输出头的原始数值；`sigmoid(x)=1/(1+exp(-x))` 将它转换到 0～1。`score` 取第一个输出头的转换结果，不自动代表点击概率；精排响应保持输入顺序，**最终排序在 PaiRec**。`model_role` 是配置值，此处沿用源码默认值。现有 OneTrans 的缓存键只含模型与用户，`accepted=true`、`kv_hit=true` 不能独自证明并发时读到的是本次历史；这个教学成功路径假定用户 1 的请求串行处理。
+`logit` 是模型输出头的原始数值；`sigmoid(x)=1/(1+exp(-x))` 将它转换到 0～1。`score` 取第一个输出头的转换结果，不自动代表点击概率；精排响应保持输入顺序，**重排由 PaiRec 执行**。`model_role` 是配置值，此处沿用源码默认值。现有 OneTrans 的缓存键只含模型与用户，`accepted=true`、`kv_hit=true` 不能独自证明并发时读到的是本次历史；这个教学成功路径假定用户 1 的请求串行处理。
 
-### 5.3 后置排序与最终响应
+### 5.3 重排与最终响应
 
 ```python
 # rank_response为上面的响应；人工屏蔽规则为空，无其他业务加分。
 score_by_id = {x["item_id"]: x["score"] for x in rank_response["items"]}
-# Python稳定排序：按分数降序；同分时保留rankable_ids中的融合次序。
+# Python稳定排序：按分数降序；同分时保留rankable_ids中的召回合并次序。
 final_ids = sorted(rankable_ids, key=lambda item_id: -score_by_id[item_id])[:scene["size"]]
 # -> ["9001", "1201", "4", "9002"]
 ```
@@ -496,7 +516,7 @@ final_ids = sorted(rankable_ids, key=lambda item_id: -score_by_id[item_id])[:sce
 }
 ```
 
-`returned_size` 是实际返回数，`shortfall=true` 表示少于请求的 `size`。客户端请求 10 项，本例实际返回 4 项：三路候选先融合为 5 项，缺失特征的 `9003` 被排除，其余 4 项全部打分后按分数返回。Nginx 转发这一响应，不再次排序。
+`returned_size` 是实际返回数，`shortfall=true` 表示少于请求的 `size`。客户端请求 10 项，本例实际返回 4 项：三路候选经召回合并得到 5 项，缺失特征的 `9003` 被排除，其余 4 项全部打分后按分数返回。Nginx 转发这一响应，不再次排序。
 
 ## 6. 读图时需要检查的四个分支
 

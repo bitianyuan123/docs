@@ -11,4 +11,4 @@ flowchart TD
     C --> B[精排门槛：候选可用且ingest.accepted为true]
     H --> B
     B --> D[打分任务：等待rank并核对ID和kv_hit]
-    D --> E[完成任务：后置排序与返回]
+    D --> E[完成任务：重排与返回]

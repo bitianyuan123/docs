@@ -242,7 +242,7 @@ def main():
     ingest = json.loads((examples/"06_onetrans_ingest.request.example.json").read_text())
     rank = json.loads((examples/"07_onetrans_rank.request.example.json").read_text())
     require(set(ingest) == {"user_id", "item_ids", "timestamps"}, "OneTrans ingest形状越界")
-    require(ingest["timestamps"] == list(range(len(ingest["item_ids"]))), "当前OneTrans位置应从0开始")
+    require(ingest["timestamps"] == list(range(len(ingest["item_ids"]))), "当前调用方生成的ingest占位序号应从0开始")
     require(set(rank) == {"request_id", "user_id", "items"}, "OneTrans rank形状越界")
     require(all(set(x) == {"item_id"} for x in rank["items"]), "当前rank不能混入目标特征字段")
     require("FeatureRepository" not in (ASSETS/"contracts.py").read_text(), "当前类型仍引用旧特征直连模块")

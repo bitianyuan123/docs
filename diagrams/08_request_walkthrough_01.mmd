@@ -37,12 +37,12 @@ sequenceDiagram
         P->>P: rankable_ids=["4","1201","9002","9001"]
     and 历史计算；数据来自现有Provider
         P->>P: GetUserHistory("1")，本例另行设定返回同10项历史
-        P->>H: POST /ingest {user_id:"1",<br/>item_ids:[2,3,...,1202],timestamps:[0,...,9]}
+        P->>H: POST /ingest {user_id:"1",<br/>item_ids:[2,3,...,1202],timestamps:[0,...,9]}<br/>timestamps为序号占位，非事件时间
         H-->>P: ingest_response {accepted:true,checksum,reason:""}
     end
     P->>P: require(ingest_response.accepted)；候选与历史两路汇合
     P->>R: POST /rank，user_id="1"，items[*].item_id=rankable_ids
     R-->>P: items[*].score=[0.72,0.86,0.63,0.91]；trace.kv_hit=true
-    P->>P: 按score降序，items[*].item_id=["9001","1201","4","9002"]
+    P->>P: 重排：按score降序，items[*].item_id=["9001","1201","4","9002"]
     P-->>N: final_response {returned_size:4,shortfall:true,items}
     N-->>U: 同一推荐JSON响应

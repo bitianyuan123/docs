@@ -38,7 +38,7 @@
 |---|---|---|---|
 | 用户画像：`rec:qkv:<release>:user:1` | `user_id, gender_code, age_code, missing_fields` | 原始数据清洗，按固定规则选择用户源行 | 特征服务 / PaiRec 及需要用户属性的计算服务 |
 | 用户历史：`rec:qkv:<release>:history:1` | `item_ids[], positions[], valid_length, history_hash, time_semantics` | 与用户画像相同的源行规则 | 特征服务 / PaiRec、生成召回；需要时转交其他服务 |
-| 物品画像与统计：`rec:qkv:<release>:item:4` | `item_id, category_code, statistics, valid_counts, missing_counts, metadata_available` | 物品目录构建与交互聚合 | 特征服务 / PaiRec 候选检查、人工规则、后排序 |
+| 物品画像与统计：`rec:qkv:<release>:item:4` | `item_id, category_code, statistics, valid_counts, missing_counts, metadata_available` | 物品目录构建与交互聚合 | 特征服务 / PaiRec 候选检查、人工规则、重排 |
 | 用户向量：`rec:qkv:<release>:user_rep:dense:<embedding_space_id>:1` | `user_id, vector[], dimension, embedding_space_id, history_hash` | 固定 DSSM 用户塔处理同版本用户与历史 | 特征服务 / PaiRec 转交向量召回 |
 | 用户兴趣词项：`rec:qkv:<release>:user_rep:sparse:<sparse_recipe_id>:1` | `user_id, tokens[], known_history_count, missing_history_count, history_hash` | 历史关联物品类型，按已冻结配方聚合 | 特征服务 / PaiRec 转交稀疏召回 |
 | 物品语义编码：`rec:qkv:<release>:item_rep:<sid_version>:2` | `item_id, semantic_id[], sid_version` | 固定模型编码流程 | 特征服务 / PaiRec 转交生成召回 |
@@ -454,7 +454,7 @@ resolved = FeatureService.BatchGetItemRepresentations(
 | 稀疏召回 | 默认不直接调用 | PaiRec 传词项/权重 → 稀疏召回访问 OpenSearch | 不按用户 ID 再查同一兴趣 |
 | 生成输入准备 | PaiRec | 原历史物品 ID → 同版本历史 SID | 生成服务直接使用传入历史 SID |
 | 生成输出转换 | 生成服务 | 模型新生成 SID → 当前目录中的原始物品 ID 列表 | 此时数据才产生，属于该阶段的专属查询 |
-| 候选准备与后排序 | PaiRec | 融合后的候选 ID → 物品属性和统计 | 在本请求内复用同一份结果 |
+| 候选准备与重排 | PaiRec | 融合后的候选 ID → 物品属性和统计 | 在本请求内复用同一份结果 |
 | OneTrans 当前 `/ingest` | 按当前历史提供代码 | 外部历史 ID 与位置进入模型；内部查参数 | 不把当前路径标成 FeatureService 已接入 |
 | OneTrans 当前 `/rank` | 不调用新特征服务 | 用户与候选 ID → 本地已装载的用户/物品特征 + 参数服务 | 本轮按实际源码保留 |
 | 将来的其他精排模型 | 默认 PaiRec 传完整必要字段 | 用户/历史/候选业务值 → 模型自行构造张量与打分 | 仅专属或大量中间 ID 查询时允许服务自行批查 |

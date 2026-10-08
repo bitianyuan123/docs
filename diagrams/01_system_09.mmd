@@ -24,6 +24,6 @@ sequenceDiagram
     K-->>D: serialized_history_kv
     D->>D: 候选模型计算 -> score
     D-->>P: items对应score=[0.72,0.86,0.63,0.91]；kv_hit=true
-    P->>P: 后排序 -> ["9001","1201","4","9002"]
+    P->>P: 重排 -> ["9001","1201","4","9002"]
     P-->>N: {returned_size:4,shortfall:true,items:[...]}
     N-->>U: HTTP 200；同一推荐JSON

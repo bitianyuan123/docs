@@ -276,10 +276,10 @@ def validate(sample):
     check("物品统计中点击率与计数一致", all(math.isclose(x["statistics"]["ctr"], x["statistics"]["click_sum"] / x["statistics"]["n"]) for x in present_items))
     check("仅有特征的候选进入精排", sample["rankable_ids"] == [x["item_id"] for x in sample["item_response"]["results"] if x["status"] == "FOUND"] == [x["item_id"] for x in sample["rank_request"]["items"]])
     check("OneTrans历史来自独立提供器且整数转换不丢ID", [str(x) for x in sample["ingest_request"]["item_ids"]] == sample["onetrans_history_provider"]["item_ids"] and sample["onetrans_history_provider"]["source"] == "independent_provider_assumed_for_this_example")
-    check("两种位置约定不同且都不是事件时间", context["history"]["positions"] == list(range(1, 11)) and sample["ingest_request"]["timestamps"] == list(range(10)))
+    check("特征历史序位与ingest占位序号都不是事件时间", context["history"]["positions"] == list(range(1, 11)) and sample["ingest_request"]["timestamps"] == list(range(10)))
     check("当前OneTrans入参只含源码接受的业务字段", set(sample["rank_request"]) == {"request_id", "user_id", "items"} and all(set(x) == {"item_id"} for x in sample["rank_request"]["items"]) and set(sample["ingest_request"]) == {"user_id", "item_ids", "timestamps"})
     check("精排响应按输入顺序归属分数", [x["item_id"] for x in sample["rank_response"]["items"]] == sample["rankable_ids"] and [x["score"] for x in sample["rank_response"]["items"]] == [.72, .86, .63, .91])
-    check("后排序不混用三路召回分数", sample["final_response"]["items"] == sorted(sample["rank_response"]["items"], key=lambda x: -x["score"]))
+    check("重排不混用三路召回分数", sample["final_response"]["items"] == sorted(sample["rank_response"]["items"], key=lambda x: -x["score"]))
     check("最终顺序与不足10项标志一致", [x["item_id"] for x in sample["final_response"]["items"]] == ["9001", "1201", "4", "9002"] and sample["final_response"]["returned_size"] == 4 and sample["final_response"]["shortfall"] is True)
     feature_keys = ["user_request", "user_context", "history_repr_request", "history_repr_response", "generated_sid_lookup_request", "generated_sid_lookup_response", "item_request", "item_response"]
     check("四次特征RPC共享请求与发布身份", all(sample[key]["request_id"] == REQUEST_ID and sample[key]["release_id"] == RELEASE_ID and sample[key]["schema_version"] == SCHEMA_VERSION for key in feature_keys))

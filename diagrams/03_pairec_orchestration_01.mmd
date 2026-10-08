@@ -1,6 +1,6 @@
 flowchart LR
     Request[推荐请求] --> Recall[召回]
-    Recall --> PreSort[前置排序]
-    PreSort --> Rank[精排]
-    Rank --> PostSort[后置排序]
-    PostSort --> Response[推荐列表]
+    Recall --> RecallMerge[召回合并]
+    RecallMerge --> Rank[精排]
+    Rank --> Rerank[重排]
+    Rerank --> Response[推荐列表]

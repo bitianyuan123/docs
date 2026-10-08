@@ -4,7 +4,7 @@ flowchart TB
     Engine --> Recall[三路召回客户端]
     Engine --> History[现有OneTrans历史提供器]
     Engine --> Ranking[OneTrans客户端]
-    Engine --> Rules[前后排序函数]
+    Engine --> Rules[召回合并与重排函数]
     Feature --> Transport[原生通信封装]
     Recall --> Transport
     Ranking --> Http[现有HTTP调用封装]
