@@ -1,0 +1,136 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/k8s/deployment-milvus-standalone.yaml</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/k8s/deployment-milvus-standalone.yaml</h1><p>只读审阅快照；不是本套系统的部署清单。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>6af7f9c6cc62514236ed31cbbfc0a47cdb71f745e805435f322aeef6f2e2597d</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># ============================================</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a># Milvus standalone with embedded etcd (single Pod)</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a># ============================================</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a># 使用官方 Milvus 镜像内置的 embedded etcd + local storage。</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a># 通过 ConfigMap 注入 embedEtcd.yaml 和 user.yaml，把 etcd 端点固定到</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a># 127.0.0.1:2379，避免默认 &quot;localhost&quot; 被解析到 IPv6 [::1] 导致连接失败。</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a># 数据持久化到 master 节点的 hostPath /home/zcx/milvus-data。</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>apiVersion: v1</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>kind: ConfigMap</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>metadata:</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>  name: milvus-embed-config</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>  namespace: pairec</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>data:</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>  embedEtcd.yaml: |</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>    listen-client-urls: http://127.0.0.1:2379</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    advertise-client-urls: http://127.0.0.1:2379</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    quota-backend-bytes: 4294967296</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>    auto-compaction-mode: revision</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>    auto-compaction-retention: &#x27;1000&#x27;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>  user.yaml: |</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>    etcd:</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>      endpoints:</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>        - 127.0.0.1:2379</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>---</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>apiVersion: apps/v1</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>kind: Deployment</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>metadata:</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>  name: milvus-standalone</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>  namespace: pairec</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>  labels:</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    app: milvus-standalone</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>spec:</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>  replicas: 1</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>  strategy:</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    type: Recreate</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>  selector:</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>    matchLabels:</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>      app: milvus-standalone</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>  template:</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    metadata:</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>      labels:</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>        app: milvus-standalone</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    spec:</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>      nodeName: master</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>      containers:</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>        - name: milvus</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>          image: milvusdb/milvus:v2.4.15</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>          imagePullPolicy: IfNotPresent</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>          command:</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>            - milvus</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>            - run</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>            - standalone</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>          env:</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>            - name: ETCD_USE_EMBED</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>              value: &quot;true&quot;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>            - name: ETCD_DATA_DIR</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>              value: /var/lib/milvus/etcd</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>            - name: ETCD_CONFIG_PATH</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>              value: /milvus/configs/embedEtcd.yaml</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>            - name: COMMON_STORAGETYPE</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>              value: local</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>          ports:</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>            - containerPort: 19530</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>              name: grpc</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>            - containerPort: 9091</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>              name: metrics</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>          resources:</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>            requests:</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>              cpu: &quot;2&quot;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>              memory: &quot;4Gi&quot;</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>            limits:</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>              cpu: &quot;4&quot;</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>              memory: &quot;8Gi&quot;</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>          volumeMounts:</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>            - name: milvus-data</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>              mountPath: /var/lib/milvus</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>            - name: milvus-config</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>              mountPath: /milvus/configs/embedEtcd.yaml</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>              subPath: embedEtcd.yaml</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>              readOnly: true</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>            - name: milvus-config</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>              mountPath: /milvus/configs/user.yaml</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>              subPath: user.yaml</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>              readOnly: true</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>          readinessProbe:</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>            httpGet:</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>              path: /healthz</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>              port: 9091</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>            initialDelaySeconds: 60</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>            periodSeconds: 10</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>            timeoutSeconds: 5</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>            failureThreshold: 30</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>          livenessProbe:</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>            httpGet:</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>              path: /healthz</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>              port: 9091</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>            initialDelaySeconds: 180</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>            periodSeconds: 15</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>            timeoutSeconds: 5</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>            failureThreshold: 6</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>      volumes:</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>        - name: milvus-data</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>          hostPath:</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>            path: /home/zcx/milvus-data</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>            type: DirectoryOrCreate</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>        - name: milvus-config</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>          configMap:</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>            name: milvus-embed-config</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a></span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>---</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>apiVersion: v1</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>kind: Service</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>metadata:</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>  name: milvus-standalone</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>  namespace: pairec</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>  labels:</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>    app: milvus-standalone</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>spec:</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>  selector:</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>    app: milvus-standalone</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>  ports:</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>    - name: grpc</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>      port: 19530</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>      targetPort: 19530</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>      protocol: TCP</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>    - name: metrics</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>      port: 9091</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>      targetPort: 9091</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>      protocol: TCP</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>  type: ClusterIP</span>
+</pre></html>

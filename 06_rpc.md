@@ -124,7 +124,7 @@ flowchart LR
     P -->|现有HTTP| O[OneTrans历史或精排服务]
 ```
 
-图仅表达通信角色，各召回服务的数据库在各自模块图展开。新客户端使用原生库是前期已选设计；当前旧 Go TCP/PRPC 实现不能直接当作这个原生客户端，见[参考代码](assets/source_snapshots/pairec4tigerllm_8506/services/brpcwire/client.go.html#L155)。
+图仅表达通信角色；它不规定这些角色是否同机，进程到 Host 的具体部署映射见[系统物理视图](01_system.md)。各召回服务的数据库在各自模块图展开。新客户端使用原生库是前期已选设计；当前旧 Go TCP/PRPC 实现不能直接当作这个原生客户端，见[参考代码](assets/source_snapshots/pairec4tigerllm_8506/services/brpcwire/client.go.html#L155)。
 
 ```yaml
 发布绑定:

@@ -43,5 +43,7 @@
 | [pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp](pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html) | `f7c4c49cbea7` |
 | [pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go](pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go.html) | `f7c4c49cbea7` |
 | [pairec_sh/pairec-demo/src/recall/brpc_sparse_recall.go](pairec_sh/pairec-demo/src/recall/brpc_sparse_recall.go.html) | `f7c4c49cbea7` |
+| [pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml](pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml.html) | `cadc1855404b` |
+| [pairec4tigerllm/k8s/deployment-milvus-standalone.yaml](pairec4tigerllm/k8s/deployment-milvus-standalone.yaml.html) | `cadc1855404b` |
 
 完整来源与校验信息见 [manifest.json](manifest.json)。

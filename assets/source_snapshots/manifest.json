@@ -501,6 +501,32 @@
         "07_other_services.md",
         "09_evidence_and_gaps.md"
       ]
+    },
+    {
+      "file": "pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml.html",
+      "sha256": "7277889e7b096bca9c82dc4882b42390cd636102fe78083a617b33cad7c354f0",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "k8s/deployment-datasystem-pool-hostnetwork.yaml",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "2c88c11d15f2c08c03b5a388a7bb43f51186b9fb39cb19a7fea791185038f348",
+      "line_count": 243,
+      "redacted_lines": [],
+      "referenced_by": [
+        "01_system.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/k8s/deployment-milvus-standalone.yaml.html",
+      "sha256": "7dc921a4ca65e7ec9c26e530d60bb5d96ba90e5ecdc789ecbc17d9b0776fb1d1",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "k8s/deployment-milvus-standalone.yaml",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "6af7f9c6cc62514236ed31cbbfc0a47cdb71f745e805435f322aeef6f2e2597d",
+      "line_count": 135,
+      "redacted_lines": [],
+      "referenced_by": [
+        "01_system.md"
+      ]
     }
   ]
 }

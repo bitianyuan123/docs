@@ -1,33 +1,37 @@
 flowchart LR
-    subgraph Access[入口节点：CPU]
-        N[Nginx进程]
+    subgraph AppHost[Host：接入与编排主机 / CPU]
+        direction TB
+        N[Nginx主进程与工作进程]
+        P[PaiRec进程]
+        N ~~~ P
     end
-    subgraph App[编排节点：CPU]
-        P[PaiRec进程与客户端库]
-    end
-    subgraph Feature[特征节点：CPU]
+    subgraph FeatureHost[Host：特征主机 / CPU]
+        direction TB
         F[特征服务进程]
+        R[Redis进程]
+        F ~~~ R
     end
-    subgraph Retrieval[检索节点：CPU]
+    subgraph SearchHost[Host：检索主机 / CPU]
+        direction TB
         V[向量召回进程]
         S[稀疏召回进程]
+        M[Milvus standalone进程]
+        O[OpenSearch进程]
+        V ~~~ S ~~~ M ~~~ O
     end
-    subgraph GPU[生成节点：GPU与模型文件卷]
-        G[TensorRT-LLM生成进程]
+    subgraph GenHost[Host：生成主机 / GPU]
+        direction TB
+        G[生成服务进程<br/>bRPC入口与TensorRT-LLM]
+        GW[DataSystem本机worker进程]
+        G <-->|本机SDK连接| GW
     end
-    subgraph Data[数据节点：内存与持久存储]
-        R[(Redis与恢复快照)]
-        M[(Milvus与索引持久卷)]
-        O[(OpenSearch与索引持久卷)]
-        K[(DataSystem共享数据域)]
+    subgraph SharedHost[Host：共享支撑主机 / CPU]
+        direction TB
+        PS[模型参数服务进程]
+        E[DataSystem使用的etcd进程]
+        PS ~~~ E
     end
-    N -->|HTTP| P
-    P -->|原生bRPC目标接口| F
-    P -->|原生bRPC目标接口| V
-    P -->|原生bRPC目标接口| S
-    P -->|原生bRPC| G
-    G -->|特征RPC| F
-    F -->|Redis RESP| R
-    V -->|Milvus SDK| M
-    S -->|OpenSearch HTTP| O
-    G -->|DataSystem SDK| K
+    AppHost <--> SearchHost
+    AppHost <--> GenHost
+    AppHost <--> FeatureHost
+    GenHost <--> SharedHost

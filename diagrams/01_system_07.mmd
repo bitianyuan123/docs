@@ -1,26 +1,27 @@
-flowchart LR
-    subgraph App[编排节点：CPU]
-        P[PaiRec与现有历史提供器]
-        J[(本地历史JSON或Kafka消费缓存)]
-        J --> P
+flowchart TB
+    subgraph AppHost[Host：接入与编排主机 / 同4.1]
+        P[PaiRec进程<br/>含现有历史提供器]
     end
-    subgraph Hist[历史节点：CPU]
-        H[OneTrans历史进程]
-        HF[(权重与当前两份TSV)]
-        HF --> H
+    subgraph HistoryHost[Host：历史计算主机 / CPU]
+        direction TB
+        H[OneTrans历史进程<br/>C++计算后端]
+        HW[DataSystem本机worker进程]
+        H <-->|本机SDK连接| HW
     end
-    subgraph Rank[候选节点：按实际后端配置]
-        D[OneTrans候选进程]
-        DF[(权重与当前两份TSV)]
-        DF --> D
+    subgraph RankHost[Host：候选计算主机 / CPU]
+        direction TB
+        D[OneTrans候选进程<br/>C++计算后端]
+        DW[DataSystem本机worker进程]
+        D <-->|本机SDK连接| DW
     end
-    subgraph State[参数与数据节点]
-        PS[PS模型参数服务]
-        K[(共享DataSystem)]
+    subgraph SharedHost[Host：共享支撑主机 / 同4.1]
+        direction TB
+        PS[模型参数服务进程]
+        E[DataSystem使用的etcd进程]
+        PS ~~~ E
     end
-    P -->|HTTP ingest| H
-    P -->|HTTP rank| D
-    H -->|原生bRPC| PS
-    D -->|原生bRPC| PS
-    H -->|DataSystem SDK写| K
-    D -->|DataSystem SDK读| K
+    AppHost <-->|推荐服务连接| HistoryHost
+    AppHost <-->|推荐服务连接| RankHost
+    HistoryHost <-->|参数与集群连接| SharedHost
+    RankHost <-->|参数与集群连接| SharedHost
+    HistoryHost <-->|worker数据连接| RankHost

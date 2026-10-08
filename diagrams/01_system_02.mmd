@@ -1,22 +1,13 @@
 flowchart TB
     subgraph Recall[召回]
         direction LR
-        V[向量匹配] ~~~ T[词项匹配] ~~~ G[根据历史编码生成候选]
+        Select[召回策略协调] --> V[向量候选获取]
+        Select --> T[词项候选获取]
+        Select --> G[生成候选获取]
     end
-    subgraph Merge[召回合并]
+    subgraph Rank[精排]
         direction LR
-        M1[按策略选取并合并来源] ~~~ M2[已看过滤与候选限量] ~~~ M3[候选属性资格检查]
+        Score[候选评分] --> H[历史表示管理]
+        Score --> I[模型输入装配]
     end
-    subgraph Score[精排]
-        direction LR
-        S1[用户历史计算] ~~~ S2[候选特征装配与打分]
-    end
-    subgraph Rerank[重排]
-        direction LR
-        O1[按精排分数稳定排序] ~~~ O2[应用人工规则] ~~~ O3[按请求数量截取]
-    end
-    subgraph Feature[特征服务]
-        direction LR
-        F1[用户、历史与查询表示查询] ~~~ F2[候选物品属性查询] ~~~ F3[物品语义编码正反查]
-    end
-    Recall ~~~ Merge ~~~ Score ~~~ Rerank ~~~ Feature
+    Recall ~~~ Rank
