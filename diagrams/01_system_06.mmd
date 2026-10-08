@@ -1,37 +1,26 @@
-flowchart LR
-    subgraph AppHost[Host：接入与编排主机 / CPU]
-        direction TB
-        N[Nginx主进程与工作进程]
-        P[PaiRec进程]
-        N ~~~ P
+flowchart TB
+    subgraph OrchestratorPod[Pod：推荐编排 / 同4.1]
+        P[容器：PaiRec<br/>进程：推荐程序]
     end
-    subgraph FeatureHost[Host：特征主机 / CPU]
-        direction TB
-        F[特征服务进程]
-        R[Redis进程]
-        F ~~~ R
+    subgraph HistoryPod[Pod：OneTrans 历史计算]
+        H[容器：OneTrans<br/>进程：onetrans_server]
     end
-    subgraph SearchHost[Host：检索主机 / CPU]
-        direction TB
-        V[向量召回进程]
-        S[稀疏召回进程]
-        M[Milvus standalone进程]
-        O[OpenSearch进程]
-        V ~~~ S ~~~ M ~~~ O
+    subgraph CandidatePod[Pod：OneTrans 候选打分]
+        D[容器：OneTrans<br/>进程：onetrans_server]
     end
-    subgraph GenHost[Host：生成主机 / GPU]
-        direction TB
-        G[生成服务进程<br/>bRPC入口与TensorRT-LLM]
-        GW[DataSystem本机worker进程]
-        G <-->|本机SDK连接| GW
+    subgraph ParameterPod[Pod：模型参数服务]
+        PS[容器：参数服务<br/>进程：参数查询程序]
     end
-    subgraph SharedHost[Host：共享支撑主机 / CPU]
-        direction TB
-        PS[模型参数服务进程]
-        E[DataSystem使用的etcd进程]
-        PS ~~~ E
+    subgraph WorkerPod[Pod：DataSystem worker]
+        W[容器：DataSystem worker<br/>进程：worker]
     end
-    AppHost <--> SearchHost
-    AppHost <--> GenHost
-    AppHost <--> FeatureHost
-    GenHost <--> SharedHost
+    subgraph MetadataPod[Pod：DataSystem 元数据]
+        E[容器：etcd<br/>进程：etcd]
+    end
+    P <-->|HTTP ingest| H
+    P <-->|HTTP rank| D
+    H <-->|参数连接| PS
+    D <-->|参数连接| PS
+    H <-->|历史状态连接| W
+    D <-->|历史状态连接| W
+    W <-->|集群元数据连接| E

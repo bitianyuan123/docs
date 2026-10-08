@@ -527,6 +527,19 @@
       "referenced_by": [
         "01_system.md"
       ]
+    },
+    {
+      "file": "pairec4tigerllm/k8s/deployment-inference-brpc-trtllm.yaml.html",
+      "sha256": "9766fea65404692316ca8c65ef8fa2a519feec323564a376c2342678837035da",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "k8s/deployment-inference-brpc-trtllm.yaml",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "130c92b75594e67d508e649126b274e8fbf3f5e453a47adc2f9f816420fbcd62",
+      "line_count": 154,
+      "redacted_lines": [],
+      "referenced_by": [
+        "01_system.md"
+      ]
     }
   ]
 }

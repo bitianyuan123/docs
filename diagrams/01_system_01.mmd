@@ -1,7 +1,19 @@
 flowchart LR
-    C[推荐编排] --> R[召回]
+    C[推荐编排] --> V
+    C --> T
+    C --> G
+    subgraph Recall[多路召回]
+        V[向量召回]
+        T[稀疏召回]
+        G[生成式召回]
+    end
     C --> M[召回合并]
-    C --> S[精排]
+    C --> H
+    C --> S
+    subgraph Rank[精排]
+        H[历史计算]
+        S[候选打分]
+    end
     C --> O[重排]
     C --> F[特征服务]
-    R -->|物品编码映射| F
+    G -->|物品编码反查| F

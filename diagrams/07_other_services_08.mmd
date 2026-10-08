@@ -4,7 +4,7 @@ sequenceDiagram
     participant S as 稀疏服务
     participant O as OpenSearch
     P->>B: 原生bRPC：类型词项和权重、release、topk=50
-    B->>S: 同机HTTP /recall：相同字段
+    B->>S: HTTP /recall：相同字段
     S->>S: 校验词项、合并重复、绑定固定index
     S->>O: HTTP search：term加权查询和BM25排序
     O-->>S: hits、score、分片执行状态

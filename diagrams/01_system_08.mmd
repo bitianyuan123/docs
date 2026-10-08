@@ -1,46 +1,29 @@
 sequenceDiagram
-    participant U as 请求方
-    participant N as Nginx
     participant P as PaiRec
-    participant F as 特征服务
-    participant R as Redis
-    participant V as 向量召回
-    participant M as Milvus
-    participant S as 稀疏召回
-    participant O as OpenSearch
-    participant G as 生成召回
-    U->>N: POST /api/recommend<br/>{uid:"1",size:10,scene_id:"home_feed"}
-    N->>P: 同一JSON；网关请求标识
-    P->>F: GetUserContext(user_id="1",release_id)
-    F->>R: MGET 用户、历史、向量、词项对应的4个key
-    R-->>F: 4份JSON记录
-    F-->>P: user_context {user,history,dense_query,sparse_query}
-    par 向量分支
-        P->>V: Recall(query_vector=user_context.dense_query.vector)
-        V->>M: search(collection,query_vector,limit=50)
-        M-->>V: hits[{id,distance}]
-        V-->>P: items[{item_id,score}]
-    and 稀疏分支
-        P->>S: Recall(sparse_tokens=user_context.sparse_query.tokens)
-        S->>O: search(index,weighted_terms,size=50)
-        O-->>S: hits.hits[{_source:{item_id},_score}]
-        S-->>P: items[{item_id,score}]
-    and 生成分支
-        P->>F: BatchGetItemRepresentations(历史ID查SID)
-        F->>R: MGET item_rep键
-        R-->>F: 同序物品编码记录
-        F-->>P: results[{item_id,status,value:{semantic_id}}]
-        P->>G: Recommend(history=[{value:SID}],topk=10)
-        G->>G: 模型推理产生generated_sids
-        G->>F: BatchGetItemRepresentations(SID反查原始ID)
-        F->>R: MGET sid_map键
-        R-->>F: SID对应的物品ID列表
-        F-->>G: results[{semantic_id,status,item_ids}]
-        G-->>P: recommendations[{item_id,semantic_id,score}]
-    end
-    P->>P: 响应适配、融合、已看过滤 -> 5个候选
-    P->>F: BatchGetItemFeatures(["4","1201","9002","9001","9003"])
-    F->>R: MGET 5个物品key
-    R-->>F: [item4,item1201,item9002,item9001,nil]
-    F-->>P: results前4项FOUND，9003为NOT_FOUND
-    P->>P: 保留["4","1201","9002","9001"]
+    participant H as OneTrans历史进程
+    participant D as OneTrans候选进程
+    participant PS as 模型参数服务
+    participant K as DataSystem
+    participant N as Nginx
+    participant U as 请求方
+    P->>P: 现有Provider.GetUserHistory("1")，独立取得历史
+    P->>H: POST /ingest {user_id:"1",item_ids,timestamps}
+    H->>PS: Lookup({table:model_version+"/item",ids:补齐后的历史ID})
+    PS-->>H: {dim:128,ids,weights}；weights为展平参数
+    H->>H: 历史编码与模型计算
+    H->>K: Set(user_model_key,serialized_history_kv)
+    K-->>H: 写入成功
+    H-->>P: {accepted:true,checksum,reason:""}
+    P->>P: 汇合：候选准备成功，且ingest.accepted为true
+    P->>D: POST /rank {user_id:"1",request_id,items:[{item_id},...]}
+    D->>D: 查询启动时装载的用户和物品TSV
+    D->>PS: Lookup各组用户、物品和类别参数
+    PS-->>D: {dim:128,ids,weights}
+    D->>D: 编码用户与候选特征
+    D->>K: Get(user_model_key)
+    K-->>D: serialized_history_kv
+    D->>D: 候选模型计算 -> score
+    D-->>P: items对应score=[0.72,0.86,0.63,0.91]；kv_hit=true
+    P->>P: 重排 -> ["9001","1201","4","9002"]
+    P-->>N: {returned_size:4,shortfall:true,items:[...]}
+    N-->>U: HTTP 200；同一推荐JSON

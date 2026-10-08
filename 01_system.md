@@ -2,7 +2,7 @@
 
 图中符号与连线遵循[图法与 UML 约定](DIAGRAM_NOTATION.md)，每张图前注明使用的图法。
 
-本版按 4+1 的关注点重新组织：逻辑视图描述核心业务抽象及其职责、接口与关系；开发视图描述代码的静态组织；进程视图描述独立执行、并发与同步；物理视图描述运行进程及其执行环境到主机的部署映射；场景用关键用例检验这四种设计。划分依据为 [Kruchten 的 4+1 原文](https://arxiv.org/pdf/2006.04975)。
+本版按 4+1 的关注点组织：逻辑视图描述核心业务抽象及其职责、接口与关系；开发视图描述代码的静态组织；进程视图描述独立执行、并发与同步；物理视图描述部署单元及其容纳的进程；场景用关键用例检验这四种设计。划分依据为 [Kruchten 的 4+1 原文](https://arxiv.org/pdf/2006.04975)。目前没有主机分配信息，物理视图先展开 Pod、容器与进程，待部署确定后再补到主机的映射。
 
 本系统的约束保持不变：Nginx 统一入口；PaiRec 编排；其他模块通过独立特征服务查询业务数据；OneTrans 按当前源码保留历史提供器、本地特征表和 HTTP 接口；离线装载真实数据与模型资产；人工配置可审阅；压力回放放在系统外部。本文给出目标架构，并明确保留的源码行为，不表示已完成部署。
 
@@ -11,80 +11,66 @@
 | 逻辑 | 业务职责、接口与对象；归属和能力依赖 | 哪些核心抽象承担功能，它们需要哪些业务能力 |
 | 开发 | 源码模块、库、接口定义；导入或编译依赖 | 怎样分工开发、复用和构建，改动影响哪些模块 |
 | 进程 | 进程、请求任务、工作队列；通信、等待、同步 | 哪些工作并行，状态谁持有，失败会影响什么 |
-| 物理 | 主机、执行环境、进程实例与存储；部署归属和网络连接 | 哪些进程同机或跨机，CPU/GPU与数据卷分配在哪里 |
+| 物理 | Pod、容器及其内部进程；包含关系、网络连接与所需存储 | 哪些进程放入同一容器，哪些单元独立部署，需要挂载什么；主机分配待定 |
 | 场景（+1） | 具体参与者、请求和返回；有先后的交互 | 功能、代码、执行和部署的选择能否共同满足用例 |
 
-“层级”在每个视图内部展开，例如整体逻辑职责再展开为各自的子功能；不同视图是同一系统的不同观察角度，不是前后处理阶段。
+“层级”在每个视图内部展开；不同视图是同一系统的不同观察角度，不是前后处理阶段。逻辑视图在一张 L1 图中直接展开三路召回与精排的两个职责；模型内部结构在模块文档中说明。
 
 ## 1. 逻辑视图：核心职责、业务接口与依赖
 
 逻辑视图回答“系统由哪些核心抽象组成，它们各自负责什么，需要其他部分提供什么能力”。本文以业务职责为逻辑单元，用接口及业务对象说明协作。处理顺序与并发放在第 3 节和[请求时序](08_request_walkthrough.md)；源码如何分包、编译放在第 2 节。此处不按进程或机器提前切分职责。
 
-### 1.1 整体逻辑结构
+### 1.1 L1：整体逻辑结构，展开多路召回与精排
 
-图中的框是逻辑单元；箭头 `A --> B` 统一表示“A 需要 B 提供的业务能力”，不表示先执行 A 再执行 B，也不表示源码导入。推荐编排协调各项能力；召回合并与重排不直接依赖召回算法或精排模型的内部实现。
+图中的框是逻辑单元；外框表示职责归属。箭头 `A --> B` 统一表示“A 需要 B 提供的业务能力”，不表示先执行 A 再执行 B，也不表示源码导入。推荐编排协调三路召回、召回合并、精排和重排；特征服务提供所需业务数据。
 
 图法：逻辑结构示意图（非 UML，箭头表示业务能力依赖）。
 
 ```mermaid
 flowchart LR
-    C[推荐编排] --> R[召回]
+    C[推荐编排] --> V
+    C --> T
+    C --> G
+    subgraph Recall[多路召回]
+        V[向量召回]
+        T[稀疏召回]
+        G[生成式召回]
+    end
     C --> M[召回合并]
-    C --> S[精排]
+    C --> H
+    C --> S
+    subgraph Rank[精排]
+        H[历史计算]
+        S[候选打分]
+    end
     C --> O[重排]
     C --> F[特征服务]
-    R -->|物品编码映射| F
+    G -->|物品编码反查| F
 ```
 
-这些逻辑单元不与独立服务一一对应。例如召回合并、重排可在 PaiRec 内实现；召回算法与特征查询可在独立服务中实现。实现在哪个进程、部署在哪台主机，分别由进程视图与物理视图决定。
+这一层已经能区分三种候选获取方式，以及 OneTrans 历史计算与候选打分的责任，无需另画一张重复的内部结构图。逻辑单元不与独立服务一一对应：召回合并、重排可在 PaiRec 内实现；召回算法与特征查询可在独立服务中实现。进程和容器边界分别在第 3、4 节说明。
+
+### 1.2 业务操作与数据责任
 
 | 逻辑单元 | 提供的业务操作 | 拥有的责任与约束 |
 |---|---|---|
 | 推荐编排 | `recommend(request, policy) -> result` | 持有本次请求上下文，固定场景与版本；取得特征并协调其他能力，核对候选与分数的对应关系 |
-| 召回 | `recall(user_context, policy) -> candidates_by_source` | 封装向量、词项、生成三种候选获取方式；保留各路次序、来源与原始分数；生成候选需要物品编码反查 |
+| 向量召回 | `recall(query_vector, policy) -> candidates` | 根据查询向量检索物品表示，保留向量分与返回次序 |
+| 稀疏召回 | `recall(weighted_terms, policy) -> candidates` | 根据加权兴趣词项检索物品文档，保留 BM25 分与返回次序 |
+| 生成式召回 | `generate(history_codes, policy) -> candidates` | 根据历史编码生成候选编码，通过特征服务反查物品 ID；保留生成分与次序 |
 | 召回合并 | `merge(candidates_by_source, history, item_features, policy) -> candidates` | 管理唯一候选集合及全部命中来源；按来源策略选取，执行已看过滤、候选限量和属性资格规则；本期没有粗排模型 |
-| 精排 | `prepare_history(user_id, history)`；`score(user_id, candidate_ids) -> scored_items` | 管理模型需要的历史表示，产生与候选 ID 一一对应的分数；不决定最终展示顺序 |
-| 重排 | `rerank(scored_items, item_features, policy, size) -> result` | 组织最终有序列表，管理同分次序、人工规则与结果数量；不足时返回实际数量 |
+| 精排／历史计算 | `prepare_history(user_id, history)` | 将历史物品序列计算为模型中间结果，供候选打分复用 |
+| 精排／候选打分 | `score(user_id, candidate_ids) -> scored_items` | 结合用户、候选特征与已准备的历史中间结果，产生与候选 ID 一一对应的分数；不决定最终展示顺序 |
+| 重排 | `rerank(scored_items, item_features, policy, size) -> result` | 按分数与人工规则组织最终列表；同分保留合并后相对次序；按 `size` 限量，不足时返回实际数量 |
 | 特征服务 | `GetUserContext`、`BatchGetItemFeatures`、`BatchGetItemRepresentations` | 提供用户上下文、物品属性及编码映射，统一版本与缺失语义；不负责推荐分数或候选资格决策 |
 
-表中的操作表示业务契约，不要求源码存在同名类或网络方法。`request` 含用户、场景和数量；`policy` 是人工场景配置，含发布版本、召回开关、数量及规则。`user_context` 含用户字段、历史和查询表示；`candidates` 保留物品 ID 与来源；`scored_items` 为与候选对应的评分条目；`result` 为最终有序列表及实际数量。
+表中的操作表示业务契约，不要求源码存在同名类或网络方法。`request` 含用户、场景和数量；`policy` 是人工场景配置，含发布版本、召回开关、数量及规则。`query_vector`、`weighted_terms`、`history_codes` 分别是查询向量、加权词项、历史物品的语义编码；`history` 是历史序列，`item_features` 是物品属性。`candidates_by_source` 按召回来源保存候选；`scored_items` 为与候选 ID 对应的评分条目；`result` 为最终有序列表及实际数量。
+
+三路召回保留各自原始分数含义，不把向量分、BM25 分和生成分直接相加。精排的“历史中间结果”是历史模型产生、供候选打分使用的注意力键和值张量；候选打分依赖它，但不直接调用历史计算接口，由编排协调准备与等待。
 
 **特征的数据责任与查询责任分开**：特征服务提供事实；编排为召回、候选资格检查和重排取得所需数据，后两者复用已查得的物品属性。生成服务在推理后才知道候选编码，因此直接使用特征服务的编码反查能力。逻辑图中只有需要查询能力的单元依赖特征服务，不把所有使用查询结果的单元都画成查询方。
 
 **当前 OneTrans 保留独立取数边界**：历史来自 PaiRec 现有历史提供器，用户和候选字段来自 OneTrans 本地表，因此不画精排到特征服务的依赖。两套历史需要另行核对；不能因为逻辑上都称为“历史”，就认为它们已经统一。
-
-### 1.2 各逻辑单元内部怎样协作
-
-本层展开内部职责之间的关系。以召回和精排为例：召回策略需要三种候选获取能力；候选评分需要历史表示和模型输入。箭头仍表示能力依赖；图中没有请求的开始、结束或时间顺序。
-
-图法：逻辑结构示意图（非 UML；外框表示职责归属，箭头表示业务能力依赖）。
-
-```mermaid
-flowchart TB
-    subgraph Recall[召回]
-        direction LR
-        Select[召回策略协调] --> V[向量候选获取]
-        Select --> T[词项候选获取]
-        Select --> G[生成候选获取]
-    end
-    subgraph Rank[精排]
-        direction LR
-        Score[候选评分] --> H[历史表示管理]
-        Score --> I[模型输入装配]
-    end
-    Recall ~~~ Rank
-```
-
-“历史表示”是历史模型产生、供候选评分使用的中间结果；当前 OneTrans 用注意力键和值张量表示，具体存储不属于这层逻辑图。三种召回对外都形成候选记录，但接口适配保留各路原始分数含义，不把向量分、BM25 分和生成分直接相加。
-
-| 逻辑单元 | 内部职责及依赖 | 对外保持的边界 |
-|---|---|---|
-| 推荐编排 | 请求上下文管理使用场景策略，并协调各业务接口 | 上下文保存请求 ID、固定版本和已取得特征；不承担检索或模型计算 |
-| 召回 | 策略协调使用向量、词项、生成候选获取；生成能力使用特征服务的编码映射 | 输入为用户查询表示或历史编码，输出为带来源的候选 |
-| 召回合并 | 候选集合管理使用来源选取策略和候选资格规则 | 重复物品只有一个候选，保留所有来源；资格规则使用编排传入的历史与物品属性 |
-| 精排 | 候选评分使用历史表示管理和模型输入装配 | 历史准备产生模型中间结果；候选评分使用它。当前 OneTrans 的取数边界保持 1.1 所述例外 |
-| 重排 | 推荐列表组织使用分数次序和人工规则 | 同分时保留合并后的相对次序；最终 `size` 限量区别于召回合并的候选限量 |
-| 特征服务 | 查询入口提供用户上下文、物品属性、物品编码三类查询，并共同使用版本与缺失校验规则 | 返回事实与缺失状态，不在特征查询中决定候选去留 |
 
 物品语义编码简称 SID，是模型使用的一组离散整数。编码正查为 `item_id -> semantic_id`，反查为 `semantic_id -> item_ids`，一个编码可能对应多个物品。查询映射记录属于特征服务；产生编码的模型与分词器属于模型资产。完整字段见[特征字典](10_feature_catalog.md)，用户 1 的具体数据传递见[请求推演](08_request_walkthrough.md)。
 
@@ -185,125 +171,132 @@ flowchart TD
 
 正常样例有 PaiRec 三次、生成服务一次特征 RPC；底层 Redis 拆批另计。总预算初值 25 秒，阶段超时取“阶段上限与总剩余时间的较小值”。取消客户端等待不等于远端计算停止；当前 OneTrans 没有请求级释放接口。联调可限制同用户串行并核对历史，但该限制不等于已实现并发隔离。
 
-## 4. 物理视图：进程怎样部署到主机
+## 4. 物理视图：Pod、容器与进程的部署关系
 
-本节给出一套**目标跨机联调布局**，用 `Host → 进程实例` 明确部署归属。每个 Host 外框表示一台独立 Linux 主机或虚拟机；框内列出部署在该主机上的进程。它不是当前机器清单，也不预设已采用容器或 Kubernetes。
+目前没有可确认的 Host（主机）或 Kubernetes Node（工作节点）分配。本节先给出**目标容器部署单元**：外框是 Pod，内框是容器，容器内列出主要进程。不填写主机数量、同机或跨机关系、调度规则和副本数；每个框表示一种部署单元，不代表只部署一个实例。[Pod 与容器的关系](https://kubernetes.io/docs/concepts/workloads/pods/)。
 
-两图使用同一套主机名称：接入与编排、特征、检索、生成、历史计算、候选计算、共享支撑，共七台。相同名称表示同一台主机，不是新增副本。该单副本布局用于验证真实跨机取数和计算，容量与高可用配置另行确定；其他角色可按资源合并，**历史计算与候选计算必须保持不同 Host**。
+已有配置只能证明局部部署方式已有定义，不能证明整套系统已运行。两图按同一套目标边界绘制，现有依据与待补部分在 4.3 区分；不用 Kubernetes 时，可保留容器与进程边界，再补实际容器运行环境。
 
-所有 Host 接入同一业务内网。图中只画主要网络连接，双向实线表示连通要求，不表示调用顺序；框内的连线表示本机连接。完整服务访问关系见第 3 节，不能仅按物理图的几条连线配置访问控制。
+### 4.1 入口、特征与召回的容器边界
 
-### 4.1 入口、特征与召回的主机部署
-
-图法：部署映射示意图（非 UML；Host 外框包含实际部署的进程，连线表示网络连通）。
+图法：部署映射示意图（非 UML）。包含关系表示 Pod 容纳容器、容器运行所列进程；双向实线表示主要网络连通要求，不表示执行顺序。完整调用关系见第 3 节。
 
 ```mermaid
 flowchart LR
-    subgraph AppHost[Host：接入与编排主机 / CPU]
-        direction TB
-        N[Nginx主进程与工作进程]
-        P[PaiRec进程]
-        N ~~~ P
+    subgraph GatewayPod[Pod：网关]
+        N[容器：Nginx<br/>进程：master 与 worker]
     end
-    subgraph FeatureHost[Host：特征主机 / CPU]
-        direction TB
-        F[特征服务进程]
-        R[Redis进程]
-        F ~~~ R
+    subgraph OrchestratorPod[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
     end
-    subgraph SearchHost[Host：检索主机 / CPU]
-        direction TB
-        V[向量召回进程]
-        S[稀疏召回进程]
-        M[Milvus standalone进程]
-        O[OpenSearch进程]
-        V ~~~ S ~~~ M ~~~ O
+    subgraph FeaturePod[Pod：特征服务]
+        F[容器：特征服务<br/>进程：特征查询程序]
     end
-    subgraph GenHost[Host：生成主机 / GPU]
-        direction TB
-        G[生成服务进程<br/>bRPC入口与TensorRT-LLM]
-        GW[DataSystem本机worker进程]
-        G <-->|本机SDK连接| GW
+    subgraph RedisPod[Pod：特征数据库]
+        R[容器：Redis<br/>进程：redis-server]
     end
-    subgraph SharedHost[Host：共享支撑主机 / CPU]
-        direction TB
-        PS[模型参数服务进程]
-        E[DataSystem使用的etcd进程]
-        PS ~~~ E
+    subgraph VectorPod[Pod：向量召回]
+        V[容器：向量召回<br/>进程：向量召回程序]
     end
-    AppHost <--> SearchHost
-    AppHost <--> GenHost
-    AppHost <--> FeatureHost
-    GenHost <--> SharedHost
+    subgraph MilvusPod[Pod：向量数据库]
+        M[容器：Milvus<br/>进程：Milvus standalone<br/>内嵌 etcd]
+    end
+    subgraph SparsePod[Pod：稀疏召回]
+        S[容器：稀疏召回<br/>进程：稀疏召回程序]
+    end
+    subgraph SearchPod[Pod：文档检索数据库]
+        O[容器：OpenSearch<br/>进程：OpenSearch JVM]
+    end
+    subgraph GenerationPod[Pod：生成式召回]
+        G[容器：生成召回<br/>进程：brpc_inference_server<br/>内含 TensorRT-LLM 执行器]
+    end
+    N <--> P
+    P <--> F
+    F <--> R
+    P <--> V
+    V <--> M
+    P <--> S
+    S <--> O
+    P <--> G
 ```
 
-本布局中 Nginx 与 PaiRec 同机但属于不同进程；特征服务与 Redis 同机，查询仍经过特征服务接口。检索主机承载两个召回前端及其索引服务。Milvus 选用独立部署模式（standalone），采用内嵌 etcd 和本地数据目录；它与 DataSystem 的 etcd 分开。[已有 Milvus 配置](assets/source_snapshots/pairec4tigerllm/k8s/deployment-milvus-standalone.yaml.html#L53)。
+Nginx 的 master 负责管理工作进程，worker 处理请求。PaiRec 的历史提供器、召回合并、重排和 RPC 客户端均在推荐进程内部。特征服务与 Redis、召回程序与对应索引服务分别部署；Pod 分开不意味着位于不同主机。
 
-生成主机的进程采用当前原生 C++ 后端：bRPC 入口和 TensorRT-LLM 执行器在同一服务进程内，GPU 分配给该进程；DataSystem worker 是同机的另一个存储进程，管理该节点的键值数据。[执行器装配源码](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1006)。该主机的 worker 与下一图的两个 worker 加入同一 DataSystem 集群。
+本图按召回程序内置原生 bRPC 处理器的目标方案绘制。若复用 HTTP 后端，可另加协议桥进程，见[召回模块的适配方案](07_other_services.md)；桥的容器分组届时确定，后端仍须支持目标输入字段。
 
-### 4.2 OneTrans 两个计算进程与共享状态的跨机部署
+生成容器采用当前原生 C++ 后端：bRPC 入口和 TensorRT-LLM 执行器在同一进程内，运行需要 GPU；具体设备分配待定。它还要连接特征服务和下一图的 DataSystem。Milvus 使用已有 standalone 配置中的内嵌 etcd；不额外画一个 Milvus etcd Pod，也不与 DataSystem 的 etcd 混用。
 
-图法：部署映射示意图（非 UML；外框为 Host，内框为进程实例）。
+### 4.2 OneTrans 计算容器与共享状态
+
+图法：部署映射示意图（非 UML）。外框和连线与 4.1 含义相同；推荐编排 Pod 是上一图同一个部署单元的引用。DataSystem worker 框代表此类存储 Pod，数量及模型服务连接哪些 worker 由后续部署配置确定。
 
 ```mermaid
 flowchart TB
-    subgraph AppHost[Host：接入与编排主机 / 同4.1]
-        P[PaiRec进程<br/>含现有历史提供器]
+    subgraph OrchestratorPod[Pod：推荐编排 / 同4.1]
+        P[容器：PaiRec<br/>进程：推荐程序]
     end
-    subgraph HistoryHost[Host：历史计算主机 / CPU]
-        direction TB
-        H[OneTrans历史进程<br/>C++计算后端]
-        HW[DataSystem本机worker进程]
-        H <-->|本机SDK连接| HW
+    subgraph HistoryPod[Pod：OneTrans 历史计算]
+        H[容器：OneTrans<br/>进程：onetrans_server]
     end
-    subgraph RankHost[Host：候选计算主机 / CPU]
-        direction TB
-        D[OneTrans候选进程<br/>C++计算后端]
-        DW[DataSystem本机worker进程]
-        D <-->|本机SDK连接| DW
+    subgraph CandidatePod[Pod：OneTrans 候选打分]
+        D[容器：OneTrans<br/>进程：onetrans_server]
     end
-    subgraph SharedHost[Host：共享支撑主机 / 同4.1]
-        direction TB
-        PS[模型参数服务进程]
-        E[DataSystem使用的etcd进程]
-        PS ~~~ E
+    subgraph ParameterPod[Pod：模型参数服务]
+        PS[容器：参数服务<br/>进程：参数查询程序]
     end
-    AppHost <-->|推荐服务连接| HistoryHost
-    AppHost <-->|推荐服务连接| RankHost
-    HistoryHost <-->|参数与集群连接| SharedHost
-    RankHost <-->|参数与集群连接| SharedHost
-    HistoryHost <-->|worker数据连接| RankHost
+    subgraph WorkerPod[Pod：DataSystem worker]
+        W[容器：DataSystem worker<br/>进程：worker]
+    end
+    subgraph MetadataPod[Pod：DataSystem 元数据]
+        E[容器：etcd<br/>进程：etcd]
+    end
+    P <-->|HTTP ingest| H
+    P <-->|HTTP rank| D
+    H <-->|参数连接| PS
+    D <-->|参数连接| PS
+    H <-->|历史状态连接| W
+    D <-->|历史状态连接| W
+    W <-->|集群元数据连接| E
 ```
 
-两个 OneTrans 进程使用同一服务程序，以调用地址区分历史与候选角色。两端须编入 PS/DataSystem 支持，配置 `embedding_source=ps`、`kv_backend=datasystem`，并使用一致的 `model_version`、参数表及 DataSystem 集群。本基线显式选择 `--compute-backend cpp`，历史与候选均使用 CPU；选择其他后端时应修改进程与设备分配，不能仅在主机名中加上 GPU 就视为已使用。[当前后端选择](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/server_main.cpp.html#L146)。
+两个 OneTrans 容器运行同一服务程序，程序均注册历史和打分接口，由 PaiRec 调用不同地址来区分角色。当前资料仅有多进程启动示例，**拆成历史 Pod、候选 Pod 是目标部署边界，尚需补容器和部署配置**；不据此要求它们落在不同主机。
 
-这里共享的是 **DataSystem 集群中的键值数据**。每台模型主机的 worker 使用自己的本机内存，worker 之间通过网络传输数据；etcd 保存集群元数据，不保存历史注意力张量。三个 worker 必须使用一致的集群配置，所在主机之间须双向网络可达；图中仅展开历史与候选之间的数据通道。三个 worker 不等于三份容灾副本。[已有 worker 集群配置](assets/source_snapshots/pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml.html#L217)。本方案选择本机 worker，不限制 SDK 的其他连接模式；仍需验证 OneTrans 跨机读写及 SDK/worker 版本兼容。
+两端须编入参数服务与 DataSystem 支持，配置 `embedding_source=ps`、`kv_backend=datasystem`，并使用一致的 `model_version` 和匹配的参数表。历史计算当前使用 C++ CPU，候选计算后端由配置选择，详见 [OneTrans 执行条件](02_onetrans.md)。
 
-### 4.3 文件、存储与执行环境的归属
+两端必须能访问**同一 DataSystem 数据域**，才能共享历史计算结果；这不要求连接同一个 worker 实例。worker 管理模型键值数据，etcd 管理集群元数据。已有 worker 和 etcd 分别定义为 DaemonSet、Deployment 两类 Kubernetes 工作负载，负责管理各自的 Pod；本图没有将 worker 放入模型 Pod。worker 数量、调度位置以及 SDK 连接方式，应在真实部署时确定并验证。生成服务也连接 DataSystem，但使用生成模型自己的缓存键与生命周期。
 
-| 主机 | 需要部署的数据或资源 | 使用进程及约束 |
+### 4.3 现有部署依据与待补内容
+
+| 部署单元 | 源码或配置已能确认什么 | 本图仍属目标设计的部分 |
 |---|---|---|
-| 接入与编排 | Nginx 路由、场景配置、当前历史 JSON | Nginx 与 PaiRec 各自读取配置；历史提供器在 PaiRec 内。此基线使用本地 JSON，若改用 Kafka，另配置外部消息服务 |
-| 特征 | 版本化 Redis 数据及恢复目录 | 特征服务查询 Redis；离线工具装载数据，重启后可恢复或重载 |
-| 检索 | Milvus 数据及依赖存储、OpenSearch 索引目录 | 两个索引服务各自管理；索引版本与本次发布绑定 |
-| 生成 | TensorRT-LLM 模型文件、GPU、worker 本机内存与工作目录 | 生成进程使用 GPU 和模型；worker 管理缓存，不把业务 SID 映射替换成模型缓存 |
-| 历史计算、候选计算 | 每台均部署同版模型文件、用户 TSV 和物品 TSV；各自的 worker 资源 | 两个 OneTrans 进程启动均读取两份 TSV；文件分别位于本机，不表示共用一个文件系统 |
-| 共享支撑 | 参数装载文件、etcd 持久数据目录 | 参数服务启动后装载内存表；etcd 保存集群元数据。现有样例的临时 etcd 目录需改为持久目录 |
-| 离线构建环境 | Tenrec 原始快照、加工结果、装载文件、发布清单 | 不承担在线请求；保留可重放与回退的版本资产，发布到以上相应主机或存储 |
+| 生成式召回 | [已有 Deployment 的容器和启动命令](assets/source_snapshots/pairec4tigerllm/k8s/deployment-inference-brpc-trtllm.yaml.html#L35)；[执行器装配源码](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1006)确认 bRPC 与 TensorRT-LLM 在同一进程 | 与新特征服务、场景版本及缓存服务的完整联调 |
+| Milvus | [已有 standalone 容器配置](assets/source_snapshots/pairec4tigerllm/k8s/deployment-milvus-standalone.yaml.html#L49)，使用内嵌 etcd 与本地存储 | 按目标发布装载向量数据，并与向量召回服务联调 |
+| DataSystem | [etcd Deployment](assets/source_snapshots/pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml.html#L19)与 [worker DaemonSet](assets/source_snapshots/pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml.html#L114)分别定义；[worker 配置](assets/source_snapshots/pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml.html#L217)指定集群地址与标识 | 目标集群的规模、调度、资源和模型 SDK 连通性；不照搬样例中的固定地址和节点名 |
+| OneTrans 历史与候选 | [现有启动说明](assets/source_snapshots/OneTrans_HSE_project/docs/%E5%8D%95%E6%9C%BA%E5%A4%9A%E8%8A%82%E7%82%B9%E9%83%A8%E7%BD%B2.md.html#L152)使用同一程序启动多个进程 | 两种角色各自容器化、提供可访问地址，并验证共享历史结果 |
+| 网关、编排、特征服务、其他召回及参数服务 | 代码职责与当前能力分别见模块文档 | 本图中的独立 Pod/容器分组是目标安排；整套部署清单仍需补齐 |
 
-`TSV` 是制表符分列表。历史计算实际使用调用方发送的历史 ID；历史进程也装载两份 TSV，是当前程序的启动要求。[当前部署说明](assets/source_snapshots/OneTrans_HSE_project/docs/%E5%8D%95%E6%9C%BA%E5%A4%9A%E8%8A%82%E7%82%B9%E9%83%A8%E7%BD%B2.md.html)。该源码说明中的单机多进程示例，不等于本节跨机布局已验证。
+### 4.4 各容器需要哪些文件与存储
 
-如果采用容器，部署层次应补为 `Host → 容器 → 进程`；采用 Kubernetes 时补为 `Host（Node）→ Pod → 容器 → 进程`。容器或 Pod 的隔离不能替代主机分离：历史与候选必须分配到不同主机；模型进程与所用本机 worker 则保持同机，并核对 SDK 所需的网络与共享内存访问条件。此处只规定容器化后的映射要求，未将已有局部部署脚本视为整套系统的部署清单。[Pod 与容器的关系](https://kubernetes.io/docs/concepts/workloads/pods/)。
+| 使用方 | 必需资源 | 放置与访问要求 |
+|---|---|---|
+| Nginx、PaiRec 容器 | 各自的路由、场景及地址配置；PaiRec 历史提供器的数据源 | 挂载配置；当前历史来源为本地 JSON 或 Kafka 消费缓存，按选定来源配置文件或外部连接 |
+| Redis、Milvus、OpenSearch 容器 | 版本化特征记录、向量集合、文档索引及恢复数据 | 分别提供数据目录或持久卷；存储类型和后端待定，离线工具负责装载并核对发布版本 |
+| 生成召回容器 | TensorRT-LLM 模型文件与 GPU | 进程可读取模型并访问设备；模型资产与场景绑定一致，不把 SID 映射当作模型缓存 |
+| 两个 OneTrans 容器 | 匹配的模型文件、用户 TSV 和物品 TSV | 两端启动时均可读；文件挂载或分发方式待定，不假定共用一个文件系统 |
+| 参数服务容器 | 参数装载文件 | 启动后装载对应版本的内存表，供两个 OneTrans 进程查询 |
+| DataSystem worker、etcd 容器 | worker 的内存、共享内存与工作目录；etcd 的持久数据目录 | 按 SDK 与部署方式配置资源和权限；现有样例使用的临时 etcd 目录需改为可持久保存的目录 |
+| 离线加工与装载任务 | Tenrec 快照、加工结果、装载文件、发布清单 | 保存可重放版本，并交付给对应在线容器或存储；任务运行环境另行安排 |
 
-### 4.4 同一项能力在四个视图中的位置
+`TSV` 是制表符分列表。历史计算使用 PaiRec 发来的历史 ID；历史容器也需要两份 TSV，是当前程序的启动要求。此表只约定资源使用者，不推定物理磁盘、共享卷或主机位置。
 
-| 逻辑职责 | 开发单元 | 运行执行者 | 本基线部署归属 |
+### 4.5 同一项能力在四个视图中的位置
+
+| 逻辑职责 | 开发单元 | 运行执行者 | 目标部署单元 |
 |---|---|---|---|
-| 推荐编排、召回合并与重排 | 推荐程序、候选与列表规则模块 | PaiRec 请求任务 | 接入与编排主机中的 PaiRec 进程 |
-| 特征查询 | 特征程序、记录定义与访问适配 | 特征服务及 Redis | 特征主机中的两个独立进程 |
-| 三种候选获取 | 三种召回程序及算法适配 | 两个检索前端、索引服务、生成服务 | 检索主机、生成主机 |
-| 历史表示与候选评分 | OneTrans 现有程序与模型模块 | 两个 OneTrans 进程；参数与共享状态服务 | 历史与候选分别在不同主机；各有本机 worker，共用共享支撑主机 |
-| 场景与版本策略 | 配置定义、离线/发布工具、入口装配 | 离线任务与推荐请求任务 | 离线构建环境、接入与编排主机，以及各数据所在主机 |
+| 推荐编排、召回合并与重排 | 推荐程序及候选、列表规则代码 | PaiRec 请求任务 | 推荐编排 Pod 内的 PaiRec 容器 |
+| 特征查询 | 特征程序、记录定义与访问适配 | 特征服务进程，访问 Redis | 特征服务与 Redis 分别部署 |
+| 多路召回 | 三种召回程序及算法适配 | 三种召回进程，检索分支访问索引服务 | 三种召回各自部署；Milvus、OpenSearch 独立部署 |
+| 历史计算与候选打分 | OneTrans 程序与模型代码 | 两个计算进程，访问参数及历史状态服务 | 两个 OneTrans Pod；独立参数服务与 DataSystem 部署单元 |
 
 ## 5. 场景视图（+1）：用具体用例检验四个视图
 
@@ -405,7 +398,7 @@ sequenceDiagram
 | 用例及触发 | 动作与可观察结果 | 检验的设计 |
 |---|---|---|
 | 候选 `9003` 没有物品记录 | 特征响应保留该位置且标 `NOT_FOUND`；召回合并剔除；四个 ID 与分数仍一一对应 | 逻辑候选资格；开发响应契约；进程结果合并 |
-| 历史写入失败，或精排 KV 未命中 | 写入失败不提交精排；当前 `/rank` 未命中可能返回 0.5，目标编排检查 `kv_hit` 并判失败 | 进程同步与失败传播；两个物理节点是否真实共享存储 |
+| 历史写入失败，或精排 KV 未命中 | 写入失败不提交精排；当前 `/rank` 未命中可能返回 0.5，目标编排检查 `kv_hit` 并判失败 | 进程同步与失败传播；两个计算进程是否能读写同一历史状态 |
 | 同用户两个请求使用不同历史 | 当前用户级键有覆盖风险，标记一致性缺口；未补身份设计前不能宣布并发隔离通过 | 逻辑历史对应关系；进程共享状态；部署共享数据域 |
 | 数据库超时或必需表示版本错误 | 返回明确失败并停止后续必需阶段；不换另一版本或伪造空输入 | 逻辑版本约束；通信与数据库模块；期限控制 |
 | 人工发布新数据或规则 | 新版本完整装载并核对后供新请求选择；在途请求仍使用旧版本；保留可回退的完整旧资产 | 版本管理职责；离线构建与配置代码；请求状态；持久存储 |

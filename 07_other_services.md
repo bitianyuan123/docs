@@ -4,6 +4,8 @@
 
 以下是目标系统的第三优先级模块视图。每个模块独立给出逻辑、开发、进程、物理、场景五个视图；本轮业务取数以独立特征服务为准，覆盖旧版由 PaiRec 直接查询 Redis 的决定。字段字典见[特征数据库与接口](10_feature_catalog.md)。特征读写见[特征与数据视图](05_feature_data.md)，生成 KV 见[生成式召回视图](04_generative_recall.md)。
 
+下文画出“服务桥”的图展开的是可选 HTTP 适配方案：桥将原生 bRPC 请求转交 HTTP 后端。若召回程序内置原生 bRPC 处理器，则省去桥进程，对应[系统物理视图](01_system.md)的目标分组。采用适配方案也须补齐后端的 `query_vector` 或 `sparse_tokens` 契约，不能只加桥而沿用旧输入；桥与后端的容器分组及主机位置尚未确定。
+
 ## 1. 向量召回：DSSM 离线向量与 Milvus
 
 ### 1.1 逻辑视图
@@ -44,7 +46,7 @@ flowchart LR
     A[双塔向量导出器] -->|向量文件| B[Milvus装载器]
     C[向量服务处理器] -->|进程内调用| D[查询向量校验器]
     C -->|进程内调用| E[Milvus检索客户端]
-    F[向量bRPC服务桥] -->|HTTP调用| C
+    F[向量bRPC服务桥：可选] -->|HTTP调用| C
 ```
 
 ```python
@@ -84,7 +86,7 @@ sequenceDiagram
     participant V as 向量服务
     participant M as Milvus
     P->>B: 原生bRPC：实际用户向量、空间版本、topk=50
-    B->>V: 同机HTTP /recall：相同字段
+    B->>V: HTTP /recall：相同字段
     V->>V: 校验release、维度、有限值、归一化规则
     V->>M: 固定collection的向量search
     M-->>V: 原始item_id、相似度分数
@@ -104,8 +106,8 @@ Milvus不可用 → 明确错误
 
 ```mermaid
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC| B[向量服务桥进程]
-    B -->|同机HTTP| V[向量服务进程]
+    P[PaiRec进程] -->|原生bRPC| B[向量服务桥进程：可选]
+    B -->|HTTP| V[向量服务进程]
     V -->|Milvus SDK| M[(Milvus服务)]
     L[离线向量装载进程] --> M
     M --- D[(索引与数据持久化)]
@@ -177,7 +179,7 @@ flowchart LR
     A[真实物品文档构建器] -->|物品文档文件| B[索引mapping与bulk装载器]
     C[稀疏服务处理器] -->|进程内调用| D[查询构造器]
     D -->|查询请求对象| E[OpenSearch客户端]
-    F[稀疏bRPC服务桥] -->|HTTP调用| C
+    F[稀疏bRPC服务桥：可选] -->|HTTP调用| C
 ```
 
 ```json
@@ -230,7 +232,7 @@ sequenceDiagram
     participant S as 稀疏服务
     participant O as OpenSearch
     P->>B: 原生bRPC：类型词项和权重、release、topk=50
-    B->>S: 同机HTTP /recall：相同字段
+    B->>S: HTTP /recall：相同字段
     S->>S: 校验词项、合并重复、绑定固定index
     S->>O: HTTP search：term加权查询和BM25排序
     O-->>S: hits、score、分片执行状态
@@ -247,8 +249,8 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC| B[稀疏服务桥进程]
-    B -->|同机HTTP| S[稀疏服务进程]
+    P[PaiRec进程] -->|原生bRPC| B[稀疏服务桥进程：可选]
+    B -->|HTTP| S[稀疏服务进程]
     S -->|OpenSearch HTTP| O[(OpenSearch服务)]
     L[离线文档装载进程] -->|mapping与bulk| O
     O --- D[(索引持久化卷)]

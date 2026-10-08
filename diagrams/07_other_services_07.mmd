@@ -2,4 +2,4 @@ flowchart LR
     A[真实物品文档构建器] -->|物品文档文件| B[索引mapping与bulk装载器]
     C[稀疏服务处理器] -->|进程内调用| D[查询构造器]
     D -->|查询请求对象| E[OpenSearch客户端]
-    F[稀疏bRPC服务桥] -->|HTTP调用| C
+    F[稀疏bRPC服务桥：可选] -->|HTTP调用| C

@@ -1,13 +1,6 @@
-flowchart TB
-    subgraph Recall[召回]
-        direction LR
-        Select[召回策略协调] --> V[向量候选获取]
-        Select --> T[词项候选获取]
-        Select --> G[生成候选获取]
-    end
-    subgraph Rank[精排]
-        direction LR
-        Score[候选评分] --> H[历史表示管理]
-        Score --> I[模型输入装配]
-    end
-    Recall ~~~ Rank
+flowchart LR
+    P[PaiRec推荐应用源码] -->|接口类型| C[公共接口与数据定义]
+    F[特征服务源码] -->|接口与记录类型| C
+    R[三种召回服务源码] -->|接口类型| C
+    L[离线加工与装载源码] -->|记录与发布格式| C
+    O[OneTrans现有源码]

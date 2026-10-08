@@ -4,7 +4,7 @@ sequenceDiagram
     participant V as 向量服务
     participant M as Milvus
     P->>B: 原生bRPC：实际用户向量、空间版本、topk=50
-    B->>V: 同机HTTP /recall：相同字段
+    B->>V: HTTP /recall：相同字段
     V->>V: 校验release、维度、有限值、归一化规则
     V->>M: 固定collection的向量search
     M-->>V: 原始item_id、相似度分数

@@ -24,8 +24,8 @@ flowchart LR
 | PaiRec → 特征服务 | `BatchGetItemRepresentations`：历史物品 ID → SID 等表示 | 目标原生 bRPC |
 | 生成服务 → 特征服务 | 同一方法按 SID 查询 → 每个 SID 的物品 ID 列表 | 目标原生 bRPC |
 | PaiRec → 特征服务 | `BatchGetItemFeatures`：候选 ID、字段集合 → 同序属性及状态 | 目标原生 bRPC |
-| PaiRec → 向量召回 | 用户查询向量、向量空间版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用本机 HTTP 桥适配旧后端 |
-| PaiRec → 稀疏召回 | 词项、权重、配方版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用本机 HTTP 桥适配旧后端 |
+| PaiRec → 向量召回 | 用户查询向量、向量空间版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用HTTP 适配桥适配旧后端 |
+| PaiRec → 稀疏召回 | 词项、权重、配方版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用HTTP 适配桥适配旧后端 |
 | PaiRec → 生成召回 | 历史 SID、生成参数 → 原始候选 ID | 已有原生 bRPC proto；版本字段及特征反查待补 |
 | PaiRec → OneTrans 历史 | `/ingest`：调用方历史、位置 → 写入结果 | 当前 HTTP；严格沿用实际字段 |
 | PaiRec → OneTrans 精排 | `/rank`：用户 ID、候选 ID → ID 与 sigmoid 分数 | 当前 HTTP；服务内部读取 TSV |
@@ -118,13 +118,13 @@ flowchart LR
     P -->|原生bRPC目标| F[特征服务]
     F -->|Redis RESP| R[(Redis)]
     P -->|原生bRPC目标| V[向量或稀疏服务前端]
-    V -->|可选本机HTTP桥| B[原有召回后端]
+    V -->|可选HTTP适配桥| B[原有召回后端]
     P -->|原生bRPC| G[生成服务]
     G -->|原生bRPC目标| F
     P -->|现有HTTP| O[OneTrans历史或精排服务]
 ```
 
-图仅表达通信角色；它不规定这些角色是否同机，进程到 Host 的具体部署映射见[系统物理视图](01_system.md)。各召回服务的数据库在各自模块图展开。新客户端使用原生库是前期已选设计；当前旧 Go TCP/PRPC 实现不能直接当作这个原生客户端，见[参考代码](assets/source_snapshots/pairec4tigerllm_8506/services/brpcwire/client.go.html#L155)。
+图仅表达通信角色；目标 Pod、容器与进程的部署边界见[系统物理视图](01_system.md)，主机分配尚未确定。各召回服务的数据库在各自模块图展开。新客户端使用原生库是前期已选设计；当前旧 Go TCP/PRPC 实现不能直接当作这个原生客户端，见[参考代码](assets/source_snapshots/pairec4tigerllm_8506/services/brpcwire/client.go.html#L155)。
 
 ```yaml
 发布绑定:

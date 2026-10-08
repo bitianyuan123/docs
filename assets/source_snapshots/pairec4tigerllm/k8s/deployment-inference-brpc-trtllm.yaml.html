@@ -1,0 +1,154 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/k8s/deployment-inference-brpc-trtllm.yaml</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/k8s/deployment-inference-brpc-trtllm.yaml</h1><p>只读审阅快照；不是本套系统的部署清单。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>130c92b75594e67d508e649126b274e8fbf3f5e453a47adc2f9f816420fbcd62</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># ============================================</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a># Native C++ brpc inference service + TRT-LLM C++ Executor</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a># ============================================</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a># This is the F14 production-shape inference service:</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#   PaiRec -&gt; brpc/TCP -&gt; brpc_inference_server -&gt; TensorRT-LLM C++ Executor</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a># It does not start the Python Flask server and does not forward HTTP. The image</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a># must be built from a base that contains both the brpc SDK and the validated</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a># ARM TensorRT-LLM/DataSystem runtime.</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>apiVersion: apps/v1</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>kind: Deployment</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>metadata:</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>  name: inference-brpc-trtllm</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>  namespace: pairec</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>  labels:</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    app: inference-brpc-trtllm</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>spec:</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>  replicas: 1</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>  strategy:</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>    type: Recreate</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>  selector:</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    matchLabels:</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>      app: inference-brpc-trtllm</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>  template:</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>    metadata:</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>      labels:</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>        app: inference-brpc-trtllm</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>    spec:</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>      runtimeClassName: nvidia</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>      nodeSelector:</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>        pairec/gpu: &quot;true&quot;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>      containers:</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>        - name: brpc-inference</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>          image: docker.io/library/pairec-brpc-inference:k8s-arm64-trtllm-v1</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>          imagePullPolicy: IfNotPresent</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>          env:</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>            - name: NVIDIA_DRIVER_CAPABILITIES</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>              value: compute,utility</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>            - name: HOST_IP</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>              valueFrom:</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>                fieldRef:</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>                  fieldPath: status.hostIP</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>            - name: DATASYSTEM_HOST</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>              value: &quot;141.61.91.188&quot;</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>            - name: DATASYSTEM_PORT</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>              value: &quot;18481&quot;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>            - name: DATASYSTEM_ETCD_ADDRESS</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>              value: &quot;141.61.91.188:12379&quot;</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>            - name: DATASYSTEM_CLUSTER_NAME</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>              value: &quot;pairec&quot;</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>            - name: DATASYSTEM_HOST_ID_ENV_NAME</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>              value: &quot;HOST_IP&quot;</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>            - name: DATASYSTEM_AFFINITY_POLICY</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>              value: &quot;PREFERRED_SAME_NODE&quot;</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>            - name: DATASYSTEM_ENABLE_CROSS_NODE_CONNECTION</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>              value: &quot;true&quot;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>            - name: DATASYSTEM_CONNECT_TIMEOUT_MS</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>              value: &quot;60000&quot;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>            - name: DATASYSTEM_REQUEST_TIMEOUT_MS</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>              value: &quot;10000&quot;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>            - name: LD_LIBRARY_PATH</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>              value: &quot;/opt/openEuler/gcc-toolset-14/root/usr/lib64:/TensorRT-LLM/cpp/build/tensorrt_llm:/TensorRT-LLM/cpp/build/tensorrt_llm/plugins:/home/TensorRT-LLM/cpp/build/tensorrt_llm:/home/TensorRT-LLM/cpp/build/tensorrt_llm/plugins:/usr/local/nvidia/lib64:/usr/local/nvidia/lib:/usr/local/cuda/lib64:/usr/lib64:/usr/local/lib:/usr/local/lib64&quot;</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>            - name: LD_PRELOAD</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>              value: &quot;/opt/pairec/lib/block_ds_consumer.so /opt/pairec/lib/stub_gpu.so /usr/lib64/libnvidia-ml.so.570.124.06 /usr/local/lib/python3.11/site-packages/yr/datasystem/lib/libabseil_dll.so.2407.0.0&quot;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>          command:</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>            - /opt/pairec-brpc/bin/brpc_inference_server</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>          args:</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>            - --listen_port=18100</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>            - --backend=trtllm_cpp</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>            - --semantic_map_path=/app/data/tenrec/processed/semantic_id_map.json</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>            - --trt_engine_dir=/app/trt_engines/qwen3_rec_v4</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>            - --trt_tokenizer_config_path=/app/exported/qwen3_rec/pairec_cpp_tokenizer.txt</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>            - --trt_max_input_len=64</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>            - --trt_max_new_tokens=32</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>            - --trt_num_samples=1</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>            - --trt_top_k=50</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>            - --trt_temperature=0.7</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>            - --trt_max_kv_tokens=256</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>            - --trt_kv_cache_host_cache_size=0</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>            - --trt_scheduler_policy=guaranteed_no_evict</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>            - --trt_request_timeout_ms=30000</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>          ports:</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>            - containerPort: 18100</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>              name: brpc</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>          resources:</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>            requests:</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>              cpu: &quot;2&quot;</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>              memory: &quot;64Gi&quot;</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>            limits:</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>              cpu: &quot;4&quot;</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>              memory: &quot;128Gi&quot;</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>              nvidia.com/gpu: 1</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>          volumeMounts:</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>            - name: trt-engines</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>              mountPath: /app/trt_engines</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>              readOnly: true</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>            - name: exported</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>              mountPath: /app/exported</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>              readOnly: true</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>            - name: data</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>              mountPath: /app/data</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>              readOnly: true</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>          startupProbe:</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>            tcpSocket:</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>              port: 18100</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>            periodSeconds: 5</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>            failureThreshold: 72</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>          readinessProbe:</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>            tcpSocket:</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>              port: 18100</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>            periodSeconds: 10</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>            timeoutSeconds: 3</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>            failureThreshold: 6</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>          livenessProbe:</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>            tcpSocket:</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>              port: 18100</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>            periodSeconds: 15</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>            timeoutSeconds: 3</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>            failureThreshold: 3</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>      volumes:</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>        - name: trt-engines</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>          hostPath:</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>            path: /home/zcx/workspace/pairec4tigerllm/trt_engines</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>            type: Directory</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>        - name: exported</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>          hostPath:</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>            path: /home/zcx/workspace/pairec4tigerllm/exported</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>            type: Directory</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>        - name: data</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>          hostPath:</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>            path: /home/zcx/workspace/pairec4tigerllm/data</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>            type: Directory</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>---</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a></span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>apiVersion: v1</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>kind: Service</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>metadata:</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>  name: inference-brpc-trtllm</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>  namespace: pairec</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>  labels:</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>    app: inference-brpc-trtllm</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>spec:</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>  selector:</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>    app: inference-brpc-trtllm</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>  ports:</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>    - name: brpc</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>      port: 18100</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>      targetPort: 18100</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>      protocol: TCP</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>  type: ClusterIP</span></pre></html>

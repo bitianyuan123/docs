@@ -1,27 +1,46 @@
-flowchart TB
-    subgraph AppHost[Host：接入与编排主机 / 同4.1]
-        P[PaiRec进程<br/>含现有历史提供器]
+sequenceDiagram
+    participant U as 请求方
+    participant N as Nginx
+    participant P as PaiRec
+    participant F as 特征服务
+    participant R as Redis
+    participant V as 向量召回
+    participant M as Milvus
+    participant S as 稀疏召回
+    participant O as OpenSearch
+    participant G as 生成召回
+    U->>N: POST /api/recommend<br/>{uid:"1",size:10,scene_id:"home_feed"}
+    N->>P: 同一JSON；网关请求标识
+    P->>F: GetUserContext(user_id="1",release_id)
+    F->>R: MGET 用户、历史、向量、词项对应的4个key
+    R-->>F: 4份JSON记录
+    F-->>P: user_context {user,history,dense_query,sparse_query}
+    par 向量分支
+        P->>V: Recall(query_vector=user_context.dense_query.vector)
+        V->>M: search(collection,query_vector,limit=50)
+        M-->>V: hits[{id,distance}]
+        V-->>P: items[{item_id,score}]
+    and 稀疏分支
+        P->>S: Recall(sparse_tokens=user_context.sparse_query.tokens)
+        S->>O: search(index,weighted_terms,size=50)
+        O-->>S: hits.hits[{_source:{item_id},_score}]
+        S-->>P: items[{item_id,score}]
+    and 生成分支
+        P->>F: BatchGetItemRepresentations(历史ID查SID)
+        F->>R: MGET item_rep键
+        R-->>F: 同序物品编码记录
+        F-->>P: results[{item_id,status,value:{semantic_id}}]
+        P->>G: Recommend(history=[{value:SID}],topk=10)
+        G->>G: 模型推理产生generated_sids
+        G->>F: BatchGetItemRepresentations(SID反查原始ID)
+        F->>R: MGET sid_map键
+        R-->>F: SID对应的物品ID列表
+        F-->>G: results[{semantic_id,status,item_ids}]
+        G-->>P: recommendations[{item_id,semantic_id,score}]
     end
-    subgraph HistoryHost[Host：历史计算主机 / CPU]
-        direction TB
-        H[OneTrans历史进程<br/>C++计算后端]
-        HW[DataSystem本机worker进程]
-        H <-->|本机SDK连接| HW
-    end
-    subgraph RankHost[Host：候选计算主机 / CPU]
-        direction TB
-        D[OneTrans候选进程<br/>C++计算后端]
-        DW[DataSystem本机worker进程]
-        D <-->|本机SDK连接| DW
-    end
-    subgraph SharedHost[Host：共享支撑主机 / 同4.1]
-        direction TB
-        PS[模型参数服务进程]
-        E[DataSystem使用的etcd进程]
-        PS ~~~ E
-    end
-    AppHost <-->|推荐服务连接| HistoryHost
-    AppHost <-->|推荐服务连接| RankHost
-    HistoryHost <-->|参数与集群连接| SharedHost
-    RankHost <-->|参数与集群连接| SharedHost
-    HistoryHost <-->|worker数据连接| RankHost
+    P->>P: 响应适配、融合、已看过滤 -> 5个候选
+    P->>F: BatchGetItemFeatures(["4","1201","9002","9001","9003"])
+    F->>R: MGET 5个物品key
+    R-->>F: [item4,item1201,item9002,item9001,nil]
+    F-->>P: results前4项FOUND，9003为NOT_FOUND
+    P->>P: 保留["4","1201","9002","9001"]

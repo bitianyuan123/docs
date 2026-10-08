@@ -5,13 +5,13 @@
   "ok": true,
   "checks": {
     "documents": 18,
-    "local_links": 239,
-    "mermaid_blocks": 56,
+    "local_links": 245,
+    "mermaid_blocks": 55,
     "five_views_present_in_all_module_documents": true,
     "json_files": 52,
     "copied_assets_verified": 15,
     "vendor_assets_verified": 4,
-    "source_snapshot_files_verified": 39,
+    "source_snapshot_files_verified": 40,
     "stored_history_evidence": {
       "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
       "compared_with_archived_request": true

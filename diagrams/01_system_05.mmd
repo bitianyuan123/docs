@@ -1,14 +1,36 @@
-flowchart TD
-    A[请求任务：固定版本、请求ID和总期限] --> U[上下文任务：等待GetUserContext]
-    A --> H[历史任务：现有Provider取数并等待ingest]
-    U --> V[向量任务：等待Recall]
-    U --> S[稀疏任务：等待Recall]
-    U --> G[生成任务：历史ID查SID、Recommend及反查结果]
-    V --> J[候选汇合：检查各分支结果]
-    S --> J
-    G --> J
-    J --> C[候选任务：融合、过滤、查物品属性]
-    C --> B[精排门槛：候选可用且ingest.accepted为true]
-    H --> B
-    B --> D[打分任务：等待rank并核对ID和kv_hit]
-    D --> E[完成任务：重排与返回]
+flowchart LR
+    subgraph GatewayPod[Pod：网关]
+        N[容器：Nginx<br/>进程：master 与 worker]
+    end
+    subgraph OrchestratorPod[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph FeaturePod[Pod：特征服务]
+        F[容器：特征服务<br/>进程：特征查询程序]
+    end
+    subgraph RedisPod[Pod：特征数据库]
+        R[容器：Redis<br/>进程：redis-server]
+    end
+    subgraph VectorPod[Pod：向量召回]
+        V[容器：向量召回<br/>进程：向量召回程序]
+    end
+    subgraph MilvusPod[Pod：向量数据库]
+        M[容器：Milvus<br/>进程：Milvus standalone<br/>内嵌 etcd]
+    end
+    subgraph SparsePod[Pod：稀疏召回]
+        S[容器：稀疏召回<br/>进程：稀疏召回程序]
+    end
+    subgraph SearchPod[Pod：文档检索数据库]
+        O[容器：OpenSearch<br/>进程：OpenSearch JVM]
+    end
+    subgraph GenerationPod[Pod：生成式召回]
+        G[容器：生成召回<br/>进程：brpc_inference_server<br/>内含 TensorRT-LLM 执行器]
+    end
+    N <--> P
+    P <--> F
+    F <--> R
+    P <--> V
+    V <--> M
+    P <--> S
+    S <--> O
+    P <--> G
