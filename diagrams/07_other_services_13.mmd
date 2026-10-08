@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant U as 请求方
+    participant N as Nginx进程
+    participant P as PaiRec进程
+    U->>N: POST /api/recommend：uid、scene_id、size
+    N->>N: 生成gateway_request_id，检查请求边界
+    N->>P: 原请求体和网关关联头
+    P->>P: 校验业务字段，生成内部request_id和总deadline
+    P->>P: 完整推荐编排
+    P-->>N: 真实推荐列表或明确失败
+    N-->>U: 原样返回业务响应和HTTP状态

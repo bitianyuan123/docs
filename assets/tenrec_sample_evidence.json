@@ -1,0 +1,348 @@
+{
+  "evidence_kind": "actual_rows_and_deterministic_derivations_not_model_run",
+  "data_semantics_revision": 1,
+  "category_semantics": "video_length_type",
+  "code_label_mapping": "undisclosed",
+  "sparse_recipe": "video_type_binary_v1",
+  "category_authority": "https://github.com/yuangh-x/2022-NIPS-Tenrec/issues/11#issuecomment-1334939079",
+  "source": "/root/real_model/Tenrec/ctr_data_1M.csv",
+  "source_size_bytes": 10670097636,
+  "scope": {
+    "data_rows": 200000,
+    "selection": "first_200000_data_rows_in_file_order",
+    "includes_header_in_hash": true,
+    "sample_bytes_sha256": "6f148b4adf81c813e5f866f82f5e22ea36b3b719fab1f4862ef351fd3c43efd5",
+    "not_full_dataset_hash": true,
+    "header": [
+      "user_id",
+      "item_id",
+      "click",
+      "follow",
+      "like",
+      "share",
+      "video_category",
+      "watching_times",
+      "gender",
+      "age",
+      "hist_1",
+      "hist_2",
+      "hist_3",
+      "hist_4",
+      "hist_5",
+      "hist_6",
+      "hist_7",
+      "hist_8",
+      "hist_9",
+      "hist_10"
+    ]
+  },
+  "sample_counts": {
+    "users": 1513,
+    "target_items": 92754
+  },
+  "user_id": "1",
+  "user_source": {
+    "first_data_row": 1,
+    "first_raw_row": {
+      "user_id": "1",
+      "item_id": "4",
+      "click": "0",
+      "follow": "0",
+      "like": "0",
+      "share": "0",
+      "video_category": "1",
+      "watching_times": "0",
+      "gender": "1",
+      "age": "4",
+      "hist_1": "2",
+      "hist_2": "3",
+      "hist_3": "80936",
+      "hist_4": "781",
+      "hist_5": "111774",
+      "hist_6": "1230",
+      "hist_7": "26403",
+      "hist_8": "991",
+      "hist_9": "2362",
+      "hist_10": "1202"
+    },
+    "history": [
+      "2",
+      "3",
+      "80936",
+      "781",
+      "111774",
+      "1230",
+      "26403",
+      "991",
+      "2362",
+      "1202"
+    ],
+    "target_rows": [
+      {
+        "data_row": 1,
+        "row": {
+          "user_id": "1",
+          "item_id": "4",
+          "click": "0",
+          "follow": "0",
+          "like": "0",
+          "share": "0",
+          "video_category": "1",
+          "watching_times": "0",
+          "gender": "1",
+          "age": "4",
+          "hist_1": "2",
+          "hist_2": "3",
+          "hist_3": "80936",
+          "hist_4": "781",
+          "hist_5": "111774",
+          "hist_6": "1230",
+          "hist_7": "26403",
+          "hist_8": "991",
+          "hist_9": "2362",
+          "hist_10": "1202"
+        }
+      },
+      {
+        "data_row": 2,
+        "row": {
+          "user_id": "1",
+          "item_id": "1201",
+          "click": "1",
+          "follow": "0",
+          "like": "0",
+          "share": "0",
+          "video_category": "1",
+          "watching_times": "1",
+          "gender": "1",
+          "age": "4",
+          "hist_1": "2",
+          "hist_2": "3",
+          "hist_3": "80936",
+          "hist_4": "781",
+          "hist_5": "111774",
+          "hist_6": "1230",
+          "hist_7": "26403",
+          "hist_8": "991",
+          "hist_9": "2362",
+          "hist_10": "1202"
+        }
+      }
+    ]
+  },
+  "history_item_ids": [
+    "2",
+    "3",
+    "80936",
+    "781",
+    "111774",
+    "1230",
+    "26403",
+    "991",
+    "2362",
+    "1202"
+  ],
+  "history_positions": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "history_metadata": [
+    {
+      "item_id": "2",
+      "category_code": 1,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "3",
+      "category_code": 0,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "80936",
+      "category_code": 1,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "781",
+      "category_code": 1,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "111774",
+      "category_code": null,
+      "metadata_available_in_fixture": false
+    },
+    {
+      "item_id": "1230",
+      "category_code": 1,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "26403",
+      "category_code": 1,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "991",
+      "category_code": 1,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "2362",
+      "category_code": 1,
+      "metadata_available_in_fixture": true
+    },
+    {
+      "item_id": "1202",
+      "category_code": 0,
+      "metadata_available_in_fixture": true
+    }
+  ],
+  "sparse_tokens": [
+    {
+      "token": "video_type_0",
+      "weight": 0.2222222222222222
+    },
+    {
+      "token": "video_type_1",
+      "weight": 0.7777777777777778
+    }
+  ],
+  "sparse_known_history_count": 9,
+  "sparse_missing_history_count": 1,
+  "user_dense": [
+    1,
+    4,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "user_dense_note": "first two raw codes; 13 explicitly reserved zeros, not invented features",
+  "candidate_dense_fields": [
+    "n",
+    "click_sum",
+    "like_sum",
+    "follow_sum",
+    "share_sum",
+    "like_rate",
+    "follow_rate",
+    "share_rate",
+    "ctr",
+    "watch_mean",
+    "watch_max",
+    "watch_sum",
+    "gender1_share",
+    "avg_age_code",
+    "log1p_watch_sum"
+  ],
+  "candidate_examples": [
+    {
+      "item_id": "4",
+      "category_code": 1,
+      "candidate_dense": [
+        36,
+        6,
+        0,
+        0,
+        0,
+        0.0,
+        0.0,
+        0.0,
+        0.16666666666666666,
+        0.7777777777777778,
+        2,
+        28,
+        0.75,
+        2.5555555555555554,
+        3.367295829986474
+      ],
+      "valid_counts": {
+        "click": 36,
+        "like": 36,
+        "follow": 36,
+        "share": 36,
+        "watching_times": 36,
+        "gender": 36,
+        "age": 36,
+        "video_category": 36
+      },
+      "missing_counts": {
+        "click": 0,
+        "like": 0,
+        "follow": 0,
+        "share": 0,
+        "watching_times": 0,
+        "gender": 0,
+        "age": 0,
+        "video_category": 0
+      },
+      "first_source_data_row": 1
+    },
+    {
+      "item_id": "1201",
+      "category_code": 1,
+      "candidate_dense": [
+        32,
+        8,
+        0,
+        0,
+        0,
+        0.0,
+        0.0,
+        0.0,
+        0.25,
+        0.875,
+        2,
+        28,
+        0.59375,
+        3.0625,
+        3.367295829986474
+      ],
+      "valid_counts": {
+        "click": 32,
+        "like": 32,
+        "follow": 32,
+        "share": 32,
+        "watching_times": 32,
+        "gender": 32,
+        "age": 32,
+        "video_category": 32
+      },
+      "missing_counts": {
+        "click": 0,
+        "like": 0,
+        "follow": 0,
+        "share": 0,
+        "watching_times": 0,
+        "gender": 0,
+        "age": 0,
+        "video_category": 0
+      },
+      "first_source_data_row": 2
+    }
+  ],
+  "candidate_examples_note": "actual exposure items for interface illustration, not claimed recall outputs",
+  "unavailable_artifacts": [
+    "DSSM checkpoint/exported user vector for this user",
+    "deployed SID map for these history IDs",
+    "actual online model scores"
+  ]
+}

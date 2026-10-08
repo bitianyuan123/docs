@@ -1,0 +1,256 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>f7c4c49cbea73bada4dbb45fcd7d89078496a6e2</code><br>原文件 SHA256：<code>c2dc5e75d3063106b4fd61cfce91aca565e2520781328ed316b7ea514440445d</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a></span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>package dao</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>import (</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;encoding/json&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;fmt&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;os&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;strconv&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;strings&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a></span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	stageclient &quot;pairec_demo/src/stageClient&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	&quot;github.com/alibaba/pairec/v2/context&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;github.com/alibaba/pairec/v2/log&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	&quot;github.com/alibaba/pairec/v2/module&quot;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	&quot;github.com/alibaba/pairec/v2/service/feature&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>)</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>const (</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	BrpcRedisFieldTypeCSV  = &quot;csv&quot;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	BrpcRedisFieldTypeJSON = &quot;json&quot;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	brpcRedisMGetBatchSize = 100</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>)</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>type BrpcRedisFeatureDaoConfig struct {</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	// redis server address, example: &quot;127.0.0.1:6379&quot;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	Addr string</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	// user or item</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	FeatureStore string</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>	// feature key, example: &quot;user:uid&quot; or &quot;item:id&quot;</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	FeatureKey string</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	// redis key prefix</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	KeyPrefix string</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	// value format: csv (name:value,name:value) or json</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	FieldType string</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	// csv value delimiter</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	Delimiter string</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>}</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>// FeatureBrpcRedisDao loads user/item features from redis via the brpc c++ client</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>type FeatureBrpcRedisDao struct {</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	client       *stageclient.Client</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	featureStore string</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	featureKey   string</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>	keyPrefix    string</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	fieldType    string</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>	delimiter    string</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>}</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>func NewFeatureBrpcRedisDao(conf BrpcRedisFeatureDaoConfig) (*FeatureBrpcRedisDao, error) {</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	if conf.Addr == &quot;&quot; {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>		conf.Addr = &quot;127.0.0.1:6379&quot;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>	}</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>	if conf.FeatureStore == &quot;&quot; {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>		conf.FeatureStore = module.Feature_Store_User</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	}</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	if conf.FeatureKey == &quot;&quot; {</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>		conf.FeatureKey = &quot;user:uid&quot;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	}</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	if conf.FieldType == &quot;&quot; {</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>		conf.FieldType = BrpcRedisFieldTypeJSON</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>	}</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>	if conf.Delimiter == &quot;&quot; {</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		conf.Delimiter = &quot;,&quot;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>	}</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a></span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	client, err := stageclient.NewRedisClient(conf.Addr)</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	if err != nil {</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>		return nil, err</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>	}</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	return &amp;FeatureBrpcRedisDao{</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>		client:       client,</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		featureStore: conf.FeatureStore,</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>		featureKey:   conf.FeatureKey,</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>		keyPrefix:    conf.KeyPrefix,</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>		fieldType:    conf.FieldType,</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>		delimiter:    conf.Delimiter,</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	}, nil</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>}</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>// FeatureFetch implements module.FeatureDao</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>func (d *FeatureBrpcRedisDao) FeatureFetch(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>	if d.featureStore == module.Feature_Store_User {</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>		d.userFeatureFetch(user, context)</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>	} else {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>		d.itemsFeatureFetch(items, context)</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	}</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>}</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>func (d *FeatureBrpcRedisDao) userFeatureFetch(user *module.User, context *context.RecommendContext) {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>	key := d.userKey(user)</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	if key == &quot;&quot; {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		log.Error(fmt.Sprintf(&quot;requestId=%s\tmodule=FeatureBrpcRedisDao\tuid=%s\terror=feature key empty&quot;, context.RecommendId, user.Id))</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>		return</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>	}</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a></span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	value, found, err := d.client.Get(key)</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	if err != nil {</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>		log.Error(fmt.Sprintf(&quot;requestId=%s\tmodule=FeatureBrpcRedisDao\tuid=%s\terror=get user feature error(%v), key=%s&quot;, context.RecommendId, user.Id, err, key))</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>		return</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	}</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>	if !found {</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>		log.Info(fmt.Sprintf(&quot;requestId=%s\tmodule=FeatureBrpcRedisDao\tuid=%s\tmsg=user feature empty, key=%s&quot;, context.RecommendId, user.Id, key))</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>		return</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	}</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a></span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>	properties := d.parseProperties(value)</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	log.Info(fmt.Sprintf(&quot;properties=%v&quot;, properties))</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>	if len(properties) == 0 {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>		return</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>	}</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>	user.AddProperties(properties)</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a></span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>	if context.Debug {</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>		log.Info(fmt.Sprintf(&quot;requestId=%s\tmodule=FeatureBrpcRedisDao\tuid=%s\tmsg=user features loaded, key=%s, features=%v&quot;, context.RecommendId, user.Id, key, properties))</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	}</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>}</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a></span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>func (d *FeatureBrpcRedisDao) itemsFeatureFetch(items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>	if len(items) == 0 {</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>		return</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>	}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a></span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>	keys := make([]string, len(items))</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>	for i, item := range items {</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>		keys[i] = d.keyPrefix + d.itemKey(item)</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	}</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a></span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	for start := 0; start &lt; len(keys); start += brpcRedisMGetBatchSize {</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>		end := min(start+brpcRedisMGetBatchSize, len(keys))</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>		batchKeys := keys[start:end]</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>		batchItems := items[start:end]</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>		values, err := d.client.MGet(batchKeys)</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>		if err != nil {</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>			log.Error(fmt.Sprintf(&quot;requestId=%s\tmodule=FeatureBrpcRedisDao\terror=mget item feature error(%v)&quot;, context.RecommendId, err))</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>			continue</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>		}</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>		for i, value := range values {</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>			if value == &quot;&quot; {</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>				continue</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>			}</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>			properties := d.parseProperties(value)</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>			if len(properties) == 0 {</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>				continue</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>			}</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>			batchItems[i].AddProperties(properties)</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>		}</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>	}</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>}</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a></span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>func (d *FeatureBrpcRedisDao) userKey(user *module.User) string {</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>	comms := strings.Split(d.featureKey, &quot;:&quot;)</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>	if len(comms) &lt; 2 {</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>		return string(user.Id)</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>	}</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>	if comms[1] == &quot;uid&quot; {</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>		return d.keyPrefix + string(user.Id)</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>	}</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>	key := user.StringProperty(comms[1])</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>	if key == &quot;&quot; {</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>		return &quot;&quot;</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	}</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	return d.keyPrefix + key</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>}</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>func (d *FeatureBrpcRedisDao) itemKey(item *module.Item) string {</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>	if d.featureKey == &quot;item:id&quot; {</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>		return string(item.Id)</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>	}</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	return item.StringProperty(d.featureKey)</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>}</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a></span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>func (d *FeatureBrpcRedisDao) parseProperties(value string) map[string]interface{} {</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>	properties := make(map[string]interface{})</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>	if d.fieldType == BrpcRedisFieldTypeJSON {</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>		if err := json.Unmarshal([]byte(value), &amp;properties); err != nil {</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>			return nil</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>		}</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>		return properties</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>	}</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a></span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>	for _, pair := range strings.Split(value, d.delimiter) {</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>		idx := strings.Index(pair, &quot;:&quot;)</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>		if idx &lt;= 0 {</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>			continue</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>		}</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>		name := pair[:idx]</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>		val := pair[idx+1:]</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>		if f, err := strconv.ParseFloat(val, 64); err == nil {</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>			properties[name] = f</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>		} else {</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>			properties[name] = val</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>		}</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	}</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>	return properties</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>}</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a></span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>// RegisterBrpcRedisFeatureDao registers the brpc redis feature dao to the feature</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>// service of the scene, so that user features of the scene are fetched via brpc redis.</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>// The redis address can be set by the env BRPC_REDIS_ADDR, default &quot;127.0.0.1:6379&quot;.</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>func RegisterBrpcRedisFeatureDao(sceneName string) error {</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>	return RegisterBrpcRedisFeatureDaoWithConfig(sceneName, BrpcRedisFeatureDaoConfig{</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>		Addr:         os.Getenv(&quot;BRPC_REDIS_ADDR&quot;),</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>		FeatureStore: module.Feature_Store_User,</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>		FeatureKey:   &quot;user:uid&quot;,</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>		KeyPrefix:    &quot;pairec:feature:&quot;,</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>		FieldType:    BrpcRedisFieldTypeJSON,</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>		Delimiter:    &quot;,&quot;,</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>	})</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>}</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a></span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>func RegisterBrpcRedisUserFeatureDao(sceneName string) error {</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>        return RegisterBrpcRedisUserFeatureDaoWithConfig(sceneName, BrpcRedisFeatureDaoConfig{</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>                Addr:         os.Getenv(&quot;BRPC_REDIS_ADDR&quot;),</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>                FeatureStore: module.Feature_Store_User,</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>                FeatureKey:   &quot;user:uid&quot;,</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>                KeyPrefix:    &quot;user_id:&quot;,</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>                FieldType:    BrpcRedisFieldTypeJSON,</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>                Delimiter:    &quot;,&quot;,</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>        })</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>}</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a></span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>// RegisterBrpcRedisFeatureDaoWithConfig registers a brpc redis feature dao with</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>// a custom config, set FeatureStore to module.Feature_Store_Item to fetch item features</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>func RegisterBrpcRedisFeatureDaoWithConfig(sceneName string, conf BrpcRedisFeatureDaoConfig) error {</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>	if conf.Addr == &quot;&quot; {</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>		conf.Addr = &quot;127.0.0.1:6379&quot;</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>	}</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>	dao, err := NewFeatureBrpcRedisDao(conf)</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>	if err != nil {</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>		return fmt.Errorf(&quot;init brpc redis feature dao: %w&quot;, err)</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>	}</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a></span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>	feature.RegisterLoadFeatureFunc(sceneName, dao.FeatureFetch)</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>	log.Info(fmt.Sprintf(&quot;module=FeatureBrpcRedisDao\tmsg=brpc redis feature dao registered, scene=%s, addr=%s, store=%s, prefix=%s&quot;, sceneName, conf.Addr, conf.FeatureStore, conf.KeyPrefix))</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>	return nil</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>}</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a></span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>func RegisterBrpcRedisUserFeatureDaoWithConfig(sceneName string, conf BrpcRedisFeatureDaoConfig) error {</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>        if conf.Addr == &quot;&quot; {</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>                conf.Addr = &quot;127.0.0.1:6379&quot;</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>        }</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>        dao, err := NewFeatureBrpcRedisDao(conf)</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>        if err != nil {</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>                return fmt.Errorf(&quot;init brpc redis feature dao: %w&quot;, err)</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>        }</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a></span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>        feature.RegisterUserLoadFeatureFunc(sceneName, dao.userFeatureFetch)</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>        log.Info(fmt.Sprintf(&quot;module=FeatureBrpcRedisDao\tmsg=brpc redis feature dao registered, scene=%s, addr=%s, store=%s, prefix=%s&quot;, sceneName, conf.Addr, conf.FeatureStore, conf.KeyPrefix))</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>        return nil</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>}</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a></span></pre></html>

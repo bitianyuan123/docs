@@ -1,0 +1,230 @@
+{
+  "RunMode": "daily",
+  "ListenConf": {
+    "HttpAddr": "0.0.0.0",
+    "HttpPort": 18080
+  },
+  "SceneConfs": {},
+  "UserFeatureConfs": {},
+  "FeatureConfs": {},
+  "RecallConfs": [],
+  "SortNames": {},
+  "SortConfs": [],
+  "RankConf": {},
+  "FilterNames": {},
+  "UserDefineConfs": {
+    "LoadModel": {
+      "profile": "tenrec_load_v1",
+      "release_manifest_path": "${RELEASE_MANIFEST_PATH}",
+      "schema_version": "feature_v1",
+      "data_semantics_revision": 1,
+      "id_namespace": "tenrec_video_raw",
+      "request": {
+        "scene_id": "home_feed",
+        "deadline_ms": 25000,
+        "default_size": 10,
+        "max_size": 10,
+        "generate_unique_request_id": true
+      },
+      "feature_store": {
+        "backend": "redis_standalone",
+        "address": "${REDIS_ADDRESS}",
+        "credential_env": "REDIS_PASSWORD",
+        "db": 0,
+        "key_prefix": "rec:qkv:${RELEASE_ID}",
+        "encoding": "json_string_utf8",
+        "timeout_ms": 1000,
+        "user_views": [
+          "user",
+          "history"
+        ],
+        "item_view": "item",
+        "snapshot_immutable": true,
+        "local_business_table_fallback": false,
+        "business_feature_cache_enabled": false,
+        "missing_item_policy": "drop_and_report",
+        "snapshot_set_expiry": false,
+        "transport_binding": "native_adapter",
+        "route": "FeaturesMGet",
+        "wire_protocol": "redis_resp"
+      },
+      "recall": {
+        "dense": {
+          "protocol": "brpc",
+          "endpoint": "${DENSE_BRPC_ENDPOINT}",
+          "timeout_ms": 5000,
+          "topk": 50,
+          "require_backend": "milvus",
+          "embedding_space_from_manifest": true,
+          "client_route": "DenseRecall",
+          "rpc_method": "loadmodel.v1.DenseRecallService.Recall",
+          "server_adapter_role": "dense",
+          "backend_http_from_release_manifest": true,
+          "backend_http_path": "/recall"
+        },
+        "sparse": {
+          "protocol": "brpc",
+          "endpoint": "${SPARSE_BRPC_ENDPOINT}",
+          "timeout_ms": 5000,
+          "topk": 50,
+          "require_backend": "opensearch",
+          "token_format": "video_type_<raw_video_category_code>",
+          "recipe": "video_type_binary_v1",
+          "category_semantics": "video_length_type",
+          "code_label_mapping": "undisclosed",
+          "text_retrieval_representative": false,
+          "client_route": "SparseRecall",
+          "rpc_method": "loadmodel.v1.SparseRecallService.Recall",
+          "server_adapter_role": "sparse",
+          "backend_http_from_release_manifest": true,
+          "backend_http_path": "/recall"
+        },
+        "generative": {
+          "protocol": "brpc",
+          "endpoint": "${GEN_BRPC_ENDPOINT}",
+          "timeout_ms": 10000,
+          "topk": 10,
+          "temperature": 1.0,
+          "beam_width": 1,
+          "history_max_items": 10,
+          "history_time_semantics": "ordinal",
+          "sid_assets_from_manifest": true,
+          "require_backend": "trtllm_cpp",
+          "native_kv_backend": "datasystem",
+          "result_cache_enabled": false,
+          "require_datasystem_io_each_request": false,
+          "client_route": "GenerativeRecall",
+          "rpc_method": "pairec.inference.RecommendService.Recommend"
+        }
+      },
+      "onetrans": {
+        "prepare": {
+          "endpoint": "${ONETRANS_S_BRPC_ENDPOINT}",
+          "timeout_ms": 10000,
+          "require_backend": "cpp_cpu",
+          "protocol": "brpc",
+          "client_route": "PrepareHistory",
+          "rpc_method": "loadmodel.v1.HistoryPrepareService.Prepare",
+          "server_adapter_role": "prepare",
+          "backend_http_from_release_manifest": true,
+          "backend_http_path": "/ingest"
+        },
+        "score": {
+          "endpoint": "${ONETRANS_NS_BRPC_ENDPOINT}",
+          "timeout_ms": 10000,
+          "require_backend": "cpp_cpu",
+          "protocol": "brpc",
+          "client_route": "ScoreCandidates",
+          "rpc_method": "loadmodel.v1.CandidateScoreService.Score",
+          "server_adapter_role": "score",
+          "backend_http_from_release_manifest": true,
+          "backend_http_path": "/score"
+        },
+        "model_from_manifest": true,
+        "engineering_shape": {
+          "d_model": 128,
+          "n_heads": 4,
+          "n_layers": 4,
+          "s_max": 50,
+          "ns_tokens_per_candidate": 5,
+          "dtype": "fp32"
+        },
+        "weights_role": "engineering_explicit_artifact",
+        "s_mode": "per_request",
+        "kv_backend": "datasystem",
+        "kv_key_template": "fine:${RELEASE_ID}:${ONETRANS_MODEL_VERSION}:{request_id}",
+        "kv_ttl_seconds": 120,
+        "cleanup_owner": "pairec_request",
+        "require_prepare_success_before_score": true,
+        "on_kv_miss": "error",
+        "allow_backend_fallback": false,
+        "parameter_store": {
+          "backend": "ps",
+          "protocol": "brpc",
+          "endpoint": "${ONETRANS_PS_ENDPOINT}",
+          "table_version_from_manifest": true,
+          "allow_local_fallback": false
+        },
+        "release_control": {
+          "client_route": "ReleaseHistory",
+          "rpc_method": "loadmodel.v1.HistoryPrepareService.Release",
+          "idempotent": true,
+          "endpoint_same_as_prepare": true,
+          "management_only": true,
+          "backend_http_path": "/release",
+          "timeout_ms": 1000,
+          "deadline_scope": "bounded_cleanup_after_request"
+        }
+      },
+      "fusion": {
+        "candidate_limit": 50,
+        "generative_max": 10,
+        "fill_order": [
+          "sparse",
+          "dense"
+        ],
+        "deduplicate_by": "raw_item_id",
+        "filter_history_seen": true,
+        "refill_after_item_feature_drop": false,
+        "preserve_all_sources": true
+      },
+      "post_sort": {
+        "sort_field": "logits[0]",
+        "direction": "descending",
+        "tie_break": "fusion_order_then_raw_item_id",
+        "final_limit": 10,
+        "on_shortfall": "return_actual_with_flag"
+      },
+      "execution": {
+        "error_policy": "strict",
+        "model_failure_as_success": false,
+        "retries": 0,
+        "result_cache_enabled": false,
+        "pressure_enabled": false,
+        "burst_enabled": false,
+        "reverse_burst_enabled": false,
+        "payload_padding_bytes": 0,
+        "post_rank_extra_hops": 0,
+        "kv_probe_enabled": false,
+        "require_all_five_executed_for_acceptance": true
+      },
+      "design_revision": 2,
+      "application": {
+        "baseline_module": "github.com/alibaba/pairec/v2",
+        "baseline_version": "v2.6.2",
+        "baseline_commit": "3f6b92acb261cc65bf680b8db5335048f9afb7eb",
+        "entrypoint": "custom_controller",
+        "route": "/api/recommend",
+        "engine": "RecommendEngine",
+        "upstream_vendor_patches": false
+      },
+      "orchestration": {
+        "implementation": "explicit_engine",
+        "feature_reads": 2,
+        "parallel_stages": [
+          "dense",
+          "sparse",
+          "generative",
+          "prepare"
+        ],
+        "score_requires": [
+          "candidate_features",
+          "prepare_success"
+        ],
+        "post_sort_after_score": true
+      },
+      "transport": {
+        "binding": "cgo_c_abi",
+        "abi_version": "rec_adapter_v1",
+        "business_encoding": "utf8_json_with_explicit_lengths",
+        "native_library_from_runtime_manifest": true,
+        "default_protocol": "baidu_std",
+        "baseline_transport": "tcp",
+        "retries": 0,
+        "allow_transport_fallback": false,
+        "extra_local_network_hop": false,
+        "max_inflight_from_runtime_manifest": true
+      }
+    }
+  }
+}

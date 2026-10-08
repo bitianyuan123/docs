@@ -1,0 +1,26 @@
+flowchart LR
+    subgraph App[编排节点：CPU]
+        P[PaiRec与现有历史提供器]
+        J[(本地历史JSON或Kafka消费缓存)]
+        J --> P
+    end
+    subgraph Hist[历史节点：CPU]
+        H[OneTrans历史进程]
+        HF[(权重与当前两份TSV)]
+        HF --> H
+    end
+    subgraph Rank[候选节点：按实际后端配置]
+        D[OneTrans候选进程]
+        DF[(权重与当前两份TSV)]
+        DF --> D
+    end
+    subgraph State[参数与数据节点]
+        PS[PS模型参数服务]
+        K[(共享DataSystem)]
+    end
+    P -->|HTTP ingest| H
+    P -->|HTTP rank| D
+    H -->|原生bRPC| PS
+    D -->|原生bRPC| PS
+    H -->|DataSystem SDK写| K
+    D -->|DataSystem SDK读| K

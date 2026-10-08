@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant P as PaiRec请求编排
+    participant F as 特征服务任务
+    participant R as 三路召回任务组
+    participant H as OneTrans历史任务
+    participant D as OneTrans精排任务
+    par 候选准备
+        P->>F: 用户ID与发布版本
+        F-->>P: 用户、历史、查询向量和词项
+        P->>R: 各路所需字段；生成分支另取SID
+        R-->>P: 三路候选或明确错误
+        P->>P: 去重、已看过滤、限量
+        P->>F: 候选ID与同一发布版本
+        F-->>P: 候选业务特征及缺失项
+        P->>P: 资格检查
+    and 历史计算
+        P->>P: 从现有历史提供器读取历史
+        P->>H: user_id、item_ids、timestamps
+        H-->>P: accepted、checksum、reason
+    end
+    P->>P: 检查两条路径都成功
+    P->>D: request_id、user_id、候选item_id列表
+    D-->>P: items含score，trace含kv_hit
+    P->>P: 校验、后置排序、响应

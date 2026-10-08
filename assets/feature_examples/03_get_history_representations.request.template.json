@@ -1,0 +1,26 @@
+{
+  "template_only": true,
+  "missing_bindings": [
+    "sid_version"
+  ],
+  "request": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "request_id": "documentation_user_1",
+    "remaining_timeout_ms": 1000,
+    "lookup_by": "raw_item_id",
+    "item_ids": [
+      "2",
+      "3",
+      "80936",
+      "781",
+      "111774",
+      "1230",
+      "26403",
+      "991",
+      "2362",
+      "1202"
+    ],
+    "sid_version": null
+  }
+}

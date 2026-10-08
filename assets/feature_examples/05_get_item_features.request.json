@@ -1,0 +1,16 @@
+{
+  "release_id": "qkv_doc200k_6f148b4adf81",
+  "schema_version": "feature_v1",
+  "request_id": "documentation_user_1",
+  "remaining_timeout_ms": 1000,
+  "item_ids": [
+    "4",
+    "1201"
+  ],
+  "fields": [
+    "category_code",
+    "metadata_available",
+    "statistics",
+    "missing_fields"
+  ]
+}

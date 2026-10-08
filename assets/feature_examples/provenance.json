@@ -1,0 +1,11 @@
+{
+  "kind": "真实输入与确定性派生，响应仅为目标结构示例，未调用服务",
+  "source": "/root/real_model/Tenrec/ctr_data_1M.csv",
+  "rows": 200000,
+  "source_bytes_sha256": "6f148b4adf81c813e5f866f82f5e22ea36b3b719fab1f4862ef351fd3c43efd5",
+  "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+  "release_not_ready": true,
+  "candidates_are_recall_results": false,
+  "onetrans_provider_or_tsv_coverage_verified": false,
+  "note": "OneTrans请求只作形状示例；当前历史提供器并未核实返回这组历史。缺少DSSM/SID资产，不能按完整场景上线。"
+}

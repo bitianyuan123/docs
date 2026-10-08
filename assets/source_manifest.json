@@ -1,0 +1,80 @@
+{
+  "purpose": "保留前期资料的来源与SHA；archive_v2为被本轮新设计替代的历史合同，tenrec_sample_evidence为仍有效的真实数据证据",
+  "files": [
+    {
+      "file": "tenrec_sample_evidence.json",
+      "source": "/root/half_latency/recommendation_design_assets/tenrec_sample_evidence.json",
+      "sha256": "0bdc20ac2b0e1bc89c4af57f449d17e5f8a0e5c2b3f91bae7212dbe28af09d5d"
+    },
+    {
+      "file": "archive_v2/scene.tenrec_load_v1.template.json",
+      "source": "/root/half_latency/recommendation_design_assets/scene.tenrec_load_v1.template.json",
+      "sha256": "681879815bd496215a5b5ecf7129945355c7e571b5447841223bea71f287c21d"
+    },
+    {
+      "file": "archive_v2/binding.required_fields.json",
+      "source": "/root/half_latency/recommendation_design_assets/binding.required_fields.json",
+      "sha256": "d7b2bec30bc0b90e8a102aae6223fda518f776a65caddec8d6e8f071ef254211"
+    },
+    {
+      "file": "archive_v2/build_interface_examples.py",
+      "source": "/root/half_latency/recommendation_design_assets/build_interface_examples.py",
+      "sha256": "2c176e0d9834b080ca9ff33520ac854febbfc4369bd1d7471f787c2860f53941"
+    },
+    {
+      "file": "archive_v2/api_examples/02_sparse.response.schema.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/02_sparse.response.schema.json",
+      "sha256": "641248923e0557699e1bb10599fbf56238c9eeb5bb7be4b87d08c8ce00dd8e80"
+    },
+    {
+      "file": "archive_v2/api_examples/example_provenance.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/example_provenance.json",
+      "sha256": "b026f97f3e8d9aa470855e15e38ec93ec114c53467239757c6cc6d12e85f1268"
+    },
+    {
+      "file": "archive_v2/api_examples/04_prepare.response.schema.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/04_prepare.response.schema.json",
+      "sha256": "4d48bbd12c00f8b4550e55fb554162a055892590162e3e119c0caba83d3195ca"
+    },
+    {
+      "file": "archive_v2/api_examples/03_generative.response.schema.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/03_generative.response.schema.json",
+      "sha256": "2c45361ff9cfa4c0c917e0b3bf537c29f62deb30a02f4c3b4c531ddd7380ea22"
+    },
+    {
+      "file": "archive_v2/api_examples/05_rank.response.schema.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/05_rank.response.schema.json",
+      "sha256": "6a1de3985900c7b2f93583808acdd70adebf6f298978b577b703036c58003182"
+    },
+    {
+      "file": "archive_v2/api_examples/01_dense.request.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/01_dense.request.json",
+      "sha256": "c360675c2a94fc8f356caf793f5ad46af5362e2cb2dbf62f2d7d3e18261e6b23"
+    },
+    {
+      "file": "archive_v2/api_examples/01_dense.response.schema.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/01_dense.response.schema.json",
+      "sha256": "ff1e275dfcffae85d52038082b3693091ca26fb0947beb4c0132da05b6a4519e"
+    },
+    {
+      "file": "archive_v2/api_examples/05_rank.request.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/05_rank.request.json",
+      "sha256": "4ca252740e6254da464add4c8a152ea1c423427ce944cc6c075dbbfe53d4dca6"
+    },
+    {
+      "file": "archive_v2/api_examples/04_prepare.request.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/04_prepare.request.json",
+      "sha256": "98d13c9c0a08dcfddf8275a9b0f4ad2f62346cbe1ac8e1f5c058ae5aae52ec29"
+    },
+    {
+      "file": "archive_v2/api_examples/02_sparse.request.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/02_sparse.request.json",
+      "sha256": "813b032982011252c42da110de3388d6ddb73a2ce883d6bd17a86407494fc6e5"
+    },
+    {
+      "file": "archive_v2/api_examples/03_generative.request.json",
+      "source": "/root/half_latency/recommendation_design_assets/api_examples/03_generative.request.json",
+      "sha256": "90606469a19aa31c8b5fde44f29844e624ef475150c02c8a786d5e27b1c5d21d"
+    }
+  ]
+}

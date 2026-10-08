@@ -1,0 +1,22 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "remaining_timeout_ms": 700,
+  "lookup_by": "semantic_id",
+  "semantic_ids": [
+    [
+      21,
+      31,
+      41,
+      51
+    ],
+    [
+      22,
+      32,
+      42,
+      52
+    ]
+  ],
+  "sid_version": "demo_sid_v1"
+}

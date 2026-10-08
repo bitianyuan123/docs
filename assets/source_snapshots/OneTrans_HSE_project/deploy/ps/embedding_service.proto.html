@@ -1,0 +1,76 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/deploy/ps/embedding_service.proto</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/deploy/ps/embedding_service.proto</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>b4b897b8cc24bbaa200542ef1e85463cd55a474524de5356935b95f52004c7b3</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// 稀疏参数服务器（PS）数据面契约（fabric ①）。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 独立 PS 服务承载大规模稀疏 embedding 表，供 Nearline（S 特征）与 Online（NS 特征）</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// 共享查表，避免每个精排服务实例各自维护一份稀疏表（内存/存储浪费）。</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>// 与 UserKV（fabric ②，datasystem）与元数据（fabric ③，Redis Cluster）分离。</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// 协议字段与 Python 侧 EmbeddingPSClient 的 wire 契约对齐。</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>syntax = &quot;proto3&quot;;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>package onetrans.ps;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>// 显式启用 C++ 泛型服务代码生成（否则 protoc/protobuf 3.14+ 默认不生成 Service 基类，</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>// brpc 的 AddService(google::protobuf::Service*) 将无法接收 EmbeddingServiceImpl）。</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>option cc_generic_services = true;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>// 单次查表：给定表名（含模型版本）与稀疏特征 ID 列表。</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>message EmbeddingLookupRequest {</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>  string table = 1;          // 表名/模型版本，如 &quot;onetrans@2026-08-25&quot;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>  repeated int64 ids = 2;    // 稀疏特征 ID（去重后最多 N 个）</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>}</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>// 查表响应：逐 id 展平的向量 weights = [ids.size() * dim]。</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>message EmbeddingLookupResponse {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>  string table = 1;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>  int32 dim = 2;             // 每 id 向量维度</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>  repeated int64 ids = 3;    // 回显 id（与请求对齐）</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>  repeated float weights = 4;  // 展平 [ids.size() * dim]，miss 填 0（seed 兜底在上层）</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>  int64 version = 5;         // 表权重版本（权重版本化加载 / 失效校验）</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>  int32 shard_id = 6;        // 命中分片（调试/指标，可忽略）</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>}</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>// 批量：客户端攒批推送多个子请求，服务端按分片并行 gather（动态 batching）。</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>message EmbeddingBatchRequest {</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>  repeated EmbeddingLookupRequest requests = 1;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>}</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a></span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>message EmbeddingBatchResponse {</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>  repeated EmbeddingLookupResponse responses = 1;</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>}</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>// ---- 写路径（阶段 B）：权重版本化加载 / 离线灌表注入 ---- //</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>// 与 Python 侧 ShardedEmbeddingTable.set / LocalEmbeddingPS.set_many 语义对齐：</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>// 对同一 table 按 (id, weights) 逐行写入，每写触发表版本 version 递增。</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>// 单表写入：一次注入该表的一批行 weights = [ids.size() * dim]（行主序）。</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>message EmbeddingSetRequest {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>  string table = 1;          // 表名/模型版本，如 &quot;onetrans@2026-08-25&quot;</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>  repeated int64 ids = 2;    // 行号/特征 ID</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>  repeated float weights = 3; // 平铺 [ids.size() * dim]</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>  int32 dim = 4;             // 每行向量维度（须与表维度一致，不一致则整批拒绝）</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>}</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a></span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>// 写后回执：updated 为实际写入行数，version 为写后表版本（调用方可据此校验）。</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>message EmbeddingSetResponse {</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>  string table = 1;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>  int32 dim = 2;</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>  int64 version = 3;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>  int32 updated = 4;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>}</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>// 批量写：客户端按表攒批（多表/多目标源同一批灌入）。</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>message EmbeddingBatchSetRequest {</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>  repeated EmbeddingSetRequest sets = 1;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>}</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>message EmbeddingBatchSetResponse {</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>  repeated EmbeddingSetResponse responses = 1;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>}</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a></span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>service EmbeddingService {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>  rpc Lookup(EmbeddingLookupRequest) returns (EmbeddingLookupResponse);</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>  rpc BatchLookup(EmbeddingBatchRequest) returns (EmbeddingBatchResponse);</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>  rpc Set(EmbeddingSetRequest) returns (EmbeddingSetResponse);</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>  rpc BatchSet(EmbeddingBatchSetRequest) returns (EmbeddingBatchSetResponse);</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>}</span></pre></html>

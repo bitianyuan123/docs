@@ -1,0 +1,15 @@
+{
+  "release_id": "qkv_doc200k_6f148b4adf81",
+  "schema_version": "feature_v1",
+  "request_id": "documentation_user_1",
+  "remaining_timeout_ms": 1000,
+  "user_id": "1",
+  "required_views": [
+    "USER",
+    "HISTORY",
+    "SPARSE_QUERY"
+  ],
+  "representation_versions": {
+    "sparse_recipe_id": "video_type_binary_v1"
+  }
+}

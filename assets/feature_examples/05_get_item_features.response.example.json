@@ -1,0 +1,59 @@
+{
+  "release_id": "qkv_doc200k_6f148b4adf81",
+  "schema_version": "feature_v1",
+  "request_id": "documentation_user_1",
+  "results": [
+    {
+      "item_id": "4",
+      "status": "FOUND",
+      "value": {
+        "category_code": 1,
+        "metadata_available": true,
+        "statistics": {
+          "n": 36,
+          "click_sum": 6,
+          "like_sum": 0,
+          "follow_sum": 0,
+          "share_sum": 0,
+          "like_rate": 0.0,
+          "follow_rate": 0.0,
+          "share_rate": 0.0,
+          "ctr": 0.16666666666666666,
+          "watch_mean": 0.7777777777777778,
+          "watch_max": 2,
+          "watch_sum": 28,
+          "gender1_share": 0.75,
+          "avg_age_code": 2.5555555555555554,
+          "log1p_watch_sum": 3.367295829986474
+        },
+        "missing_fields": []
+      }
+    },
+    {
+      "item_id": "1201",
+      "status": "FOUND",
+      "value": {
+        "category_code": 1,
+        "metadata_available": true,
+        "statistics": {
+          "n": 32,
+          "click_sum": 8,
+          "like_sum": 0,
+          "follow_sum": 0,
+          "share_sum": 0,
+          "like_rate": 0.0,
+          "follow_rate": 0.0,
+          "share_rate": 0.0,
+          "ctr": 0.25,
+          "watch_mean": 0.875,
+          "watch_max": 2,
+          "watch_sum": 28,
+          "gender1_share": 0.59375,
+          "avg_age_code": 3.0625,
+          "log1p_watch_sum": 3.367295829986474
+        },
+        "missing_fields": []
+      }
+    }
+  ]
+}

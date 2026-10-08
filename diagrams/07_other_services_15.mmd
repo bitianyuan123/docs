@@ -1,0 +1,6 @@
+flowchart TD
+    A[用户1请求10项home_feed] --> B[Nginx唯一业务入口]
+    B --> C{PaiRec可用且请求合法}
+    C -->|是| D[PaiRec执行完整推荐]
+    D --> E[返回实际Top-K，可能不足10项]
+    C -->|否| F[返回错误，不内部复制请求]

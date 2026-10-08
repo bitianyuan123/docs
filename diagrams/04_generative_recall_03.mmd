@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant P as PaiRec
+    participant F as 特征服务
+    participant G as 生成服务
+    participant T as TRT模型运行时
+    participant D as DataSystem
+    P->>F: BatchGetItemRepresentations：历史原始ID、SID版本
+    F-->>P: 同序SID或缺失状态
+    P->>G: 历史SID、生成参数、请求身份
+    G->>T: 模型tokens与生成预算
+    opt 运行时需要换入已有模型缓存
+        T->>D: 查询实际缓存块key
+        D-->>T: 张量字节或未命中
+    end
+    T->>T: 实际前向和逐token生成
+    opt 运行时触发缓存换出
+        T->>D: 保存真实KV张量
+        D-->>T: 写入结果
+    end
+    T-->>G: 输出tokens与执行状态
+    G->>F: BatchGetItemRepresentations：生成SID、同一版本
+    F-->>G: 每个SID对应的物品ID列表或缺失
+    G->>G: 展开、去重、限制候选数量
+    G-->>P: 原始候选ID、来源次序、当前解码分数

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "title": "Proposed response; additionally verify same input ID order and M rows",
+  "required": [
+    "request_id",
+    "executed",
+    "kv_backend",
+    "kv_key",
+    "history_hash",
+    "versions",
+    "kv_hit",
+    "backend",
+    "device",
+    "item_ids",
+    "logits"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string"
+    },
+    "executed": {
+      "const": true
+    },
+    "kv_backend": {
+      "const": "datasystem"
+    },
+    "kv_key": {
+      "type": "string"
+    },
+    "history_hash": {
+      "type": "string"
+    },
+    "versions": {
+      "type": "object",
+      "required": [
+        "release_id",
+        "model_version"
+      ],
+      "properties": {
+        "release_id": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "embedding_space_id": {
+          "type": "string"
+        },
+        "model_version": {
+          "type": "string"
+        },
+        "sid_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "kv_hit": {
+      "const": true
+    },
+    "backend": {
+      "const": "cpp_cpu"
+    },
+    "device": {
+      "const": "cpu"
+    },
+    "item_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "logits": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

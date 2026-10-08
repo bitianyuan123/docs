@@ -1,0 +1,257 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/deploy/ps/embedding_server.cc</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/deploy/ps/embedding_server.cc</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>7e8adc2e1ec1992270217ae2f20ac5600e2f43c634bb33ae3b3750bac82bfd61</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// 独立稀疏参数服务器（PS）——brpc + bthread（M:N）参考实现。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 设计要点（对应 docs/detailed_design.md §4.5「稀疏 PS 数据面契约」与 §7.4「线程与并发模型」）：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// - 稀疏表按 id 稳定哈希切分为 N 个分片，每分片一把细粒度锁（无全局锁，QPS 随核扩展）；</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>// - 分片路由统一 Knuth 乘法哈希（detail::ShardOf 为唯一标准，Python 侧</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>//   embedding_ps_client.py 的 ShardedEmbeddingTable.shard_of 与其逐位对齐，G10）；</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// - 多表支持：table 名 -&gt; ShardedEmbeddingTable 注册中心（按需懒建 + 淘汰），</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>//   DoLookup 按 req.table() 路由，支撑多模型版本并存与灰度（G11）；</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>// - brpc::Server 默认 bthread M:N 调度，Lookup 为阻塞式 handler，由 bthread 承载高并发；</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>// - 未命中返回 0 向量，由客户端按 seed 兜底哈希嵌入重建（权重版本化最差路径）；</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>// - 表版本（version）随写递增，供在线侧权重版本化加载与失效校验。</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>//</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>// 构建：见 BUILD（bazel + brpc/protobuf dep）。</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a></span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>#include &lt;atomic&gt;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>#include &lt;cstdint&gt;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>#include &lt;memory&gt;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>#include &lt;mutex&gt;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>#include &lt;string&gt;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>#include &lt;unordered_map&gt;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>#include &lt;utility&gt;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>#include &lt;vector&gt;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>#include &lt;brpc/server.h&gt;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>#include &lt;butil/logging.h&gt;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>#include &lt;gflags/gflags.h&gt;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>#include &quot;embedding_service.pb.h&quot;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a></span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>DEFINE_int32(port, 8000, &quot;PS 监听端口&quot;);</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>DEFINE_int32(num_shards, 64, &quot;每张表的分片数（分片锁粒度）&quot;);</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>DEFINE_int32(dim, 64, &quot;embedding 维度&quot;);</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>DEFINE_int32(num_bthreads, 0, &quot;brpc bthread worker 数（0=默认，随核）&quot;);</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a></span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>namespace onetrans {</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>namespace ps {</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a></span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>namespace detail {</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>// 稳定乘法哈希（Knuth）：**分片路由唯一标准**（G10）。</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>// Python 侧 ShardedEmbeddingTable.shard_of 用同一常数、同一二补码回绕与 2^64 截断语义，</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>// 保证读写两侧对同一 id 落同一分片。</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>inline std::size_t ShardOf(int64_t id, int num_shards) {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>  constexpr uint64_t kKnuth = 11400714819323198485ULL;  // 0x9E3779B97F4A7C15</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>  return static_cast&lt;std::size_t&gt;((static_cast&lt;uint64_t&gt;(id) * kKnuth) % num_shards);</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>}</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>}  // namespace detail</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>// 分片嵌入表：`num_shards` 个独立 HashMap + 每分片锁（细粒度并发）。</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>class ShardedEmbeddingTable {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a> public:</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>  using Row = std::vector&lt;float&gt;;</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>  ShardedEmbeddingTable(int num_shards, int dim)</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>      : num_shards_(num_shards), dim_(dim), version_(0),</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>        shards_(num_shards), locks_(num_shards) {}</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>  int dim() const { return dim_; }</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>  int64_t version() const { return version_.load(std::memory_order_acquire); }</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a></span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>  void Set(int64_t id, Row weights) {</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    const std::size_t s = detail::ShardOf(id, num_shards_);</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    std::lock_guard&lt;std::mutex&gt; lk(locks_[s]);</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    shards_[s].map[id] = std::move(weights);</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    version_.fetch_add(1, std::memory_order_acq_rel);</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>  }</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>  // 查表：命中写回 out 返回 true；未命中返回 false（调用方填 0）。</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>  bool Get(int64_t id, Row* out) const {</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    const std::size_t s = detail::ShardOf(id, num_shards_);</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    std::lock_guard&lt;std::mutex&gt; lk(locks_[s]);</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    const auto it = shards_[s].map.find(id);</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    if (it == shards_[s].map.end()) return false;</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    *out = it-&gt;second;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    return true;</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>  }</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a></span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a> private:</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>  struct Shard {</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    std::unordered_map&lt;int64_t, Row&gt; map;</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>  };</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a></span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>  int num_shards_;</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>  int dim_;</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>  std::atomic&lt;int64_t&gt; version_;</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>  std::vector&lt;Shard&gt; shards_;</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>  mutable std::vector&lt;std::mutex&gt; locks_;</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>};</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a></span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>// 多表注册中心：table 名 -&gt; ShardedEmbeddingTable（G11）。</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>//</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>// 与 Python 侧 LocalEmbeddingPS 的多表语义对齐：</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>// - 表按需懒建（Get 首次触达即注册），返回 shared_ptr 快照，读路径持锁仅覆盖注册动作；</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>// - Erase 淘汰整表（模型版本下线/回滚）；淘汰后进行中的旧请求仍持 shared_ptr 安全读；</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>// - 每表独立 version（写递增），供「多模型版本并存 + 按版本查表 + 权重版本化失效」。</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>class TableRegistry {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a> public:</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>  using TablePtr = std::shared_ptr&lt;ShardedEmbeddingTable&gt;;</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a></span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>  TableRegistry(int num_shards, int dim) : num_shards_(num_shards), dim_(dim) {}</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a></span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>  // 取表；不存在则注册新表（懒建，对齐 Python LocalEmbeddingPS.table()）。</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>  TablePtr Get(const std::string&amp; name) {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>    const auto it = tables_.find(name);</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    if (it != tables_.end()) return it-&gt;second;</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    auto t = std::make_shared&lt;ShardedEmbeddingTable&gt;(num_shards_, dim_);</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    tables_.emplace(name, t);</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>    return t;</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>  }</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a></span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>  // 只读查找（不注册）：不存在的表返回 false（调用方走 miss/兜底路径）。</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>  bool Find(const std::string&amp; name, TablePtr* out) const {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>    std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>    const auto it = tables_.find(name);</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>    if (it == tables_.end()) return false;</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>    *out = it-&gt;second;</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>    return true;</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>  }</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a></span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>  // 淘汰整表（版本下线/回滚）；返回是否确实删除。</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>  bool Erase(const std::string&amp; name) {</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>    std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>    return tables_.erase(name) &gt; 0;</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>  }</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a></span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>  size_t Size() const {</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>    std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    return tables_.size();</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>  }</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a></span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a> private:</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>  const int num_shards_;</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>  const int dim_;</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>  mutable std::mutex mu_;</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>  std::unordered_map&lt;std::string, TablePtr&gt; tables_;</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>};</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a></span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>// RPC 服务实现（brpc：handler 运行于 bthread，天然 M:N）。</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>class EmbeddingServiceImpl : public EmbeddingService {</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a> public:</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>  explicit EmbeddingServiceImpl(TableRegistry* registry) : registry_(registry) {}</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a></span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>  void Lookup(google::protobuf::RpcController* /*cntl*/,</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>              const EmbeddingLookupRequest* req,</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>              EmbeddingLookupResponse* resp,</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>              google::protobuf::Closure* done) override {</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>    brpc::ClosureGuard done_guard(done);</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>    DoLookup(*req, resp);</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>  }</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a></span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>  void BatchLookup(google::protobuf::RpcController* /*cntl*/,</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>                   const EmbeddingBatchRequest* req,</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>                   EmbeddingBatchResponse* resp,</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>                   google::protobuf::Closure* done) override {</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>    brpc::ClosureGuard done_guard(done);</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>    for (const auto&amp; sub : req-&gt;requests()) {</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>      DoLookup(sub, resp-&gt;add_responses());</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>    }</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>  }</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a></span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>  // ---- 写路径（阶段 B）：权重版本化加载 / 离线灌表注入 ---- //</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>  void Set(google::protobuf::RpcController* /*cntl*/,</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>           const EmbeddingSetRequest* req,</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>           EmbeddingSetResponse* resp,</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>           google::protobuf::Closure* done) override {</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>    brpc::ClosureGuard done_guard(done);</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>    DoSet(*req, resp);</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>  }</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>  void BatchSet(google::protobuf::RpcController* /*cntl*/,</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>                const EmbeddingBatchSetRequest* req,</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>                EmbeddingBatchSetResponse* resp,</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>                google::protobuf::Closure* done) override {</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    brpc::ClosureGuard done_guard(done);</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>    for (const auto&amp; sub : req-&gt;sets()) {</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>      DoSet(sub, resp-&gt;add_responses());</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>    }</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>  }</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a></span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a> private:</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>  void DoLookup(const EmbeddingLookupRequest&amp; req, EmbeddingLookupResponse* resp) const {</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>    // G11：按 req.table() 路由到对应分片表（多模型版本/灰度）；懒建后未写入即全 miss。</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>    const TableRegistry::TablePtr table = registry_-&gt;Get(req.table());</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>    const int dim = table-&gt;dim();</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>    resp-&gt;set_table(req.table());</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>    resp-&gt;set_dim(dim);</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>    resp-&gt;set_version(table-&gt;version());</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>    resp-&gt;mutable_weights()-&gt;Reserve(req.ids_size() * dim);</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>    for (const int64_t id : req.ids()) {</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>      ShardedEmbeddingTable::Row row;</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>      const bool hit = table-&gt;Get(id, &amp;row);</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>      resp-&gt;add_ids(id);</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>      for (int d = 0; d &lt; dim; ++d) {</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>        // 未命中回 0：客户端 / 上层用 seed 兜底哈希嵌入重建（权重版本化最差路径）。</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>        resp-&gt;add_weights(hit ? row[d] : 0.0f);</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>      }</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>    }</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>  }</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a></span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>  // 写路径：按表注入一批行 weights=[ids*dim]（行主序）；每写触发行所在分片表版本递增。</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>  // 维度不匹配整批拒绝（updated=0，返回当前版本），避免半写坏数据。</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>  void DoSet(const EmbeddingSetRequest&amp; req, EmbeddingSetResponse* resp) {</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>    const TableRegistry::TablePtr table = registry_-&gt;Get(req.table());</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>    const int dim = table-&gt;dim();</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>    resp-&gt;set_table(req.table());</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>    resp-&gt;set_dim(dim);</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>    if (req.weights_size() != req.ids_size() * dim) {</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>      resp-&gt;set_updated(0);</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>      resp-&gt;set_version(table-&gt;version());</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>      LOG(ERROR) &lt;&lt; &quot;Set 维度不匹配 table=&quot; &lt;&lt; req.table()</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>                 &lt;&lt; &quot; ids=&quot; &lt;&lt; req.ids_size() &lt;&lt; &quot; dim=&quot; &lt;&lt; dim</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>                 &lt;&lt; &quot; weights=&quot; &lt;&lt; req.weights_size();</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>      return;</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>    }</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>    for (int i = 0; i &lt; req.ids_size(); ++i) {</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>      ShardedEmbeddingTable::Row row(dim);</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>      const int base = i * dim;</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>      for (int d = 0; d &lt; dim; ++d) row[d] = req.weights(base + d);</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>      table-&gt;Set(req.ids(i), std::move(row));</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>    }</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>    resp-&gt;set_updated(req.ids_size());</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>    resp-&gt;set_version(table-&gt;version());</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>  }</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a></span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>  TableRegistry* registry_;  // 不拥有（由 main 持有）</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>};</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a></span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>}  // namespace ps</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>}  // namespace onetrans</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a></span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>int main(int argc, char** argv) {</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>  google::ParseCommandLineFlags(&amp;argc, &amp;argv, true);</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a></span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>  onetrans::ps::TableRegistry registry(FLAGS_num_shards, FLAGS_dim);</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>  onetrans::ps::EmbeddingServiceImpl impl(&amp;registry);</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a></span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>  brpc::Server server;</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>  if (server.AddService(&amp;impl, brpc::SERVER_DOESNT_OWN_SERVICE) != 0) {</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>    LOG(ERROR) &lt;&lt; &quot;AddService 失败&quot;;</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>    return 1;</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>  }</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a></span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>  brpc::ServerOptions options;</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>  if (FLAGS_num_bthreads &gt; 0) {</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>    options.num_threads = FLAGS_num_bthreads;</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>  }</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a></span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>  if (server.Start(FLAGS_port, &amp;options) != 0) {</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>    LOG(ERROR) &lt;&lt; &quot;PS 启动失败，端口 &quot; &lt;&lt; FLAGS_port;</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>    return 1;</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>  }</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a></span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>  LOG(INFO) &lt;&lt; &quot;embedding PS 监听 :&quot; &lt;&lt; FLAGS_port</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>            &lt;&lt; &quot; (shards=&quot; &lt;&lt; FLAGS_num_shards &lt;&lt; &quot;, dim=&quot; &lt;&lt; FLAGS_dim &lt;&lt; &quot;)&quot;;</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>  server.RunUntilAskedToQuit();</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>  return 0;</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>}</span></pre></html>

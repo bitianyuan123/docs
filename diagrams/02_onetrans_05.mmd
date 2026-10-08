@@ -1,0 +1,11 @@
+flowchart TD
+    N[Nginx 网关] --> P[PaiRec 进程]
+    P -->|HTTP /ingest| H[OneTrans 历史计算进程]
+    P -->|HTTP /rank| R[OneTrans 候选打分进程]
+    J[历史 JSON 或 Kafka 消费缓存] --> P
+    F[本地用户与物品 TSV 文件] --> H
+    F --> R
+    H -->|原生 bRPC| PS[模型参数服务 PS]
+    R -->|原生 bRPC| PS
+    H -->|写历史 K/V| D[共享 DataSystem]
+    R -->|读历史 K/V| D

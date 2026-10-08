@@ -1,0 +1,559 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>prior_design/01_recommendation_detailed_design.md</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>prior_design/01_recommendation_detailed_design.md</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>前期保存文件，无Git提交号</code><br>原文件 SHA256：<code>69947bebacb2700417cd7992d46430d3988c5841e703747cfbd58badd0d34a25</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># Tenrec 推荐负载模型详细设计</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>版本：2026-09-29，架构修订 V2（干净基线＋原生 bRPC adapter），数据语义修订 R1（Tenrec 全量审计与官方字段核实）。状态：供开发实施的设计；没有据此修改、部署或训练原工程。目标是一次真实推荐请求穿过特征存储、三路召回、OneTrans S/NS、后排序。推荐准确率和 OneTrans 训练后置。</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>配套文件：[开发指导](/root/half_latency/02_recommendation_development_guide.md)、[4+1 视图](/root/half_latency/03_recommendation_4plus1_views.md)、[配置与接口资产说明](/root/half_latency/recommendation_design_assets/README.md)。本文负责字段及接口语义；开发指导负责修改位置与实现步骤；架构报告负责组件和运行关系。所有“新增”“目标”均不是对现有完成度的声明。</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>## 1. 最终应用基线与通信边界</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>**采用干净的官方 PaiRec 依赖，新建只包含必要能力的应用。8506 不再作为最终应用分支，也不先以清理其冗余为开发前置任务。** 此决定替代上一版“以8506增量改造”的路线；旧版保存在 [archive_v1_8506](/root/half_latency/recommendation_design_assets/archive_v1_8506)，不再是实施依据。</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>上一版优先考虑复用已有接线，却低估了完整迁入旧应用带来的成本：框架vendor修改、DeepFM与OneTrans共享结构、Sort中承载实际精排、错误识别只覆盖部分阶段、多套通信代码及压力入口。新应用要写的核心编排本就有限；逐个证明这些旧路径已经停用，未必比显式建立新路径更省工作。</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>### 1.1 干净基线具体指什么</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a></span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>建议新应用名 `pairec-loadmodel`，本次只给设计，尚未创建仓库。依赖官方未修改的 `github.com/alibaba/pairec/v2 v2.6.2`，锁定提交 `3f6b92acb261cc65bf680b8db5335048f9afb7eb`。选择这一已核实版本是为了与原工程声明的依赖同版、减少迁移变量，不宣称它是最新或性能最优版本。</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>[上游原文证据及hash](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/SOURCE_PROVENANCE.json)已保存；这是相关文件审阅快照，不是完整新工程。直接复制8506的vendor不属于干净基线：它虽然声明v2.6.2，内部已有项目修改。</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a></span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>| 来源 | 在新方案中的地位 | 复用方式 |</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>|---|---|---|</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>| 官方 PaiRec v2.6.2 | 唯一应用框架依赖 | 正常锁版本、校验依赖；应用通过公开启动/路由接口扩展，不改vendor |</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>| 8506 `530f773` | 只读参考与回归样本 | 参考真实服务协议、调用行为和已有缺陷；不合并其main/vendor/旧编排 |</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>| OneTrans `61f8ee3` | 精排模型及独立服务 | 继续改S/NS业务特征入口、KV身份及生命周期 |</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>| pairec_sh `0203724` | 原生Redis/OpenSearch客户端参考 | 只选取并修复C++协议能力；不搬全局singleton、mock控制器和旧框架配置 |</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>| 原pairec4tigerllm `cadc185` | 模型及离线工具参考 | 保留DSSM/生成推理、导出/装载等独立能力，按文件/库边界提取 |</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>这并不要求重写推荐框架、模型、数据库客户端或bRPC库。新写范围是应用自有业务编排、明确的五服务客户端契约、两次特征读取以及适配层。</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>“干净”指应用自己维护的代码与变更清晰，并不声称官方框架没有通用功能或二进制会自动变小。官方框架作为锁版本依赖管理，不裁剪其内部全部能力。`RecommendEngine`只是一条固定业务流程的普通代码，不建设通用DAG平台、动态插件系统或自动策略生成器。</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>### 1.2 不进入新应用的代码</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>| 对象 | 决策 |</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>|---|---|</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>| DeepFM排序与其请求类型 | 不导入；新NS接口直接定义自己的ScoreRequest/Response，不再抽取DeepFM公共结构作为前置工作 |</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>| burst/reverse burst/pressure sink/固定padding/post-rank额外hop | 不进入新应用源码、构建目标与部署清单；无需靠大量false开关维持“名义停用” |</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>| 8506 Go手写PRPC、rpcMeta、帧解码与TCP连接代码 | 不导入；实际网络调用归native adapter |</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>| 旧OneTrans Sort插件、scachelatch、controller失败补丁 | 不导入；新Engine显式处理S Future、NS结果和统一错误 |</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>| Kafka/本地全表业务feature provider | 不接入固定快照profile；使用Redis两次读取 |</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>| 模型真实KV、PS查询、bRPC generated stub、trace | 保留为必要能力，按清晰模块边界接入 |</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>独立模型服务中现存的实验backend、结果缓存或压力能力仍需关闭并验证；应用重建不会自动消除模型进程中的这些路径。但这属于模型服务自身收敛，不是把整个旧应用背进新工程后再删除。</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a></span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>### 1.3 已核实的通信问题</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>8506并不是通过一个原生bRPC客户端库完成所有调用：</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>- [services/brpcwire/client.go](/root/half_latency/recommendation_design_assets/source_8506_530f773/services/brpcwire/client.go:155)自行生成PRPC帧、编码meta并使用Go `net.Conn`；`pipelineclient`依赖它。</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>- [services/recall/brpc_client.go](/root/half_latency/recommendation_design_assets/source_8506_530f773/services/recall/brpc_client.go:27)还有一套生成召回的baidu_std/TCP子集实现。</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>- [pipeline_service_adapter.cpp](/root/half_latency/recommendation_design_assets/source_8506_530f773/cpp/brpc_gateway/pipeline_service_adapter.cpp:63)是**服务端**bRPC入站→本机HTTP模型出站。已有它，不代表PaiRec端已经调用原生客户端。</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>若服务端只是作wire兼容变更，Go不一定需要修改；但当研究原生bRPC的transport、UB或连接实现时，Go自己建立的TCP连接不会自动使用这些变化。需要隔离的是实际通信实现，而不仅是给Go客户端换一个类名。</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a></span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>### 1.4 默认采用两种职责明确的adapter</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>```mermaid</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>flowchart LR</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>  P[PaiRec业务编排 Go] --&gt; G[薄CGO封装]</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>  G --&gt; C[稳定C ABI与native客户端adapter]</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>  C --&gt;|native bRPC| GEN[Gen原生Recommend服务]</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>  C --&gt;|native bRPC| B[各服务独立的server adapter]</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>  B --&gt;|本机HTTP| M[Dense Sparse S NS业务服务]</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>  C --&gt;|Redis RESP| R[(Redis)]</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>```</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a></span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>**客户端adapter**默认为进程内C ABI＋CGO封装，内部使用真实 `brpc::Channel`、生成的protobuf类型/stub。这样不额外增加PaiRec到本机sidecar的网络跳转。Go只持有opaque handle并传带长度的业务JSON，不接触PRPC帧、socket、原生连接池或transport选项。已有sh的C bridge是工程参考，不是完整五服务SDK。</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a></span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>**服务端adapter**处理Dense、Sparse、S、NS的bRPC→本机HTTP桥接；共用薄桥代码、按role独立部署。Gen已有原生Recommend服务，直接终结native RPC。桥接只负责协议与错误映射，不查询用户画像、不融合候选、不运行另一套推荐策略。</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>CGO选择意味着构建/runtime需要C++依赖，C++崩溃也可能影响PaiRec进程；这是代码与协议依赖隔离，不是故障进程隔离。若后续更重视进程隔离，可改本地HTTP/UDS sidecar，另计进程、队列、序列化和本地RPC开销。本profile不同时维护两条默认客户端路径。</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>### 1.5 adapter能收敛哪些变更</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>| 变化 | 主要修改位置 | 验证范围 |</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>|---|---|---|</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>| 原生bRPC版本、transport实现、连接参数 | native客户端/服务端adapter及构建依赖 | 两端匹配、实际库版本、超时/取消、并发、端到端回归 |</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>| C ABI自身或不兼容依赖 | ABI版本、CGO薄封装和构建包 | 不能承诺任意换.so都无需重编；静态链接需重新链接应用 |</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>| 模型HTTP接口/字段类型 | 对应server adapter显式codec | int64、数组顺序、错误状态、模型版本 |</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>| 业务新增特征或排序规则 | 业务契约、Engine/数据生产、对应服务 | adapter不能消除业务本身变化 |</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>| 模型权重/engine/SID空间变化 | 模型/索引/release工件 | 保持既定业务字段时不应修改调度流程 |</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a></span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>Redis调用使用原生bRPC库的 **Redis协议** 客户端直连Redis，不是把Redis变成baidu_std服务。标准Redis、Milvus、OpenSearch以及DataSystem SDK各有自己的协议/传输边界；不能因接了一个adapter就宣称全链路都支持UB。先验证native bRPC/TCP，后续通信实验另建profile并禁止静默退回其他路径。</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>### 1.6 当前五服务完成度不因换基线而改变</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a></span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>| 服务 | 已有基础 | 仍需补齐 |</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>|---|---|---|</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>| Dense | DSSM、item导出、Milvus装载/检索 | user vector离线导出、query_vector入口、装载版本、native服务桥 |</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>| Sparse | OpenSearch查询适配 | 真实文档与mapping/bulk、独立HTTP业务服务、native服务桥 |</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>| Generative | TRT、SID、原生KV基础 | 实际工件绑定、关闭非业务路径、native客户端接入与真实执行验收 |</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>| S | 历史编码、真实KV及DS接口 | PaiRec下发历史、请求级身份、ready语义、回收、native服务桥 |</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>| NS | 完整/自装配两种HTTP入口、前向 | 使用完整特征、消费对应KV、miss不跳算、输出对齐、native服务桥 |</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a></span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>S当前HTTP确在`ingest/store.put`后响应；问题在旧客户端只识别完成、不识别成功，以及请求身份和生命周期。DataSystem已有TTL/Del/Expire，需接入真实所有权。旧工程这些经验用于新实现的契约和验收，不要求把旧缺陷代码迁入新树。</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a></span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>## 2. 唯一业务场景与真实证据</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>场景为 **Tenrec QK-video 派生 CTR 快照上的信息流推荐**。用户提供 uid，系统基于已有历史返回视频/物品 ID。没有用户输入的搜索文本，没有商品标题、库存、价格、艺术家或专辑这些原始业务字段。</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a></span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>保持业务入口 `POST /api/recommend`，由新应用自己的controller处理：</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>```json</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>{&quot;uid&quot;:&quot;1&quot;,&quot;scene_id&quot;:&quot;home_feed&quot;,&quot;size&quot;:10}</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>```</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a></span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>`request_id` 由入口为每次实际请求生成；若开放客户端传入，需要新增校验与去重/冲突策略，不能把重复外部 ID 直接作为临时 KV 唯一键。默认内部生成，外部 ID 仅作关联 ID。正式 profile 命名 `tenrec_load_v1`，不是新增 URL。</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a></span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>### 2.1 本次样例可复核范围</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a></span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>本地源文件：`/root/real_model/Tenrec/ctr_data_1M.csv`，大小 **10,670,097,636 字节**。本轮新增全文件审计，结论与可复现脚本见 [数据核实报告](/root/half_latency/recommendation_design_assets/tenrec_audit/README.md)。**下面接口样例仍固定使用文件头和前 200,000 条数据行**，包含 1,513 个 uid、92,754 个作为曝光目标出现的 item，避免把全量统计混入既有 fixture。样例精确字节范围 SHA256：`6f148b4adf81c813e5f866f82f5e22ea36b3b719fab1f4862ef351fd3c43efd5`，不是全文件校验值。</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a></span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>[证据 JSON](/root/half_latency/recommendation_design_assets/tenrec_sample_evidence.json)保存原始列、源行号、样例原始行和派生结果；[提取脚本](/root/half_latency/recommendation_design_assets/build_tenrec_evidence.py)可重新运行。它只是文档 fixture 提取器，不是生产 ETL 或全量 loader。</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a></span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>uid `1` 的第一条源记录：`gender=1, age=4`；固定历史为：</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>```text</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>2, 3, 80936, 781, 111774, 1230, 26403, 991, 2362, 1202</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>```</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a></span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>历史 item `111774` 的视频长短类型在这份抽样中未知，其余 9 个有类型；`video_type_0` 权重 `2/9`，`video_type_1` 权重 `7/9`。`4`、`1201` 来自真实的第 1、2 条曝光记录，用于 NS 输入说明，**不声称它们是某次模型召回的输出**。这是 fixture 范围内的缺失，不代表其他视频文件也没有此 item。</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a></span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>### 2.2 历史与数据语义</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a></span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>- 使用 `hist_1..hist_10` 原顺序，去掉 padding `0`，保留重复历史项及其顺序。当前历史是固定快照，不宣称是每条曝光前严格按时间截取的最新十次行为。</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>- Tenrec 这份文件没有实际行为时间戳；S 的旧 `timestamps` 槽传 `1..L`，并增加 `time_semantics=&quot;ordinal&quot;`。不制造 Unix 时间。</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>- 不把当前 target 的 click 追加到其历史。用于当前负载快照的全局物品统计不作无泄漏效果评测资产。</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>- `gender`、`age`、`video_category` 是原始编码。`age=4` 不是 4 岁；`gender=1` 不在本设计中解释为某一性别；原始 `0` 编码不未经依据改成缺失。</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a></span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>### 2.3 官方字段语义：video_category 是长短类型，不是主题类目</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a></span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>Tenrec 仓库作者在 [issue #11 的答复](https://github.com/yuangh-x/2022-NIPS-Tenrec/issues/11#issuecomment-1334939079) 明确该字段区分长、短视频；没有给出 `0→长/短`、`1→短/长` 的映射，也没有时长秒数或阈值。保留原始编码 `0/1`，业务语义命名 `video_length_type`。旧契约字段 `category_code` 暂保留以减少接口变化，但所有生产者/消费者均按此语义解释，不再称主题兴趣或商品类目。</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a></span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>| 原始字段 | 实际信息归属 | 可用于当前模型的方式 |</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>|---|---|---|</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>| `item_id` | 匿名物品标识，无内容语义 | 同源关联、embedding/PS key、SID 映射、候选去重 |</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>| `video_category` | item 的粗粒度长短类型；编码方向未公开 | 保留二值特征；用于类型 token/兼容 embedding 槽；不是主题分类 |</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>| `click,like,follow,share,watching_times` | 用户对目标 item 的交互记录 | 离线按 item 聚合行为/受众统计；不能将某一次未来反馈当在线已知输入；`watching_times` 不当视频时长 |</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>| `gender,age` | 用户属性编码 | USER 画像；按 item 聚合只能叫受众分布统计 |</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>| `hist_1..hist_10` | 用户固定点击历史中的 item ID | S/Gen 的序列输入、DSSM user 输入、行为派生稀疏特征 |</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a></span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>本地视频源的全部列已核对：`QK-video/QB-video/sbr_data_1M/task_0/task_2` 都只有 CTR 的前 10 列。它们可以增加同源物品与交互覆盖，**不能补出标题、标签、作者、主题类别、真实时长或视频链接**。作者还在 [issue #14](https://github.com/yuangh-x/2022-NIPS-Tenrec/issues/14) 答复暂不提供视频/内容链接；不能把匿名 ID 直接作为公网素材检索键。</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a></span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>`QK-article/QB-article` 有 `category_first/category_second`、曝光/点击/点赞/评论计数和 `item_score1/2/3` 等列，但属于文章场景，当前资料未给评分 codebook；实测也有同 item 类别跨行变化。它们可以支持**另建文章场景**，不是视频 item 的附表。跨 video/article 的相同数字 ID 不能直接 join；不把文章属性贴到视频上。完整 headers、关联样例与属性稳定性见 [关联文件审计](/root/half_latency/recommendation_design_assets/tenrec_audit/related_files_findings.md)。</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a></span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>### 2.4 关联文件使用决策</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a></span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>P0 仍以 CTR 指定快照作为唯一交互统计来源，不因找不到标题而阻塞五服务贯通。需要补齐历史 item 的类型或参数覆盖时，可以按需引入同源 QK-video/SBR 元信息：先由 CTR 生成缺失 ID 集合，再流式扫描补充源，只提取这些 ID 的 `video_category`，验证共同记录、ID 域、非缺失类型一致性，记录 source/hash/coverage gain。新来源、新 token 配方都生成新 release，不能就地改已有 Redis/索引。</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a></span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>官方固定提交的 [gen_ctr.py](https://github.com/yuangh-x/2022-NIPS-Tenrec/blob/a6c242da0dab9c547410e8fdcde611436931dea6/Data%20Processing/gen_ctr.py) 直接保留输入 user/item ID；本地也找到逐字段一致的 QK/CTR/SBR 记录。因此不是“所有关联都必须重编码”，而是**同视频源的原始 ID 可以在版本核验后关联；训练后的 embedding 行号不可直接关联**。官方训练工具的 LabelEncoder 与本工程模型映射须单独保存 raw ID↔index。不同字段名、源头抽样与发布文件差异不能靠重跑旧脚本猜测消除。</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a></span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>不得把 CTR、SBR、QK 三份重叠交互直接 concat 后累加曝光/点击，它们存在派生重叠、又没有稳定事件 ID，容易重复计数。P0 的 15 维 item 统计仅来自 manifest 指定 CTR 行范围；补充源只补经核验的静态类型/目录覆盖，未经另行设计不扩充事件统计。</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a></span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>负载阶段不要求准确推荐，但需要解释实际计算和数据分布：ID embedding、真实行为聚合、固定随机 OneTrans 前向均可用于贯通；二值类型 BM25 只能代表这个受限索引负载。若后续需有区分度的倒排负载，可单独发布真实点击共现派生配方；若要求文本检索语义，则另选有合法可用文本与稳定 item 映射的数据源。两者均不伪造本数据没有的文本，也不作为当前 P0 的前置训练任务。</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a></span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>### 2.5 本地 CTR 全量审计对工程规模的约束</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a></span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>[全量结果](/root/half_latency/recommendation_design_assets/tenrec_audit/ctr_full_audit.json)覆盖 **120,342,306 行、999,447 个用户、2,310,087 个目标 item**，不是一百万行。`video_category=0` 有 64,475,979 行，`=1` 有 54,277,815 行，缺失 `\N` 有 1,588,512 行（约 1.32%）。0/1 是全部有效值，但不是全部原始取值。</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a></span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>目标 item 中，1,365,660 个只有有效类型 0，791,826 个只有有效类型 1，**152,601 个类型全部缺失**；没有发现同 item 的有效 0/1 冲突。本轮因此取消静默“众数选类别”的规则，正式生产如遇新冲突应阻断发布并调查来源，不自行把冲突洗掉。</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a></span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>历史中有 612,064 个不同 item，其中 **44,160 个从未作为该 CTR 文件的目标 item 出现**，所以完整目录/PS 覆盖至少按目标与历史的并集 **2,354,247** 检查。history-only 记录的曝光统计是“本 CTR 范围无观察”，不能补造曝光行；可以保留 `n=0`、有效计数 0、缺失身份，并用于历史参数 lookup，不默认加入可召回目标目录。</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a></span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>全量同用户的历史、gender/age 在各行一致。当前“首条源行固定快照”可确定性复现本文件；不意味着别的 release 可免检查。全文件 SHA256 为 `2e1063623f23eb947c3fb7e780d80c586ec60af85b6ff3c2e28dfc5d405f5ffa`。C++ 流式扫描器还用独立 Python CSV 解析器对前 10,000 行做了逐项统计对照，结果一致。</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a></span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>## 3. 字段归属表</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a></span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>### 3.1 总表：谁生产、存哪里、何时读取、谁消费</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a></span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>| 字段/资产 | 权威来源与生成者 | 持久位置 | 在线读取方与时机 | 消费者/边界 |</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>|---|---|---|---|---|</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>| `uid, scene_id, size` | 客户请求；入口校验 | 请求上下文 | PaiRec 入口 | uid 原始 ID；size ≤10 为本 profile 初值 |</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>| `request_id, deadline, release_id` | PaiRec + 固定 release manifest | 请求上下文 | 入口固定一次 | 全链路追踪/版本/时间预算，不能中途换 release |</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>| `gender_code, age_code, user_dense[15]` | Tenrec 用户首条有效源记录 | Redis USER | 召回前第一次 MGET | NS；各模型服务不得重新读全量用户 TSV |</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>| `dense_vector[D], embedding_space_id` | 同一 DSSM user tower 离线输出 | Redis USER | 同上 | Dense 只检索；线上不再跑 user tower |</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>| `sparse_tokens[{token,weight}]` | 历史与真实视频长短类型关联、计数归一 | Redis USER | 同上 | Sparse；不是主题兴趣画像；不从 uid 查本地画像 |</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>| `item_ids,positions,valid_length,history_hash` | Tenrec 固定历史 | Redis HISTORY | 与 USER 同次 MGET | S 直接消费 raw ID；Gen 经版本化 SID 映射适配；已看过滤 |</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>| `category_code,candidate_dense[15],missing/valid counts` | category_code 是视频长短类型兼容名；其余按 raw item ID 聚合行为 | Redis ITEM_RANK | 候选产生后的第二次 MGET | NS 输入及可服务性检查；不在 NS 本地业务表查询 |</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>| `item_id→dense embedding`、ANN 索引 | 同 DSSM item tower + loader | Milvus collection | Dense search | 检索状态，不按请求从 Redis 搬全库向量 |</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>| `item_id→tokens`、倒排索引 | catalog 视频长短类型派生 + loader | OpenSearch index | Sparse search | BM25；二值类型词项，非主题/文本 |</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>| item/user/category embedding 参数表 | OneTrans 显式模型工件 | OneTrans PS/参数服务 | S/NS 模型前端 batch lookup | 模型参数，不是业务画像；本 profile 若选远程 PS 必须真走它 |</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>| weights、piecewise/分箱参数、tokenizer | OneTrans 模型工件 | 模型进程/PS | 启动装载 | 保留真实模型前端计算 |</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>| engine/tokenizer/codebook/raw ID↔SID | 生成模型版本化工件 | Gen；编码所需映射可随 PaiRec 适配器发布 | 启动装载/请求内映射 | 不是每条历史 Redis 再查一次；不得混用哈希假 SID |</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>| S 计算得到的逐层 KV | 本请求 S forward | DataSystem `fine:` 空间 | NS 在成功 ready 后读 | 不离线灌固定随机大对象代替 S |</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>| TRT 原生 KV blocks | TRT 运行时 | DataSystem 独立命名空间 | 按原生 offload/onboard 生命周期 | 不与精排 KV 共用格式；不能强制伪造固定读写次数 |</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>| scores、各路 ranks、source list | 真正服务响应 + PaiRec 融合 | 请求上下文 | 本请求 | 后排；不把不同召回原始分数相加 |</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a></span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>**原设计原则仍合理，但取数时机应是“两次”，不是推荐开始前一次把所有特征取完。** 用户及历史在召回前读，候选物品字段只能在召回后按 ID 批量读。把 embedding 全部归为本地也不准确：离线 DSSM 用户塔输出属于 USER 视图；OneTrans embedding 表是模型参数。</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a></span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>### 3.2 Redis 三种视图与格式</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a></span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>P0 选择 standalone Redis、String value、UTF-8 JSON，便于开发检查字段。它是对早期二进制方案的明确阶段选择；JSON 解析和传输成本属于当前测量对象，日后换二进制应重新建立性能基线。这里不额外部署独立特征服务进程；PaiRec 内 `FeatureRepository` 经native客户端adapter提供统一批读能力。</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a></span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>```text</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>rec:qkv:&lt;release_id&gt;:user:&lt;uid&gt;</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>rec:qkv:&lt;release_id&gt;:history:&lt;uid&gt;</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>rec:qkv:&lt;release_id&gt;:item:&lt;iid&gt;</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>```</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a></span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>所有值都有 `schema_version=&quot;feature_v1&quot;`、`release_id`、`entity_id`、`view`。`view` 分别为 `USER/HISTORY/ITEM_RANK`。业务 ID 在 JSON/Redis 中用十进制字符串，规范化后禁止空/负值/隐式浮点转换。调用旧数值接口时显式检查范围。</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a></span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>| 视图 | body 字段及类型 | 缺失处理 |</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>|---|---|---|</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>| USER | `gender_code:int|null, age_code:int|null, missing_fields:string[], user_dense:float[15], dense_vector:float[D], embedding_space_id:string, sparse_tokens:object[], sparse_known_history_count:int, sparse_missing_history_count:int` | 原始缺失保留标志；供模型的数值默认 0，不能抹掉缺失身份；缺用户向量不随机替代 |</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>| HISTORY | `item_ids:string[L], positions:int[L], valid_length:int, history_hash:string, time_semantics:&quot;ordinal&quot;` | L≤10；空历史显式记录；不得把不存在的 HISTORY 当作正常空历史 |</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>| ITEM_RANK | `category_code:int|null, candidate_dense:float[15], valid_counts:object, missing_counts:object, metadata_available:bool` | 整键缺失：丢候选并记录；已存在但字段缺失：按契约数值 0+缺失标记；当前用户接口不得补 fake item |</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a></span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>视图头与 body 可同层 JSON；`body` 不是必须额外包装。不重复把整个原始行塞进线上 value。trace 记录字节数、缺失数与版本，不默认记录完整向量。</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a></span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>`metadata_available` 在本视频配方中特指视频类型是否已知，不是“拥有标题/完整内容”，也不等于 Redis 键是否存在。目标 item 类型为 null 仍可保留真实行为统计并由其他召回返回；NS 使用空类型兼容槽，不能仅因缺类型就当整键缺失丢弃。二值 Sparse 的索引则跳过没有类型 token 的 item。history-only 的统计覆盖由 `n=0/valid_counts=0` 单独表达。</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a></span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>`history_hash = SHA256(canonical_JSON({item_ids, positions, time_semantics}))`，canonical JSON 的 key 排序、无空白分隔、UTF-8 与样例构造脚本一致。release/model 在 KV 身份中另行绑定。</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a></span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>### 3.3 user_dense 与 candidate_dense 的固定顺序</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a></span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>`user_dense = [gender_code_or_0, age_code_or_0, 0,0,0,0,0,0,0,0,0,0,0,0,0]`。后 13 槽明确为 **reserved**，不是假造的十三项业务统计；与现有 RankAssembler 工程接口兼容。前端会使用这些输入，不要求 PaiRec 重写 piecewise/tokenizer。</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a></span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>`candidate_dense` 固定 15 维，以全 release 内同 item 的曝光记录聚合：</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a></span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>| 下标 | 名称 | 定义 |</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>|---:|---|---|</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>| 0 | n | 该 item 的有效 ID 曝光记录数 |</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>| 1 | click_sum | 有效 0/1 click 之和 |</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>| 2 | like_sum | 有效 0/1 like 之和 |</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>| 3 | follow_sum | 有效 0/1 follow 之和 |</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>| 4 | share_sum | 有效 0/1 share 之和 |</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>| 5 | like_rate | like_sum / like_valid |</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>| 6 | follow_rate | follow_sum / follow_valid |</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>| 7 | share_rate | share_sum / share_valid |</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>| 8 | ctr | click_sum / click_valid；仅静态统计，不是模型预测概率 |</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>| 9 | watch_mean | 非负有效 watching_times 总和 / watch_valid |</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>| 10 | watch_max | 有效 watching_times 最大值 |</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>| 11 | watch_sum | 有效 watching_times 总和 |</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>| 12 | gender1_share | gender_code==1 数 / gender_valid；不命名 male_ratio |</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>| 13 | avg_age_code | 原始 age 编码之和 / age_valid；不解释为平均年龄 |</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>| 14 | log1p_watch_sum | log(1+watch_sum) |</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a></span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>每类 rate 使用自己的有效分母。分母 0 时输出数值 0 并保留 `valid_counts=0` 和缺失计数；禁止 NaN/Inf。视频长短类型只接受有效码 0/1；同 item 有多个有效码时阻断 release，不静默取众数。unknown 用 null，不能并入真实 `video_type_0`。15 维是所选快照的**行为/受众统计**，并非原始视频内容元数据。</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a></span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>真实样例 item `4` 的向量（仅前 20 万行聚合）：</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a></span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>```json</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>[36,6,0,0,0,0.0,0.0,0.0,0.16666666666666666,0.7777777777777778,2,28,0.75,2.5555555555555554,3.367295829986474]</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>```</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a></span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>## 4. 离线生产、装载与发布</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a></span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>### 4.1 三层流水线</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a></span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>```mermaid</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>flowchart LR</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>  T[Tenrec 指定范围与源行号] --&gt; B[标准用户 历史 catalog 物品统计]</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>  B --&gt; U[USER 与 HISTORY]</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>  B --&gt; I[ITEM_RANK]</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>  B --&gt; D[DSSM 双塔离线编码]</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>  B --&gt; O[视频类型词项文档]</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>  B --&gt; A[核验 SID 与 OneTrans 参数覆盖]</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>  D --&gt; UV[用户向量]</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>  D --&gt; MV[物品向量]</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>  U --&gt; R[Redis]</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>  I --&gt; R</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>  UV --&gt; R</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>  MV --&gt; M[Milvus]</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>  O --&gt; S[OpenSearch]</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>  A --&gt; P[PS 与模型工件]</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>  R --&gt; V[数量 hash 覆盖率 真实读取验收]</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>  M --&gt; V</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>  S --&gt; V</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>  P --&gt; V</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>  V --&gt; F[冻结 release manifest 后启动 PaiRec]</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>```</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a></span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>Tenrec 是离线源文件，不是在线数据库服务。无需先部署一个关系数据库再让各模型查询 CSV。缺口不是仅“Tenrec 加工、DSSM 用户向量”两项，还包括多存储装载、模型映射一致性、服务 readiness 与发布清单。</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a></span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>### 4.2 全量处理约束</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a></span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>1. 固定 input 文件、范围、内容 hash、解析规则、生成器版本。文档 fixture 与正式 release 分开；首次小规模接线可以选择显式子集，但记录每种实体/索引规模，不能以抽样规模宣称全量完成。</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>2. 流式解析且保留源行号。`\N`、空、格式错误独立计数；非法 ID 阻断发布并记录源行与原因，不能默默剔除后继续发布；反馈只认 0/1，视频类型只认 0/1/null；其他非负原始编码 0 保留。</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>3. 按 uid 和 item 分桶落中间产物，桶内归并或外部排序，完成全局聚合。不能逐块 `drop_duplicates` 后拼接就声称全局唯一。用户属性/历史冲突采用**最早源行**作为固定快照并记录冲突数，不使用非确定性的最后读取者胜出。</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>4. catalog 保留目标 item 与历史 item 的并集及覆盖标记。只在历史出现的 item 缺统计/视频类型时保持 unknown，允许用于 S embedding 覆盖，不伪造曝光次数。召回可服务目录以目标/实际可检索资产覆盖为准；每个被返回候选必须能 join ITEM_RANK。全文所称 category 参数只表示该兼容类型码，不表示主题类别。</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>5. 从同一份 user/history 生成 DSSM user 输入、sparse tokens、S 输入与 Gen 原始历史。不得四个模块各自按不同 CSV 范围重新提取用户。</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>6. 模型派生用明确 checkpoint/vocab/归一化/历史长度生成同空间 user/item 向量；用户塔输出新增导出。维度从 checkpoint `out_dim` 读取，不能写死“所有 DSSM 都 64 维”。若之后选择固定随机模型，也必须先正式生成、命名、校验工件，再调用真实 tower 导出；接口样例不会自行随机凑数。</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>7. 输出分片、count/hash、coverage 和拒绝记录统计；每步可重复运行。已有 `build_domain_features.awk` 还存在将 gender 列用于 age 聚合的问题，应通过标准列名/字段定义统一替代，见开发指导。</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a></span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>### 4.3 各存储装载设计</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a></span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>| 存储 | 创建/装载 | 验证/发布 |</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>|---|---|---|</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>| Redis | 新 release key prefix；SET String，批量 pipeline，单批按条数与字节双上限；同 release 只接受相同内容重试，改变内容创建新 release；不设置业务快照 TTL | 每批写结果、分片 count/hash；抽样 GET 解码核对头/维度/值；USER/HISTORY 联接完整性；装载完成标志最后写；容量预检并禁止淘汰这些特征键 |</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>| Milvus | 复用现有 loader；创建版本化 collection，raw item ID 与归一化 item vector 同行；维度和 IP/cosine 策略由 manifest 冻结；创建索引并 load | 数量、唯一 ID、真实 search、返回 ID 可 join ITEM_RANK；不得失败转 numpy；具体 index 参数来自所选部署与目标规模，不捏造为已调优值 |</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>| OpenSearch | 创建版本化 index；`item_id:keyword`，`tokens:text` 使用 whitespace analyzer、BM25；每个已知类型目标 item 文档 `tokens=&quot;video_type_&lt;code&gt;&quot;`；批量 bulk | 检查逐项 bulk 错误，refresh，文档数量、mapping 与实际用户查询；类型缺失项不假造 token，记录未建索引数量；全量 CTR-only 理论文档数为 2,157,486，实际按所选 scope 校验 |</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>| OneTrans PS/工件 | 装载 user/item/category 对应表、权重、前端转换参数；覆盖当前可服务用户、候选及历史；保留原始 ID 与表 key 语义 | 元素维度、表数量/hash、lookup 命中；如果模型期望连续映射必须显式适配，不能把 raw ID 当行号直接越界访问 |</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>| DataSystem | 部署实际 worker；生成与精排使用隔离空间；精排设置实际 TTL，初始化失败不宣称 ready | 跨进程 S 写、NS 读真实 tensor；校验异常与缺失区分；生命周期验证，不预装业务 CSV |</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a></span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>Redis 默认可使用磁盘持久化，或在启动前按清单完整重装，两者至少确定一个可复现策略。redis 服务活着不等于该 release 已就绪。P0 不做在线热切换；停服切到已验证的完整 release 再重启即可。后续热切换再设计双版本容量和请求内固定版本，不作为首条请求前置条件。</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a></span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>`release_manifest` 至少包含：数据范围/hash/生成器版本；user/item/history/catalog 数量；feature schema/dense 字段顺序；DSSM checkpoint+vocab+归一化+维度/空间 ID；Redis 前缀与装载计数；Milvus collection/index/metric；OpenSearch index/mapping hash/token 规则；Gen engine/tokenizer/SID 双向映射/词表范围；OneTrans weights/frontend/PS 表版本、shape/backend；各产物 checksum 与 coverage；ready 状态。**缺少真实值应拒绝发布，不填写“待定”后允许上线。**</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a></span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>本轮增加 `data_semantics_revision=1`、`category_semantics=&quot;video_length_type&quot;`、`code_label_mapping=&quot;undisclosed&quot;`、`sparse_recipe=&quot;video_type_binary_v1&quot;` 与 `id_namespace=&quot;tenrec_video_raw&quot;`。声明主交互源、可选元信息补充源及各自 hash、补全前后覆盖、类型冲突数、缺失计数、raw ID↔model index 映射版本。`cat_` 旧索引与新 `video_type_` 查询不兼容，正式迁移必须同时重建 USER 稀疏词项与 OpenSearch 文档并发布新 release；不能只替换在线请求文本。当前示例 release 仅是未发布的文档 fixture 标识。</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a></span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>## 5. 五份服务接口样例与执行契约</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a></span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>以下五份是业务payload契约；正式跨服务调用统一由客户端adapter发起native bRPC，四个HTTP端点作为服务端bridge的本机后端及单服务调试入口，Gen保持原生Recommend。新增typed protobuf按这些字段生成，不能继续用旧uid-only Vector/DeepFM Rank消息。</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a></span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>五份请求位于 [api_examples](/root/half_latency/recommendation_design_assets/api_examples)。每份配有 `.response.schema.json`：这是期望响应结构与验证约束，**不是捏造成功响应**，没有虚构模型分数或延迟。默认样例的 release 标识为 `qkv_doc200k_6f148b4adf81`，专属于前述 fixture，不代表已装载的生产 release。</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a></span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>共有约束：C ABI与服务桥显式映射JSON/protobuf，OneTrans数值ID不能经protobuf默认JSON的int64字符串表示而被旧`as_int()`读成0；使用可保持int64精度的解析器并校验类型。原始 ID 跨服务可关联；业务错误与 transport 错误都检查；非数值分数/维度不符/版本错配拒绝；每请求 timeout=min(阶段预算,剩余总预算)。同名 HTTP `/recall` 属于两个独立服务地址。</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a></span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>### 5.1 Dense：离线 DSSM 用户向量 → Milvus</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a></span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>业务后端新增正式模式，参考 `inference/dssm_recall_server.py`，本机 `POST /recall`；远端正式方法为新增 `loadmodel.v1.DenseRecallService.Recall`。</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a></span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>```text</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>request_id:string</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>release_id:string</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>embedding_space_id:string</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>query_vector:float[D]   // 真正 user tower 导出，有限且按 manifest 归一化</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>topk:int               // bootstrap=50</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>```</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a></span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>输入模板：[01_dense.request.json](/root/half_latency/recommendation_design_assets/api_examples/01_dense.request.json)。其中 `$artifact` 对象明确是**未绑定占位**，不符合正式 `float[D]` wire 类型，不能直接发送。当前没有真实用户向量，不能填 64 个“看起来合理”的数。`build_interface_examples.py` 在提供真实向量文件和绑定清单后生成完整请求；原 uid→本地画像→在线 user tower 模式另名保留，不作为正式负载模式。</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a></span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>成功响应：`request_id, source=&quot;milvus&quot;, executed=true, versions{release_id,embedding_space_id}, items[{item_id:string,score:finite}]`。空 items 可表达真实零结果，但固定贯通样例须选可检索用户并得到合法候选。启动时 collection 维度、metric、空间版本检查失败则不 ready。</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a></span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>### 5.2 Sparse：真实视频长短类型词项 → OpenSearch BM25</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a></span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>新增独立薄服务 `inference/sparse_recall_server.py`，本机 `POST /recall`；远端正式方法为新增 `loadmodel.v1.SparseRecallService.Recall`。复用 sh 的 term+boost 查询语义；sh 现有 C++/Go 客户端并不是已经具备完整部署能力的独立服务。</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a></span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>样例用户输入（完整文件另含 request/release）：</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a></span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>```json</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>{&quot;sparse_tokens&quot;:[{&quot;token&quot;:&quot;video_type_0&quot;,&quot;weight&quot;:0.2222222222222222},{&quot;token&quot;:&quot;video_type_1&quot;,&quot;weight&quot;:0.7777777777777778}],&quot;topk&quot;:50}</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>```</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a></span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>[02_sparse.request.json](/root/half_latency/recommendation_design_assets/api_examples/02_sparse.request.json)。服务将每项转为同词项的 term query + boost，`bool.should`、`minimum_should_match=1`，按照 BM25 `_score` 取 topk。index 在服务启动绑定，不允许请求任意指定。重复词项先合并，权重须有限且非负，词项条数/长度须有上限；空词项明确 empty，不制造兴趣。</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a></span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>成功响应：`request_id, source=&quot;opensearch&quot;, executed=true, versions{release_id}, items[{item_id,score}]`。读取到 OpenSearch HTTP 200 仍需检查 shard/业务错误。</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a></span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>**代表性限制：** 当前仅两种视频长短类型，每个已索引 item 只有一个 token。按全量 CTR-only 目录，两条倒排分别关联 1,365,660 和 791,826 个 item；对同时含两词项的用户查询，会匹配整个已索引目录，很多分数相同。它可验证真实数据库/在线链路及这一特定负载，不能作为“已覆盖典型文本搜索负载”的验收结论。统计文档数、词表大小、每文档长度、DF、每查询词数、命中数和同分率；不通过加长随机标题改善指标。</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a></span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>P1 可用真实点击目标与固定历史构造有据的共现词项：每个唯一 `(uid,clicked_target,historical_item)` 至多计一次，目标文档保留确定性 top-N 历史邻居词 `coitem_&lt;raw_id&gt;`，用户使用自己历史中的同类词查询。N、最小共现支持、热门词处理、文档/查询上限均需在独立配方与分布报告中固定，且先用样本证明有实际交集；这是行为检索，不称文本理解。开发指导给出建设位置，当前 P0 不因此增加训练或共现发布前置依赖。</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a></span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>### 5.3 Generative：同源历史 SID → TRT-LLM + DataSystem</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a></span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>复用 bRPC `pairec.inference.RecommendService.Recommend`。现有 proto2 字段：</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a></span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>```text</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>user_id:string</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>history:[{value:int32[4]}]</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>topk:10, temperature:1.0, beam_width:1</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>request_id:string</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>// 不设置 payload_padding</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a>```</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a></span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>[03_generative.request.json](/root/half_latency/recommendation_design_assets/api_examples/03_generative.request.json)是 protobuf 字段的 JSON 展示形式，不表示存在同名 REST 地址。真实 SID 缺失，默认文件的 `$artifact` 明确不属于 wire 类型。部署模型固定 SID width=4 的这条路径必须校验每级码本范围；如选用别的模型契约需整体更新，不能任意塞四个数。</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a></span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>PaiRec 适配器：同一 HISTORY → 按原始 ID 映射 SID → 缺映射记录并剔除 → 按实际 engine 输入预算保留尾部完整 item → 请求。尾部只指文件既定顺序末端，不声称真实时间最新。输出 SID 的 reverse map 碰撞必须保留明确列表/确定次序并展开，过滤不在可服务 catalog 的 ID，去重；不能静默随机选归属。</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a></span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>响应沿用 `code,user_id,recommendations[{item_id,semantic_id,score}],trace`，当前业务成功 `code=200`，不要和 bRPC transport 的 `error_code=0` 混淆；实际后端名是 `trtllm_cpp`。`Recommendation.item_id` 当前是 **int32**；装载和输入范围检查必须验证 raw ID 可表示，不能因其他接口使用 int64 就忽略这里。将来超范围需新 tag 的 int64/字符串兼容升级。score 可延续当前工程定义，仅作为本路排序依据，不称准确概率。</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a></span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>版本绑定通过发布清单及 Health/启动握手完成；P0 不先为所有版本字段扩整个 protobuf。要求 trace 能证明 TRT runner 实际执行、后端类型、实际输入/输出 token、缓存状态。DataSystem 原生 KV 的读写取决于模型 block 生命周期；需要专门可触发 offload/onboard 的验证样例，不能要求每个普通请求固定 N 次 Get/Set 并用 probe 凑数。</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a></span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>### 5.4 OneTrans S：历史 → 真实 KV ready</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a></span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>业务后端扩展 HTTP `POST /ingest`；远端正式方法新增 `loadmodel.v1.HistoryPrepareService.Prepare`。保留现有字段，增加身份与完成契约：</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a></span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>```text</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>user_id:&quot;1&quot;</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>item_ids:[2,3,80936,781,111774,1230,26403,991,2362,1202]  // int64</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>timestamps:[1,2,3,4,5,6,7,8,9,10]                      // ordinal</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>time_semantics:&quot;ordinal&quot;</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>request_id,release_id,model_version,history_hash,kv_key</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>```</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a></span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>[04_prepare.request.json](/root/half_latency/recommendation_design_assets/api_examples/04_prepare.request.json)使用真实历史；model version 留有显式待绑定字符串。默认请求 ID 是文档标识，实际反复发请求必须生成新 ID。</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a></span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>目标键：`fine:&lt;release_id&gt;:&lt;model_version&gt;:&lt;request_id&gt;`。S 真正读取 item embedding、运行各层编码、序列化 KV，成功写入共享 DataSystem 后返回：`accepted=true, ready=true, executed=true, kv_key, history_hash, kv_bytes&gt;0, kv_backend=&quot;datasystem&quot;, backend=&quot;cpp_cpu&quot;, versions`。必须沿 pipeline、KVKey、store 实际使用该键；只增加 JSON 参数但内部仍按 uid 写旧键无效。</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a></span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>payload 使用版本化 envelope/header 校验 release/model/request/history 身份以及层数、序列长度、dtype；现适配器只存 `rec.payload`，不能只把新元数据放进 C++ 内存结构而误以为已跨进程持久化。Set 失败、初始化失败、坏 payload 各自报告，不统一装成正常 miss。</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a></span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a>### 5.5 OneTrans NS：完整业务特征 + 对应 KV → logits</span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a></span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>业务后端扩展 HTTP `POST /score`，远端正式方法新增 `loadmodel.v1.CandidateScoreService.Score`；不使用依赖本地业务 TSV 的 `/rank`。输入：</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a></span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>```text</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>user_id:&quot;1&quot;, uid_sparse:1, user_dense:float[15]</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>candidates:[{item_id:int64, artist_ids:int64[], album_ids:int64[], dense:float[15]}]</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>request_id,release_id,model_version,history_hash,kv_key</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>```</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a></span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>[05_rank.request.json](/root/half_latency/recommendation_design_assets/api_examples/05_rank.request.json)完整列出真实 item `4`、`1201` 的派生数值。适配规则固定为 `artist_ids=[category_code+1]`，未知类型 `[]`，`album_ids=[]`；这只是把视频长短类型放进旧接口槽，**不是声明 Tenrec 有艺术家/专辑**。PS 此兼容表有效 key 只有 1/2，类型全缺失候选不查询此表；即使 item/user 表很大，这个槽的访问分布也很集中。空 album 省去该组 PS 查询，但保留模型的 token 组计算；均写入负载说明，不能宣称已模拟大规模作者/专辑表。</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a></span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>NS 必须在本请求 S 成功 ready 后调用，读取同一 KV 并真实执行。响应保留 `logits[M,2]`，新增 `item_ids:string[M]` 按输入次序回显，以及 `executed,kv_hit,kv_backend,backend,device,versions,history_hash,kv_key,request_id`。PaiRec 检查 M、ID、顺序、数值和身份完全一致，然后使用第一列 logit 降序排序。它不是已校准 pCTR，不必为排序额外 sigmoid。</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a></span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a>KV miss 不允许跳过模型返回统一 0.5 并标成功。实际计算恰好同分可接受。M=0 不调用 NS，而是明确 empty 状态；贯通验收样例必须 M&gt;0。本 profile S/NS 明确 `cpp_cpu`，参数保留当前工程 D128、H4、4 层、S 上限50、每候选5个 NS token、fp32。实际输入历史仍最多10，不能把上限50声称为每请求真实长度50。后续 CUDA 另建配置并禁止静默 CPU fallback。</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a></span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>### 5.6 响应、错误与样例边界</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a></span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>五个 `.response.schema.json` 用于成功响应结构检查；额外的跨字段规则由客户端执行，例如 `len(item_ids)==len(logits)==M`、版本一致、没有重排错配。schema 不证明执行真实性，必须结合服务日志和后端访问结果。</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a></span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a>新增 HTTP 服务建议错误 envelope `error{code,message,retryable},request_id`；参数错误400、版本/身份冲突409、未就绪503、上游超时504、内部错误500。已有 bRPC 使用 response.code/error，不强行套 HTTP 状态。S accepted=false 即失败，不能只看200。默认无自动重试，避免无声重复计算及写入。</span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a></span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>## 6. 新应用的任务编排、adapter与正式配置</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a></span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>### 6.1 明确的一次请求依赖</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a></span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>```mermaid</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>sequenceDiagram</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>  participant C as 请求方</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>  participant P as Controller与RecommendEngine</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>  participant A as native客户端adapter</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>  participant R as Redis</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>  participant V as 三路召回服务</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>  participant S as OneTrans S及服务桥</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>  participant K as DataSystem</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>  participant N as OneTrans NS及服务桥</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>  C-&gt;&gt;P: POST /api/recommend</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>  P-&gt;&gt;P: 固定内部request_id release deadline</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>  P-&gt;&gt;A: FeaturesMGet USER HISTORY</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>  A-&gt;&gt;R: 原生Redis协议 MGET</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>  R--&gt;&gt;P: 经adapter返回同版本特征</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>  par 候选准备</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>    P-&gt;&gt;A: 并发Dense Sparse Generative</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>    A-&gt;&gt;V: native bRPC 各一次</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>    V--&gt;&gt;P: 经adapter返回候选与执行状态</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>    P-&gt;&gt;P: 来源融合 去重 限量</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>    P-&gt;&gt;A: FeaturesMGet ITEM_RANK</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>    A-&gt;&gt;R: 第二次逻辑特征批读</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a>    R--&gt;&gt;P: 经adapter返回按ID对齐的特征</span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>  and 历史前算</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a>    P-&gt;&gt;A: PrepareHistory</span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>    A-&gt;&gt;S: native bRPC Prepare</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>    S-&gt;&gt;K: 写真实KV及身份envelope</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>    K--&gt;&gt;S: 写入成功</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>    S--&gt;&gt;P: 经adapter返回ready或error</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>  end</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>  P-&gt;&gt;P: 两依赖均成功才打分</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>  P-&gt;&gt;A: ScoreCandidates 完整特征与KV身份</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>  A-&gt;&gt;N: native bRPC Score</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>  N-&gt;&gt;K: 读本请求KV并校验</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>  K--&gt;&gt;N: 实际tensor</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>  N--&gt;&gt;P: 经adapter返回真实logits与执行证据</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>  P-&gt;&gt;P: PostSort 稳定排序并Top-K</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>  P--&gt;&gt;C: 实际列表及阶段状态</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>  P-&gt;&gt;A: ReleaseHistory管理调用</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>  A-&gt;&gt;S: native bRPC Release</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>  S-&gt;&gt;K: 在无在途消费者后Del</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>```</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a></span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>图中回包为简洁省略逐层返回箭头，实际响应必须经原调用的adapter解码，不存在Redis/模型绕过adapter直接回调Go的通路。Dense/Sparse/S/NS服务桥到本机HTTP后端的额外耗时在通信视图中展开；Gen本身是原生终点。</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a></span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>清理由PaiRec请求所有者发起，S/KV adapter实际执行；正常、失败、取消、空候选都要终结所有权。`ReleaseHistory`是新增管理方法，经server adapter转S后端新增`/release`，由S管理取消状态与实际删除；桥不自行越过模型服务删除DS对象。它不是第六个推荐业务阶段。原业务请求已超时时，清理使用独立有界1秒管理预算并单独记流量，不使用已过期context后把未发出的删除误记成功。迟到S写由完成回调检查取消状态后回收，TTL120秒兜底。释放幂等；不能在在途NS尚未读取/持有对象时提前删除。Gen原生KV继续按TRT自身生命周期，不混用此删除规则。</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a></span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>### 6.2 用上游公开入口接入，不修改vendor</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a></span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>已经核实官方v2.6.2 [pairec.go](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/pairec.go:80)先注册默认路由，再执行StartHook；[ControllerRegister.Register](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/controller.go:66)按path设置映射。因此新应用可以在StartHook中通过公开 `HandleFunc`替换`/api/recommend`，handler闭包持有Engine。</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a></span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>```go</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>// 新应用代码示意；不是本轮已创建的可执行程序。</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>func main() {</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>    pairec.AddStartHook(func() error {</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>        cfg := MustLoadStrictLoadModelConfig(recconf.Config.UserDefineConfs)</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a>        deps := MustOpenVerifiedAdaptersAndReadyRelease(cfg)</span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>        engine := NewRecommendEngine(cfg, deps)</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>        handler := NewRecommendController(engine)</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>        pairec.HandleFunc(&quot;/api/recommend&quot;, handler.ServeHTTP)</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>        return nil</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>    })</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>    pairec.Run()</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>}</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a>```</span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a></span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a>已核实上游`runStartHook`对返回error执行panic而终止启动；应用应返回真实初始化/校验错误，不吞错后继续。上游框架仍作为依赖提供入口/配置/公共能力，但此业务请求不再调用其默认`UserRecommend`流水线。</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a></span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a>新`RecommendEngine`顺序直接对应业务：`LoadUserHistory → Parallel(Recall3,Prepare) → Fuse → LoadItems → JoinPrepare → Score → PostSort`。不注册`LoadModelRecall`，不把NS藏在Sort插件，不给vendor controller补一长串项目错误键。函数有类型的result/error，controller一次汇总并返回。</span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a></span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a>### 6.3 应用与通信的代码边界</span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a></span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>| 新模块（建议路径） | 负责 | 不负责 |</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>|---|---|---|</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>| `cmd/pairec-loadmodel/main.go` | 读配置、组装依赖、注册路由 | 策略、PRPC、模型计算 |</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>| `internal/controller` | 请求校验、内部唯一ID、HTTP错误/结果 | 下游连接与候选融合 |</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a>| `internal/engine` | 依赖、并行、S Future、取消和所有权 | 手工socket/protobuf framing |</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>| `internal/feature` | 两次读取、typed校验、候选缺失处理 | 自行加载全量业务表 |</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>| `internal/clients` | 五服务业务接口与返回校验 | bRPC网络机制 |</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>| `internal/engine/fusion.go`、`internal/engine/post_sort.go` | 来源合并、去重、logit排序 | adapter路由与模型推理 |</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>| `internal/transport/native` | 薄CGO调用、buffer所有权、错误映射 | 新造PRPC或复制旧Go客户端 |</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>| `native/include`、`native/src` | C ABI、原生Channel、连接池、生成stub、Redis协议 | 推荐流程、结果缓存、压力扇出 |</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>| `native/server` | 四种role的native RPC与本机HTTP显式转换 | DeepFM分支、画像重查、编排 |</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>| `native/contracts`、`scripts` | 新typed protobuf/业务schema、离线生产/loader | 复制整个旧工程构建与部署脚本 |</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a></span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>只有通信薄封装认识native handle；其余Go业务包只依赖接口。CI通过依赖/导入检查确认这一点，不能只在目录名字上称“隔离”。</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a></span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>### 6.4 客户端adapter最小合同</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a></span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>- 版本：`abi_version=rec_adapter_v1`；运行时报告实际adapter、libbrpc、protobuf、transport构建标识，匹配发布清单。ABI不兼容立即失败。</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>- 数据：opaque client/call handle；route allowlist；UTF-8业务JSON以pointer+length传递。不能把二进制buffer当NUL结尾字符串，不能保留Go内存指针到异步生命周期。</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>- 资源：输入在提交时复制到C++所有内存；响应由adapter分配且通过唯一free接口释放。C++异常转换为错误，不跨C ABI。关闭顺序为停止接收→取消/排空在途调用→释放channel/handle。</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>- 并发：每个route复用线程安全channel/连接池；请求有独立controller与buffer。队列与in-flight上限从运行清单固定，禁止一个全局锁串行五服务，禁止每请求fork CLI。</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>- 期限：提交前检查剩余时间；排队消耗也算入预算。native controller与服务桥继续传剩余期限，零自动重试；超时/取消不等同于远端已经停止，需要配合S生命周期。</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>- 结果：区分ABI/transport/桥接/业务错误；HTTP200、bRPC传输成功或bridge返回成功都不能代替真实模型执行。Gen继续检查业务code200、runner计数与`trtllm_cpp`。</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a>- 范围：FeaturesMGet直接走Redis RESP；五模型调用走native baidu_std；ReleaseHistory只作管理。模型内部PS/DataSystem/Milvus/OS路径由对应服务负责。</span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a></span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>新增四服务protobuf：`loadmodel.v1.DenseRecallService.Recall`、`SparseRecallService.Recall`、`HistoryPrepareService.Prepare/Release`、`CandidateScoreService.Score`。它们需在新工程实现，当前五份JSON仍只是同义业务payload示例。服务端显式构造OneTrans数值JSON，不能直接套protobuf默认JSON导致int64字符串被旧parser读取为0。现有OneTrans parser以double保存数值，P0须验证本Tenrec范围均可精确表示；若提供通用int64接口保证则需补真正整数解析，不只是更名as_int。详见开发指导。</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a></span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>### 6.5 候选规则继续沿用已冻结业务设计</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a></span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a>bootstrap预算：Dense50、Sparse50、Gen10、NS≤50、最终≤10。先按本路rank保留Gen最多10，再Sparse/Dense固定轮询补至50；raw ID去重并保留全部来源，过滤当前HISTORY已看项。不同召回原始分数不相加，规则不受底层bRPC选型影响。</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a></span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>第二次取数后，ITEM_RANK整键缺失按`drop_and_report`剔除，不补拉新候选。网络/坏JSON/错版本仍失败；固定贯通验收要求整键缺失数0。空候选结束时仍清理已启动的S，不能只提前return留下KV。</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a></span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>NS响应验证成功后只回填第一列logit；`PostSort`做一次稳定排序、去重、Top-K，同分按融合次序/raw ID打破。实际不足K就报告shortfall，不假造候选。不增加Tenrec没有的库存/在售规则，也不靠后排强塞各来源个数。</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a></span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>### 6.6 唯一正式配置与启动</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a></span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>完整模板：[scene.tenrec_load_v1.template.json](/root/half_latency/recommendation_design_assets/scene.tenrec_load_v1.template.json)。保留上游JSON外壳、业务profile和数据schema，新增`design_revision=2`。自有controller直接解析`UserDefineConfs.LoadModel`；内置`RecallConfs/SortConfs/SceneConfs/UserFeatureConfs/FeatureConfs`为空，不让框架再启动另一套相同流水线。</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a></span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>```text</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>LoadModel.application = clean upstream v2.6.2 + custom_controller + RecommendEngine</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>LoadModel.transport = cgo_c_abi + rec_adapter_v1 + native baidu_std/TCP</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>LoadModel.feature_store = native adapter + Redis RESP</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>LoadModel.recall.* / onetrans.prepare,score = 远端BRPC端点与route</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>LoadModel.orchestration = 两次特征读取、四任务并行、依赖汇合后Score</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>```</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a></span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>`${...}`必须预启动解析，真实地址/工件/表版本由release与部署清单绑定；未解析拒绝启动。`{request_id}`在每次请求建立时填入KV键。四服务的本机HTTP backend地址属于server adapter部署配置，不暴露为Go的直接调用分支。Redis凭据不写入可分享配置/日志。</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a></span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a>OneTrans仍固定远程PS/bRPC、S/NS cppCPU、真实DataSystem。worker显式使用`--embedding-source ps --ps-server &lt;实际地址&gt;`、`--compute-backend cpp`、`--kv-backend datasystem`、`--kv-ttl-seconds 120`。PaiRec配置声明不会自动更改独立worker启动参数，readiness必须逐项验证。</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a></span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>**时间预算调整为总25秒**。核实上游[app.go](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/app.go:82) HTTP读写上限30秒，25秒为返回结果留余量。Redis每阶段1秒，Dense/Sparse各5秒，Gen/S/NS各10秒，每次调用取剩余总预算与阶段预算的较小值，排队/转换也计入。此为联调初值，不是性能承诺。</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a></span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a>启动门槛：干净依赖hash、唯一controller路由、native ABI及实际库版本、五服务和桥接health、ready release、Redis三视图/索引/PS覆盖、DS连接、显式后端/设备；不得把旧代码忽略未知配置后“能启动”当成新架构已经实施。</span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a></span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a>## 7. 边界、验收与短期推进</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a></span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a>正式 profile 当前采用 strict 错误策略：任何必要数据库访问、版本检查、S/NS 执行失败都不能算完整推荐成功。真实召回零结果可作为 empty 路径返回状态，但不满足固定用户五服务贯通验收。未来部分召回失败降级可以做另一个明确 profile，不能混入成功率分母。</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a></span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>| 关口 | 完成条件 | 明确不要求 |</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>|---|---|---|</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a>| G0 干净骨架与契约 | 干净上游依赖、自有controller/Engine、native adapter边界；本字段表/五接口/配置，工件版本可验证 | 新训练、效果达标 |</span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>| G1 数据与单服务 | Redis/Milvus/OS/PS已装载；五服务各自用实际输入执行，记录合法输出与后端 | 先部署全部历史服务 |</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>| G2 最高优先级：单请求闭环 | `/api/recommend`→两次Redis→三召回+S→同KV NS→真实排序结果；每阶段同request/release；无mock/跳算 | 先完成GPU改造或自动化平台 |</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a>| G3 有界持续运行 | 多用户、同uid并发隔离、失败/取消传播、TTL/Del、无迟到KV永久残留；外部回放产生请求 | 先优化准确率 |</span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>| G4 代表性负载 | 固定实际数据规模/稀疏选择性/序列长度/候选数/backend/缓存/字节量，再测性能 | 用压力模块制造内部无关流量 |</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a>| G5 算法质量 | OneTrans训练、DSSM/Gen/稀疏效果优化 | 不倒置为G2前置门槛 |</span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a></span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>必须保留的现实限制：当前CPU精排不能解释GPU精排性能；十项固定历史不能解释长序列负载；两类为主的词项不能解释丰富文本倒排；reserved0用户字段和空album降低部分特征/PS访问多样性；文档fixture不等于全量数据；离线 DSSM 用户塔意味着在线负载不包含塔计算。这些限制不阻止单请求接通，但必须随运行结果一并说明。</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a></span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>## 8. 本次交付验证与证据定位</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a></span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a>本次实际做了源代码核对、官方上游基线及扩展点核验、真实 CSV 抽样与可复核聚合、JSON 配置/接口结构和跨文件一致性检查。未创建新应用或编译native adapter。没有在本次部署 Redis/OpenSearch/Milvus/TRT/OneTrans，也没有实际捕获五服务成功输出。缺真实 DSSM 用户向量和已部署 SID 映射时，样例工具保持未绑定状态并在要求完整工件时失败，不以假数据掩盖缺口。</span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a></span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>关键源码入口（8506只读参考，不是新应用导入清单）：</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a></span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>- [官方上游入口](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/pairec.go)、[公开路由](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/route.go)：干净应用可用的公开扩展机制。</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>- [8506 目标 main](/root/half_latency/recommendation_design_assets/source_8506_530f773/services/main.go)、[现有 OneTrans 场景](/root/half_latency/recommendation_design_assets/source_8506_530f773/configs/pairec_config.onetrans_rank.json)：注册和场景现状。</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>- [DSSM exporter](/root/half_latency/recommendation_design_assets/source_8506_530f773/training/dssm/export_embeddings.py)：已有 item vector 和 user profile，缺 user vector 导出。</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>- [Gen proto](/root/half_latency/recommendation_design_assets/source_8506_530f773/proto/recommend.proto)：实际字段、int32 item、trace 与 bRPC service。</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>- [OneTrans HTTP入口](/root/real_model/OneTrans_HSE_project/cpp/tools/server_main.cpp)、[pipeline](/root/real_model/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp)、[DataSystem store](/root/real_model/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp)：S完成时点、真实KV与TTL/Del。</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>- [前一轮缺口规划](/root/real_model/load_model_gap_plan_20260929.md)：本次设计承接的优先级；本文件对具体字段、请求级键、两次取数和正式配置作进一步冻结。</span></pre></html>

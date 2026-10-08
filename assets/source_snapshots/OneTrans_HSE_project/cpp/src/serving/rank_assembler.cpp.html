@@ -1,0 +1,110 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/serving/rank_assembler.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/serving/rank_assembler.cpp</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>4db8669cfdb94ccf765e9cf9dbda8b7fdc7b309daf5428017b0f58f21ecec191</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;serving/rank_assembler.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;fstream&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#include &lt;sstream&gt;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#include &lt;stdexcept&gt;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// UTF-8 BOM 剥离（Linux 下头行一般无 BOM，防御式处理）</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>static std::string strip_utf8_bom(const std::string&amp; s) {</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>    if (s.size() &gt;= 3 &amp;&amp; static_cast&lt;unsigned char&gt;(s[0]) == 0xEF &amp;&amp;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>        static_cast&lt;unsigned char&gt;(s[1]) == 0xBB &amp;&amp;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>        static_cast&lt;unsigned char&gt;(s[2]) == 0xBF)</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>        return s.substr(3);</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>    return s;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>}</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>namespace onetrans {</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a></span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>void RankAssembler::load_item_lookup(const std::string&amp; path) {</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    std::ifstream in(path);</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>    if (!in) throw std::runtime_error(&quot;rank item lookup 文件不可读: &quot; + path);</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>    std::string line;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>    bool first = true;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>    int64_t rows = 0;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    while (std::getline(in, line)) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>        if (line.empty()) continue;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>        if (first) {  // 表头</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>            first = false;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>            continue;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>        }</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>        std::istringstream ss = std::istringstream(strip_utf8_bom(line));</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>        std::string tok;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>        // item_id \t artist_ids \t album_ids \t d1..d15</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>        std::vector&lt;std::string&gt; cols;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>        while (std::getline(ss, tok, &#x27;\t&#x27;)) cols.push_back(tok);</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>        if (cols.size() &lt; 3) continue;  // 坏行跳过</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>        int64_t item_id = std::strtoll(cols[0].c_str(), nullptr, 10);</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>        int64_t cat = std::strtoll(cols[1].c_str(), nullptr, 10);</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>        ItemRank ir;</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>        ir.artist_ids.push_back(cat);</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>        ir.album_ids.push_back(cat);  // artist/album 复用 video_category</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>        ir.dense.reserve(static_cast&lt;size_t&gt;(n_cand_dense_));</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>        for (int i = 3; i &lt; static_cast&lt;int&gt;(cols.size()) &amp;&amp; i &lt; 3 + n_cand_dense_; ++i)</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>            ir.dense.push_back(static_cast&lt;float&gt;(std::strtod(cols[i].c_str(), nullptr)));</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>        while (static_cast&lt;int&gt;(ir.dense.size()) &lt; n_cand_dense_) ir.dense.push_back(0.0f);</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>        items_[item_id] = std::move(ir);</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>        ++rows;</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    }</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    if (rows == 0) throw std::runtime_error(&quot;rank item lookup 无有效数据行: &quot; + path);</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>}</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a></span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>void RankAssembler::load_user_features(const std::string&amp; path) {</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    std::ifstream in(path);</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    if (!in) throw std::runtime_error(&quot;rank user features 文件不可读: &quot; + path);</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    std::string line;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    bool first = true;</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    int64_t rows = 0;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    while (std::getline(in, line)) {</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>        if (line.empty()) continue;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>        if (first) {  // 表头</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>            first = false;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>            continue;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>        }</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>        std::istringstream ss = std::istringstream(strip_utf8_bom(line));</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>        std::string tok;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>        std::vector&lt;std::string&gt; cols;</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        while (std::getline(ss, tok, &#x27;\t&#x27;)) cols.push_back(tok);</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>        if (cols.size() &lt; 3) continue;  // 需 user_id/gender/age</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>        int64_t uid = std::strtoll(cols[0].c_str(), nullptr, 10);</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>        UserFeat uf;</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        uf.gender = static_cast&lt;float&gt;(std::strtod(cols[1].c_str(), nullptr));</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        uf.age = static_cast&lt;float&gt;(std::strtod(cols[2].c_str(), nullptr));</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>        users_[uid] = uf;</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>        ++rows;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    }</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    if (rows == 0) throw std::runtime_error(&quot;rank user features 无有效数据行: &quot; + path);</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>}</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a></span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>ScoreInput RankAssembler::assemble(const std::string&amp; user_id,</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>                                   const std::vector&lt;int64_t&gt;&amp; item_ids) const {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    ScoreInput in;</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    in.user_id = user_id;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    in.uid_sparse = std::strtoll(user_id.c_str(), nullptr, 10);  // Tenrec 原生 user_id</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    // user_dense：gender/age + 补 0 至 n_user_dense 列</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    in.user_dense.assign(static_cast&lt;size_t&gt;(n_user_dense_), 0.0f);</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    int64_t uid = std::strtoll(user_id.c_str(), nullptr, 10);</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    auto uit = users_.find(uid);</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    if (uit != users_.end()) {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>        in.user_dense[0] = uit-&gt;second.gender;</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>        if (n_user_dense_ &gt;= 2) in.user_dense[1] = uit-&gt;second.age;</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    }</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    in.candidates.reserve(item_ids.size());</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>    for (int64_t id : item_ids) {</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>        CandidateInput cand;</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>        cand.item_id = id;</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>        auto it = items_.find(id);</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>        if (it != items_.end()) {</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>            cand.artist_ids = it-&gt;second.artist_ids;</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>            cand.album_ids = it-&gt;second.album_ids;</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>            cand.dense = it-&gt;second.dense;</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>        } else {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>            cand.dense.assign(static_cast&lt;size_t&gt;(n_cand_dense_), 0.0f);</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>        }</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>        in.candidates.push_back(std::move(cand));</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    }</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    return in;</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>}</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a></span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>}  // namespace onetrans</span></pre></html>

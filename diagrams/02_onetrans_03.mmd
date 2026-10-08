@@ -1,0 +1,13 @@
+flowchart TD
+    A[HTTP 路由与 JSON 解析] --> B[历史处理 NearlineWorker]
+    A --> C[候选装配 RankAssembler]
+    A --> D[候选流水线 ScoreFlow]
+    C --> D
+    B --> E[特征编码 EmbeddingFrontend]
+    D --> E
+    E --> F[参数查询 PsLookupClient 或本地表]
+    B --> G[模型计算 TwoStageRunner]
+    D --> G
+    D --> H[PyTorch 计算桥]
+    B --> I[历史结果存储 KVStore]
+    D --> I

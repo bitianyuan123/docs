@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant P as PaiRec
+    participant F as 特征服务
+    participant R as Redis
+    P->>F: GetUserContext(user_request)
+    F->>R: MGET(user_key,history_key,dense_key,sparse_key)
+    R-->>F: [user_json,history_json,dense_json,sparse_json]
+    F->>F: decode；检查release、schema、history_hash和表示版本
+    F-->>P: user_context，4个view_status均为FOUND
+    P->>P: vector_request.query_vector = user_context.dense_query.vector
+    P->>P: sparse_request.sparse_tokens = user_context.sparse_query.tokens

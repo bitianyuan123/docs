@@ -1,0 +1,18 @@
+{
+  "request_id": "demo-user-1-001",
+  "user_id": "1",
+  "items": [
+    {
+      "item_id": "4"
+    },
+    {
+      "item_id": "1201"
+    },
+    {
+      "item_id": "9002"
+    },
+    {
+      "item_id": "9001"
+    }
+  ]
+}

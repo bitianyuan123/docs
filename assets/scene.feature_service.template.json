@@ -1,0 +1,60 @@
+{
+  "template_only": true,
+  "scene_id": "home_feed",
+  "dataset_release": "qkv_doc200k_6f148b4adf81",
+  "release_state": "BUILDING",
+  "ingress": {
+    "nginx_port": 8080,
+    "pairec_upstream": "pairec:18080"
+  },
+  "feature_service": {
+    "protocol": "baidu_std",
+    "endpoint": null,
+    "schema_version": "feature_v1",
+    "methods": [
+      "GetUserContext",
+      "BatchGetItemRepresentations",
+      "BatchGetItemFeatures"
+    ]
+  },
+  "representations": {
+    "embedding_space_id": null,
+    "sid_version": null,
+    "sparse_recipe_id": "video_type_binary_v1"
+  },
+  "recall": {
+    "vector_topk": 50,
+    "sparse_topk": 50,
+    "generative_topk": 10,
+    "model_bindings_required": true,
+    "history_sid_missing_policy": "fail_branch",
+    "generated_sid_missing_policy": "drop_with_report"
+  },
+  "ranking": {
+    "candidate_limit": 50,
+    "onetrans_interface": "HTTP /ingest + /rank",
+    "history_source": "existing_provider_json_or_kafka",
+    "feature_source": "server_local_tsv",
+    "assets_verified": false,
+    "request_scoped_kv_supported": false
+  },
+  "budgets_ms": {
+    "total": 25000,
+    "feature": 1000,
+    "vector": 5000,
+    "sparse": 5000,
+    "generative": 10000,
+    "ingest": 10000,
+    "rank": 10000
+  },
+  "manual_rules": {
+    "blocked_item_ids": []
+  },
+  "release_requirements": [
+    "绑定并校验服务地址",
+    "真实向量和SID资产齐全",
+    "所有数据库装载读回",
+    "当前OneTrans文件覆盖与PS维度匹配",
+    "本请求历史计算与精排实际执行证据"
+  ]
+}

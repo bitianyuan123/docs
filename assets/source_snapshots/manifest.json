@@ -1,0 +1,506 @@
+{
+  "purpose": "供独立克隆阅读的源码和前期设计快照；不是源码分发或可构建工程。原始hash与快照hash分开，连接口令遮盖。",
+  "files": [
+    {
+      "file": "prior_design/01_recommendation_detailed_design.md.html",
+      "sha256": "c3fdeca80fda9d3ab325e1965dde325e52eda1a5962f149ecb2dcabee48614c2",
+      "source_repository": "prior_design",
+      "source_path": "01_recommendation_detailed_design.md",
+      "source_commit": null,
+      "source_sha256": "69947bebacb2700417cd7992d46430d3988c5841e703747cfbd58badd0d34a25",
+      "line_count": 559,
+      "redacted_lines": [],
+      "referenced_by": [
+        "README.md"
+      ]
+    },
+    {
+      "file": "prior_design/02_recommendation_development_guide.md.html",
+      "sha256": "68baf3963ca1614d193588ddd875951149744fedf3f3ccf207228029095c90d1",
+      "source_repository": "prior_design",
+      "source_path": "02_recommendation_development_guide.md",
+      "source_commit": null,
+      "source_sha256": "c02f61678c913b72f18907b12f5295c5d2e2b7fdbbfc44a94007d35e273ae54b",
+      "line_count": 709,
+      "redacted_lines": [],
+      "referenced_by": [
+        "README.md"
+      ]
+    },
+    {
+      "file": "prior_design/03_recommendation_4plus1_views.md.html",
+      "sha256": "d417adc4b6e66ce1d525816c08da80c1e5eaf185b0fac9341b86afdb49c52621",
+      "source_repository": "prior_design",
+      "source_path": "03_recommendation_4plus1_views.md",
+      "source_commit": null,
+      "source_sha256": "b165aad685e306b84f634169da4e220f98aa4bb667db130295defdcfa1b1c105",
+      "line_count": 749,
+      "redacted_lines": [],
+      "referenced_by": [
+        "README.md"
+      ]
+    },
+    {
+      "file": "prior_design/recommendation_design_assets/contract_decisions.md.html",
+      "sha256": "c608601048b61214f704dc57506bc7f2e61e9a268cab6e69a4fea293bb1f2107",
+      "source_repository": "prior_design",
+      "source_path": "recommendation_design_assets/contract_decisions.md",
+      "source_commit": null,
+      "source_sha256": "886f87c1d9f53912df06b3449a2e30ae62e443c8b52771e284abd5e2deafc8c4",
+      "line_count": 31,
+      "redacted_lines": [],
+      "referenced_by": [
+        "README.md"
+      ]
+    },
+    {
+      "file": "prior_design/recommendation_design_assets/source_pairec_upstream_v2.6.2/route.go.html",
+      "sha256": "6170e7bafbd5a63c0bac3b779b68dcbec970bcf6f60345fd530678516a5397db",
+      "source_repository": "prior_design",
+      "source_path": "recommendation_design_assets/source_pairec_upstream_v2.6.2/route.go",
+      "source_commit": null,
+      "source_sha256": "bed05aa5fee3da67eb26cfcefd1816ad5af1908374458c2cfd149bf8207f325e",
+      "line_count": 79,
+      "redacted_lines": [],
+      "referenced_by": [
+        "09_evidence_and_gaps.md"
+      ]
+    },
+    {
+      "file": "prior_design/recommendation_design_assets/tenrec_audit/official_sources/issue_11_comments.json.html",
+      "sha256": "2c1984b0f5927dde4c167a5dfdf7f2ed03e484ed76728ae79caf042770a78ace",
+      "source_repository": "prior_design",
+      "source_path": "recommendation_design_assets/tenrec_audit/official_sources/issue_11_comments.json",
+      "source_commit": null,
+      "source_sha256": "4168b06d2861604d17ff24178c2fc4c6ac317bc8809f671f09fa609de66f5e6c",
+      "line_count": 49,
+      "redacted_lines": [],
+      "referenced_by": [
+        "09_evidence_and_gaps.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/artifacts/weights/manifest.json.html",
+      "sha256": "eeeae57f15157f934ca9fbf2829350c5bf2cdb315b8775a13d65984a2badd8b7",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/artifacts/weights/manifest.json",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "b91219efecde99ece586b361cbb2e4ceed4f6f79bf161280f5b93305f18add7f",
+      "line_count": 898,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/engine/frontend.cpp.html",
+      "sha256": "2104c8f5cb48c748b22b1f78abdf0798b7b86443ec85101f95fe71d2460edc4f",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/engine/frontend.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "39a4127ca56e258ea259d7582ed06ddee3dc77fe32dc61cf5a19e406ff03e1ed",
+      "line_count": 221,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md",
+        "08_request_walkthrough.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp.html",
+      "sha256": "852d2bcb42bd734d99706d4e01d1106072b28035fdeef4d5416f352625100873",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/kv/datasystem_store.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "406d27c1f4c80a875b685ef9a854105435c5f5451050d292ea26d0332d8b83d2",
+      "line_count": 88,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/kv/serialize.h.html",
+      "sha256": "390d42ce2135ec2f01bf637aef7dc125d6409f8e8d5d7531893b5fb35c69fb8f",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/kv/serialize.h",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "1d6fce99a1642a3ea681b76788b15665c30630cce158b70ace8466ba2a259d3c",
+      "line_count": 36,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/kv/store.cpp.html",
+      "sha256": "004cfc03d69cc8779bcc98356cd6c68e0779095a22c9ca1f69d4a07cdaa843fb",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/kv/store.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "3eed50aab1779983dae5f5459089cc3da60e914e1ec2226052f49f671b95abdb",
+      "line_count": 120,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/flow.cpp.html",
+      "sha256": "512b03d07eda7362f9b443ed33585930fe7018ec32c06ffa99f23af1a3fc0f41",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/flow.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "be3a6efc60eeb4afc7bc950ca6326ce21c33709f669b48a49791f6bdd0dfe5a7",
+      "line_count": 366,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md",
+        "03_pairec_orchestration.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/json_io.cpp.html",
+      "sha256": "df343ac58da74bf84c5668a1726439e3861dd2b1174931a8f2fab336a62e4769",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/json_io.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "dbfcd3f8f0086eadbd339e1943968f49d17b75787071f1c7aa9e599aa0fe70bb",
+      "line_count": 81,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/pipeline.cpp.html",
+      "sha256": "c8032724dfa99dbf5a65806ba47bbb8b2f9a936cf87e87650baeb205edb896ca",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/pipeline.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "d9f64813500d139231b9a3b38261c4f135071e23af72a3701659df674c0ff679",
+      "line_count": 318,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/ps_client.cpp.html",
+      "sha256": "ee4bdf8c696703b250c4fd50333b8eb40ea96b3528cab6b328f483bf344ebd9e",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/ps_client.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "b486b7650b429e69f849eec4cb4e64605e013ce7022f802b308cdeb5ec62b9e5",
+      "line_count": 74,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/rank_assembler.cpp.html",
+      "sha256": "802b336e647e43027764f1825bc7950222adabd0239b8c30577eff8b78f4a4ac",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/rank_assembler.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "4db8669cfdb94ccf765e9cf9dbda8b7fdc7b309daf5428017b0f58f21ecec191",
+      "line_count": 110,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md",
+        "03_pairec_orchestration.md",
+        "09_evidence_and_gaps.md",
+        "10_feature_catalog.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/tools/server_main.cpp.html",
+      "sha256": "d22431ce50694dc185db3aaad2104a491281f08438097c719d3886a5206267c1",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/tools/server_main.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "13995c4b9526bc61e17b94906ece54109f797baeb4a860848779b297d4a405a5",
+      "line_count": 370,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md",
+        "03_pairec_orchestration.md",
+        "08_request_walkthrough.md",
+        "09_evidence_and_gaps.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/deploy/ps/embedding_server.cc.html",
+      "sha256": "6b05506fdeea85d0138eaba34281b2ed7001cf49ffb04ab4fab3b8e19e724f2a",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "deploy/ps/embedding_server.cc",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "7e8adc2e1ec1992270217ae2f20ac5600e2f43c634bb33ae3b3750bac82bfd61",
+      "line_count": 257,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/deploy/ps/embedding_service.proto.html",
+      "sha256": "6ddd105efd0383517760a10df000c4cbb550fd312d17ff51de8ed084a6768357",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "deploy/ps/embedding_service.proto",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "b4b897b8cc24bbaa200542ef1e85463cd55a474524de5356935b95f52004c7b3",
+      "line_count": 76,
+      "redacted_lines": [],
+      "referenced_by": [
+        "08_request_walkthrough.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/docs/单机多节点部署.md.html",
+      "sha256": "ec457e370769f3e6c99745849cf60fd0f54eab32d85ad0c691cd536880bc1642",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "docs/单机多节点部署.md",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "1bb4aed54e27ae29dfae11795a8bcc813e3ac0a1b01b561f4c79175c14a2ffe1",
+      "line_count": 327,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/onetrans/tools/build_domain_features.awk.html",
+      "sha256": "fa0ed1cdbff7dbb446c77ac3b6a811227c90ee96037f0211d51c263e9b0f09a3",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "onetrans/tools/build_domain_features.awk",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "0146615d6b086b8cb3fb3d48be9c0d9218f997e224eda49b3ea90f2e4c5bf0c2",
+      "line_count": 60,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/onetrans/tools/tenrec_adapter.py.html",
+      "sha256": "56b2f6adfc18fc716e149f2c43da3bae00a8df64c1e2efc841373d0604ab6cde",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "onetrans/tools/tenrec_adapter.py",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "f6e81abcbe2fe9e2174d823d6edc56bdbb6e4fb45804525f9deff529ac67ecc4",
+      "line_count": 251,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html",
+      "sha256": "fdbd7b4c8d3fc5b38ef25e9f42c320f05fb69b4df933c05a8eebba1326afcc22",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "cpp/brpc_gateway/brpc_inference_server.cpp",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "a4282f3b6c67c76175eb7aa620762801dbf74c49df13f9853d542e0cee59a4b7",
+      "line_count": 1922,
+      "redacted_lines": [],
+      "referenced_by": [
+        "04_generative_recall.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/docs/F19_NATIVE_DATASYSTEM_ATTRIBUTION.md.html",
+      "sha256": "aff7c290085587720d20ce502c0330181d46c6b50b4e1540f89aab871ea11d81",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "docs/F19_NATIVE_DATASYSTEM_ATTRIBUTION.md",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "b39e90a3e0a531991d6e3044ba94cf36b05d4c036451d4505ddfa35cd5256137",
+      "line_count": 390,
+      "redacted_lines": [],
+      "referenced_by": [
+        "04_generative_recall.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/docs/PERSISTENT_NATIVE_KEY_LIFECYCLE.md.html",
+      "sha256": "0eee6e063d1235afb60d035779ea7976bac4d94612cdf51f98c71310a407bb39",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "docs/PERSISTENT_NATIVE_KEY_LIFECYCLE.md",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "e2dfd982f980902433e83c027c3695c504cd3eae4c386bd1cad583d49df7226b",
+      "line_count": 99,
+      "redacted_lines": [],
+      "referenced_by": [
+        "04_generative_recall.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/inference/dssm_recall_server.py.html",
+      "sha256": "04f4215a788c8b2d3e896b3dfc0d372fabd80080cae4bb6f06679fcb8d3a585b",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "inference/dssm_recall_server.py",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "c48d79421387e67aaa79be8272d28117d7c0347c1538b8b15b54ba66497e13d2",
+      "line_count": 195,
+      "redacted_lines": [],
+      "referenced_by": [
+        "07_other_services.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/proto/recommend.proto.html",
+      "sha256": "7063dee78fc74eecf3b3a7efa33c227c31486c42aa28858ea808e6865edc8392",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "proto/recommend.proto",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "ae9dd5d6004b7457580bf1e19d56609e8a735d958a7eac44b28ac903bf30d633",
+      "line_count": 95,
+      "redacted_lines": [],
+      "referenced_by": [
+        "04_generative_recall.md",
+        "08_request_walkthrough.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/scripts/load_item_embeddings_to_milvus.py.html",
+      "sha256": "6ff60b6adc7ad5c7d6a2804c77173b687b0de35f2eef7231a5a754f506e06e65",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "scripts/load_item_embeddings_to_milvus.py",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "01e508eb49372b1428b54b135a53a2cbcf3de67d5ac567823458c26c26d4b96b",
+      "line_count": 92,
+      "redacted_lines": [],
+      "referenced_by": [
+        "07_other_services.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm/training/dssm/export_embeddings.py.html",
+      "sha256": "83964b974923cb660125f3fd81cc17526567f8f0d9c77a26a9042ce18cc67768",
+      "source_repository": "pairec4tigerllm",
+      "source_path": "training/dssm/export_embeddings.py",
+      "source_commit": "cadc1855404b29eba40ab42b0278ebed9f91817a",
+      "source_sha256": "4eefd932fca83962b302f81c79d434553e4530154d26d95860d188807fd9ccf6",
+      "line_count": 102,
+      "redacted_lines": [],
+      "referenced_by": [
+        "07_other_services.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm_8506/services/brpcwire/client.go.html",
+      "sha256": "04ca7043b07b32249a4cba6bda1b0a533bdbcb6bcbb8d1bbce9b248e0609ba50",
+      "source_repository": "pairec4tigerllm_8506",
+      "source_path": "services/brpcwire/client.go",
+      "source_commit": "530f77327f0d7f7f15f54b1ddbfe422b58e94a88",
+      "source_sha256": "a218c0020400f98da263acff9276d148cee61d7a8e2fb1d887a31fbc1be14cad",
+      "line_count": 244,
+      "redacted_lines": [],
+      "referenced_by": [
+        "06_rpc.md",
+        "09_evidence_and_gaps.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm_8506/services/feature/provider.go.html",
+      "sha256": "02f1c67e1627a92667f596828caba37212090a5922cbf450674259c284e0d1e5",
+      "source_repository": "pairec4tigerllm_8506",
+      "source_path": "services/feature/provider.go",
+      "source_commit": "530f77327f0d7f7f15f54b1ddbfe422b58e94a88",
+      "source_sha256": "6ac1c3d0236ab9217e41a83f274f6a1a0227568a7b9187d68178f2986aa26fe9",
+      "line_count": 166,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html",
+      "sha256": "61e076ae7d9be5748d6d62e8d84d4ee7cbe568719e8284c9b9c61f6e2da8aae6",
+      "source_repository": "pairec4tigerllm_8506",
+      "source_path": "services/recall/onetrans_s_stage.go",
+      "source_commit": "530f77327f0d7f7f15f54b1ddbfe422b58e94a88",
+      "source_sha256": "b5e407e69c7f436e0b0ccb56b1577a9148373f2c2615d480a6f451723ccaf409",
+      "line_count": 270,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md",
+        "03_pairec_orchestration.md",
+        "08_request_walkthrough.md",
+        "10_feature_catalog.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm_8506/services/sort/onetrans_rank_sort.go.html",
+      "sha256": "e95d24361eeb3409a909f56f5ff75aac0aa234b74e565f0ad071c619b23d63a4",
+      "source_repository": "pairec4tigerllm_8506",
+      "source_path": "services/sort/onetrans_rank_sort.go",
+      "source_commit": "530f77327f0d7f7f15f54b1ddbfe422b58e94a88",
+      "source_sha256": "88c8b998137fb546a4f3bf9260b84eefb7670470b72cb6c8a39be554b557d8b8",
+      "line_count": 291,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "pairec_sh/pairec-demo/src/cpp/brpcClients/opensearch_client.cpp.html",
+      "sha256": "6a08117ee2369a4277657a729e5f79dc74c8500fcd919a2644d335bfaed9dce6",
+      "source_repository": "pairec_sh",
+      "source_path": "pairec-demo/src/cpp/brpcClients/opensearch_client.cpp",
+      "source_commit": "f7c4c49cbea73bada4dbb45fcd7d89078496a6e2",
+      "source_sha256": "5ca44d117a4cf88b6c02940c3f90a17a60b1b1280ee3cc4df08244e5cf4c3cbc",
+      "line_count": 111,
+      "redacted_lines": [],
+      "referenced_by": [
+        "07_other_services.md",
+        "09_evidence_and_gaps.md"
+      ]
+    },
+    {
+      "file": "pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html",
+      "sha256": "9ff3bf019d51a972f0ea0e5386ba868439638657eec3065358168357cb5e79b7",
+      "source_repository": "pairec_sh",
+      "source_path": "pairec-demo/src/cpp/brpcClients/redis_client.cpp",
+      "source_commit": "f7c4c49cbea73bada4dbb45fcd7d89078496a6e2",
+      "source_sha256": "a14fc98bfb8a95385b695d129ebf3f1f3820a9288d3a9f69611302b37d04c852",
+      "line_count": 152,
+      "redacted_lines": [],
+      "referenced_by": [
+        "05_feature_data.md",
+        "06_rpc.md",
+        "09_evidence_and_gaps.md"
+      ]
+    },
+    {
+      "file": "pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go.html",
+      "sha256": "91956dfaebe2d9e5f3afedc4e472c8a63f4588089f231ba11e4ffb362744b346",
+      "source_repository": "pairec_sh",
+      "source_path": "pairec-demo/src/dao/feature_brpc_redis_dao.go",
+      "source_commit": "f7c4c49cbea73bada4dbb45fcd7d89078496a6e2",
+      "source_sha256": "c2dc5e75d3063106b4fd61cfce91aca565e2520781328ed316b7ea514440445d",
+      "line_count": 256,
+      "redacted_lines": [],
+      "referenced_by": [
+        "05_feature_data.md",
+        "09_evidence_and_gaps.md"
+      ]
+    },
+    {
+      "file": "pairec_sh/pairec-demo/src/recall/brpc_sparse_recall.go.html",
+      "sha256": "3f1774098f6b048053226d114455d4bf858b31da5dcfda58ee97f5912de9fea4",
+      "source_repository": "pairec_sh",
+      "source_path": "pairec-demo/src/recall/brpc_sparse_recall.go",
+      "source_commit": "f7c4c49cbea73bada4dbb45fcd7d89078496a6e2",
+      "source_sha256": "b89f267f37dddd1985f6f7a52e45d74b94b20e000b474795bacc0d16fe036b6c",
+      "line_count": 183,
+      "redacted_lines": [
+        165
+      ],
+      "referenced_by": [
+        "07_other_services.md",
+        "09_evidence_and_gaps.md"
+      ]
+    }
+  ]
+}

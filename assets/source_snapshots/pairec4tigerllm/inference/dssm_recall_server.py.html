@@ -1,0 +1,195 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/inference/dssm_recall_server.py</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/inference/dssm_recall_server.py</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>c48d79421387e67aaa79be8272d28117d7c0347c1538b8b15b54ba66497e13d2</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># inference/dssm_recall_server.py</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>#</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a># DSSM 向量召回 HTTP 服务.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a># 输入 user_id -&gt; 查 user 画像 -&gt; user tower 前向 -&gt; Milvus topK -&gt; 返回 item 列表.</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a># Milvus 不可用时回退到本地 numpy 暴力检索 (smoke/降级用).</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a># 环境变量:</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#   DSSM_CHECKPOINT     默认 checkpoints/dssm/dssm_model.pt</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#   DSSM_VOCAB          默认 checkpoints/dssm/vocab.json</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>#   DSSM_EXPORT_DIR     默认 checkpoints/dssm/export (含 item_vectors.npy 等)</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#   MILVUS_HOST         空 = 不连 Milvus, 用本地暴力检索</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>#   MILVUS_PORT         默认 19530</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>#   MILVUS_COLLECTION   默认 dssm_item_vectors</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>#   DSSM_RECALL_PORT    默认 18200</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>import json</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>import os</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>import time</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>import numpy as np</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>import torch</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>from flask import Flask, jsonify, request</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>from training.dssm.model import DSSM</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>CHECKPOINT = os.environ.get(&quot;DSSM_CHECKPOINT&quot;, &quot;checkpoints/dssm/dssm_model.pt&quot;)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>VOCAB_PATH = os.environ.get(&quot;DSSM_VOCAB&quot;, &quot;checkpoints/dssm/vocab.json&quot;)</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>EXPORT_DIR = os.environ.get(&quot;DSSM_EXPORT_DIR&quot;, &quot;checkpoints/dssm/export&quot;)</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>MILVUS_HOST = os.environ.get(&quot;MILVUS_HOST&quot;, &quot;&quot;)</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>MILVUS_PORT = int(os.environ.get(&quot;MILVUS_PORT&quot;, &quot;19530&quot;))</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>MILVUS_COLLECTION = os.environ.get(&quot;MILVUS_COLLECTION&quot;, &quot;dssm_item_vectors&quot;)</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>PORT = int(os.environ.get(&quot;DSSM_RECALL_PORT&quot;, &quot;18200&quot;))</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>app = Flask(__name__)</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>model = None</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>vocab = None</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>profiles = None</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>item_vectors = None   # 本地暴力检索用 (N, dim), 已归一化</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>item_ids = None       # 本地暴力检索用</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>milvus_collection = None</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>milvus_err = None</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>device = &quot;cuda&quot; if torch.cuda.is_available() else &quot;cpu&quot;</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>def load_resources():</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    global model, vocab, profiles, item_vectors, item_ids</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    global milvus_collection, milvus_err</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    with open(VOCAB_PATH) as f:</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>        vocab = json.load(f)</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    state = torch.load(CHECKPOINT, map_location=device)</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    model = DSSM(state[&quot;config&quot;][&quot;vocab_sizes&quot;],</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>                 embed_dim=state[&quot;config&quot;][&quot;embed_dim&quot;],</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>                 out_dim=state[&quot;config&quot;][&quot;out_dim&quot;])</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    model.load_state_dict(state[&quot;model&quot;])</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    model.to(device).eval()</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a></span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    with open(os.path.join(EXPORT_DIR, &quot;user_profiles.json&quot;)) as f:</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>        profiles = json.load(f)</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    if MILVUS_HOST:</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>        try:</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>            from pymilvus import Collection, connections</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>            connections.connect(host=MILVUS_HOST, port=str(MILVUS_PORT))</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>            milvus_collection = Collection(MILVUS_COLLECTION)</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>            milvus_collection.load()</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>            print(f&quot;[dssm-recall] milvus connected {MILVUS_HOST}:{MILVUS_PORT} &quot;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>                  f&quot;collection={MILVUS_COLLECTION}&quot;)</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        except Exception as e:  # noqa: BLE001</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>            milvus_err = str(e)</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>            print(f&quot;[dssm-recall] milvus connect failed: {e}; fallback to local search&quot;)</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    if milvus_collection is None:</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>        item_vectors = np.load(os.path.join(EXPORT_DIR, &quot;item_vectors.npy&quot;))</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>        with open(os.path.join(EXPORT_DIR, &quot;item_ids.json&quot;)) as f:</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>            item_ids = json.load(f)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>        print(f&quot;[dssm-recall] local search fallback: {len(item_ids)} items&quot;)</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a></span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>def build_user_vector(user_id):</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    &quot;&quot;&quot;返回 (user_vec_np, error_msg).&quot;&quot;&quot;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    uid = str(user_id)</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    user2idx = vocab[&quot;user2idx&quot;]</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    profile = profiles.get(uid)</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    if profile is None:</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>        return None, f&quot;user {uid} not found in profiles&quot;</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    item2idx = vocab[&quot;item2idx&quot;]</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    hist = [item2idx.get(str(int(v)), 0) for v in profile[&quot;hist&quot;]]</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>    gender2idx = vocab[&quot;gender2idx&quot;]</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    age2idx = vocab[&quot;age2idx&quot;]</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    feats = {</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>        &quot;user_id&quot;: torch.tensor([user2idx.get(uid, 0)], device=device),</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>        &quot;gender&quot;: torch.tensor([gender2idx.get(str(profile[&quot;gender&quot;]), 0)], device=device),</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>        &quot;age&quot;: torch.tensor([age2idx.get(str(profile[&quot;age&quot;]), 0)], device=device),</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>        &quot;hist&quot;: torch.tensor([hist], device=device),</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    }</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    with torch.no_grad():</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>        vec = model.user_tower(feats[&quot;user_id&quot;], feats[&quot;gender&quot;],</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>                               feats[&quot;age&quot;], feats[&quot;hist&quot;])</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>    vec = vec.cpu().numpy()[0]</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>    vec = vec / max(np.linalg.norm(vec), 1e-12)</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    return vec.astype(np.float32), None</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a></span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a></span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>def search_milvus(vec, topk):</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    res = milvus_collection.search(</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>        data=[vec.tolist()], anns_field=&quot;vector&quot;,</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>        param={&quot;metric_type&quot;: &quot;IP&quot;, &quot;params&quot;: {&quot;nprobe&quot;: 16}},</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>        limit=topk, output_fields=[&quot;item_id&quot;])</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    hits = res[0]</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>    return [{&quot;item_id&quot;: str(h.entity.get(&quot;item_id&quot;)), &quot;score&quot;: float(h.distance)}</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>            for h in hits]</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a></span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a></span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>def search_local(vec, topk):</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>    scores = item_vectors @ vec</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>    k = min(topk, len(item_ids))</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>    idx = np.argpartition(-scores, k - 1)[:k]</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>    idx = idx[np.argsort(-scores[idx])]</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>    return [{&quot;item_id&quot;: str(item_ids[i]), &quot;score&quot;: float(scores[i])} for i in idx]</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a></span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a></span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>@app.route(&quot;/health&quot;, methods=[&quot;GET&quot;])</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>def health():</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>    return jsonify({</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>        &quot;code&quot;: 200,</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>        &quot;status&quot;: &quot;healthy&quot;,</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>        &quot;backend&quot;: &quot;dssm_recall&quot;,</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>        &quot;milvus&quot;: milvus_collection is not None,</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>        &quot;milvus_err&quot;: milvus_err,</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>    })</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a></span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a></span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>@app.route(&quot;/recall&quot;, methods=[&quot;POST&quot;])</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>def recall():</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>    t0_ns = time.perf_counter_ns()</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>    payload = request.get_json(force=True, silent=True) or {}</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>    user_id = payload.get(&quot;user_id&quot;)</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>    topk = int(payload.get(&quot;topk&quot;, 20))</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>    trace_context = payload.get(&quot;context&quot;) or {}</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>    request_id = str(trace_context.get(&quot;request_id&quot;) or payload.get(&quot;request_id&quot;) or &quot;&quot;)</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>    if user_id is None:</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>        return jsonify({&quot;code&quot;: 400, &quot;msg&quot;: &quot;user_id required&quot;, &quot;items&quot;: []})</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a></span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>    feature_started_ns = time.perf_counter_ns()</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>    vec, err = build_user_vector(user_id)</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>    feature_us = (time.perf_counter_ns() - feature_started_ns) // 1000</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>    if err:</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>        return jsonify({&quot;code&quot;: 404, &quot;msg&quot;: err, &quot;items&quot;: []})</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a></span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>    search_started_ns = time.perf_counter_ns()</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>    if milvus_collection is not None:</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>        items = search_milvus(vec, topk)</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>        source = &quot;milvus&quot;</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>    else:</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>        items = search_local(vec, topk)</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>        source = &quot;local&quot;</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>    search_us = (time.perf_counter_ns() - search_started_ns) // 1000</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>    total_us = (time.perf_counter_ns() - t0_ns) // 1000</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>    response_context = {</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>        &quot;request_id&quot;: request_id,</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>        &quot;span_id&quot;: str(trace_context.get(&quot;span_id&quot;) or &quot;vector-backend&quot;),</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>        &quot;parent_span_id&quot;: str(trace_context.get(&quot;parent_span_id&quot;) or &quot;&quot;),</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>        &quot;sampled&quot;: bool(trace_context.get(&quot;sampled&quot;, True)),</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>        &quot;contract_version&quot;: str(</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>            trace_context.get(&quot;contract_version&quot;) or &quot;pairec.pipeline_trace.v1&quot;),</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>    }</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>    return jsonify({</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>        &quot;code&quot;: 200,</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>        &quot;msg&quot;: &quot;success&quot;,</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>        &quot;message&quot;: &quot;success&quot;,</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>        &quot;request_id&quot;: request_id,</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>        &quot;items&quot;: items,</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>        &quot;source&quot;: source,</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>        &quot;latency_ms&quot;: round(total_us / 1000, 3),</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>        &quot;trace&quot;: {</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>            &quot;context&quot;: response_context,</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>            &quot;component&quot;: &quot;dssm_recall_backend&quot;,</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>            &quot;protocol&quot;: &quot;http_localhost&quot;,</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>            &quot;status&quot;: &quot;ok&quot;,</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>            &quot;backend&quot;: source,</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>            &quot;feature_us&quot;: feature_us,</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>            &quot;compute_us&quot;: search_us,</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>            &quot;backend_total_us&quot;: total_us,</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>            &quot;total_us&quot;: total_us,</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>            &quot;attribution_complete&quot;: True,</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>            &quot;asynchronous&quot;: False,</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>        },</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>    })</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a></span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a></span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>if __name__ == &quot;__main__&quot;:</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>    load_resources()</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>    print(f&quot;[dssm-recall] listening on 0.0.0.0:{PORT} device={device}&quot;)</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>    app.run(host=&quot;0.0.0.0&quot;, port=PORT, threaded=True)</span></pre></html>

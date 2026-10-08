@@ -1,0 +1,19 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "remaining_timeout_ms": 650,
+  "item_ids": [
+    "4",
+    "1201",
+    "9002",
+    "9001",
+    "9003"
+  ],
+  "fields": [
+    "category_code",
+    "metadata_available",
+    "statistics",
+    "missing_fields"
+  ]
+}

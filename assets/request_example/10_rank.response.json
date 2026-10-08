@@ -1,0 +1,39 @@
+{
+  "code": 200,
+  "msg": "ok",
+  "request_id": "demo-user-1-001",
+  "model_version": "demo_onetrans_v1",
+  "model_role": "engineering",
+  "items": [
+    {
+      "item_id": "4",
+      "score": 0.72
+    },
+    {
+      "item_id": "1201",
+      "score": 0.86
+    },
+    {
+      "item_id": "9002",
+      "score": 0.63
+    },
+    {
+      "item_id": "9001",
+      "score": 0.91
+    }
+  ],
+  "trace": {
+    "kv_hit": true,
+    "score_unique_count": 4,
+    "feature_us": 0,
+    "compute_us": 0,
+    "backend_rpc_us": 0,
+    "lookup_us": 0,
+    "encode_us": 0,
+    "kv_us": 0,
+    "batch_wait_us": 0,
+    "batch_compute_us": 0,
+    "batch_size": 1,
+    "n_candidates": 4
+  }
+}

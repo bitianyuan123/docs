@@ -1,0 +1,17 @@
+{
+  "_description": "Contract for build_interface_examples.py --binding. Values below describe requirements, NOT deployed artifact metadata.",
+  "release_id": "qkv_doc200k_6f148b4adf81",
+  "sample_bytes_sha256": "6f148b4adf81c813e5f866f82f5e22ea36b3b719fab1f4862ef351fd3c43efd5",
+  "data_semantics_revision": 1,
+  "sparse_recipe": "video_type_binary_v1",
+  "onetrans_model_version": "REQUIRED actual version/hash",
+  "embedding_space_id": "REQUIRED actual model/vocab/history/normalization tuple hash",
+  "dssm_checkpoint_sha256": "REQUIRED actual hash",
+  "dssm_dimension": "REQUIRED actual integer from checkpoint.config.out_dim",
+  "user_vectors_sha256": "REQUIRED actual SHA256 of supplied JSON",
+  "sid_map_sha256": "REQUIRED actual SHA256 of supplied JSON",
+  "sid_version": "REQUIRED matching deployed model map",
+  "sid_width": 4,
+  "sid_codebook_size": "REQUIRED actual integer",
+  "gen_max_history_items": "REQUIRED positive integer bounded by engine token budget"
+}

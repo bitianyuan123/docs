@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph Caller[调用方代码]
+        P[PaiRec特征客户端]
+        C[确有专属查询的子服务客户端]
+    end
+    subgraph Server[特征服务代码]
+        H[业务接口处理器]
+        V[字段与版本检查]
+        Q[批量读取与结果对齐]
+        R[Redis访问适配]
+        H -->|进程内调用| V
+        V -->|进程内调用| Q
+        Q -->|进程内调用| R
+    end
+    P -->|原生bRPC| H
+    C -->|原生bRPC| H
+    S[共享接口定义] -.->|提供类型定义| P
+    S -.->|提供类型定义| C
+    S -.->|提供类型定义| H

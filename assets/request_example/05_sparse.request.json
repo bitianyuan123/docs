@@ -1,0 +1,18 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "remaining_timeout_ms": 900,
+  "sparse_tokens": [
+    {
+      "token": "video_type_0",
+      "weight": 0.2222222222222222
+    },
+    {
+      "token": "video_type_1",
+      "weight": 0.7777777777777778
+    }
+  ],
+  "sparse_recipe_id": "video_type_binary_v1",
+  "topk": 50
+}

@@ -1,0 +1,34 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "lookup_by": "semantic_id",
+  "sid_version": "demo_sid_v1",
+  "results": [
+    {
+      "semantic_id": [
+        21,
+        31,
+        41,
+        51
+      ],
+      "status": "FOUND",
+      "item_ids": [
+        "4",
+        "1201"
+      ]
+    },
+    {
+      "semantic_id": [
+        22,
+        32,
+        42,
+        52
+      ],
+      "status": "FOUND",
+      "item_ids": [
+        "9002"
+      ]
+    }
+  ]
+}

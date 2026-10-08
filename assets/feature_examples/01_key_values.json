@@ -1,0 +1,170 @@
+{
+  "rec:qkv:qkv_doc200k_6f148b4adf81:user:1": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "user_id": "1",
+    "gender_code": 1,
+    "age_code": 4,
+    "missing_fields": [],
+    "source_data_row": 1
+  },
+  "rec:qkv:qkv_doc200k_6f148b4adf81:history:1": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "user_id": "1",
+    "item_ids": [
+      "2",
+      "3",
+      "80936",
+      "781",
+      "111774",
+      "1230",
+      "26403",
+      "991",
+      "2362",
+      "1202"
+    ],
+    "positions": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "time_semantics": "ordinal",
+    "valid_length": 10,
+    "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+    "source_data_row": 1
+  },
+  "rec:qkv:qkv_doc200k_6f148b4adf81:user_rep:sparse:video_type_binary_v1:1": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "user_id": "1",
+    "sparse_recipe_id": "video_type_binary_v1",
+    "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+    "tokens": [
+      {
+        "token": "video_type_0",
+        "weight": 0.2222222222222222
+      },
+      {
+        "token": "video_type_1",
+        "weight": 0.7777777777777778
+      }
+    ],
+    "known_history_count": 9,
+    "missing_history_count": 1
+  },
+  "rec:qkv:qkv_doc200k_6f148b4adf81:item:4": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "item_id": "4",
+    "category_code": 1,
+    "metadata_available": true,
+    "seen_as_target": true,
+    "seen_in_history": false,
+    "statistics": {
+      "n": 36,
+      "click_sum": 6,
+      "like_sum": 0,
+      "follow_sum": 0,
+      "share_sum": 0,
+      "like_rate": 0.0,
+      "follow_rate": 0.0,
+      "share_rate": 0.0,
+      "ctr": 0.16666666666666666,
+      "watch_mean": 0.7777777777777778,
+      "watch_max": 2,
+      "watch_sum": 28,
+      "gender1_share": 0.75,
+      "avg_age_code": 2.5555555555555554,
+      "log1p_watch_sum": 3.367295829986474
+    },
+    "valid_counts": {
+      "click": 36,
+      "like": 36,
+      "follow": 36,
+      "share": 36,
+      "watching_times": 36,
+      "gender": 36,
+      "age": 36,
+      "video_category": 36
+    },
+    "missing_counts": {
+      "click": 0,
+      "like": 0,
+      "follow": 0,
+      "share": 0,
+      "watching_times": 0,
+      "gender": 0,
+      "age": 0,
+      "video_category": 0
+    },
+    "missing_fields": []
+  },
+  "rec:qkv:qkv_doc200k_6f148b4adf81:item:1201": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "item_id": "1201",
+    "category_code": 1,
+    "metadata_available": true,
+    "seen_as_target": true,
+    "seen_in_history": true,
+    "statistics": {
+      "n": 32,
+      "click_sum": 8,
+      "like_sum": 0,
+      "follow_sum": 0,
+      "share_sum": 0,
+      "like_rate": 0.0,
+      "follow_rate": 0.0,
+      "share_rate": 0.0,
+      "ctr": 0.25,
+      "watch_mean": 0.875,
+      "watch_max": 2,
+      "watch_sum": 28,
+      "gender1_share": 0.59375,
+      "avg_age_code": 3.0625,
+      "log1p_watch_sum": 3.367295829986474
+    },
+    "valid_counts": {
+      "click": 32,
+      "like": 32,
+      "follow": 32,
+      "share": 32,
+      "watching_times": 32,
+      "gender": 32,
+      "age": 32,
+      "video_category": 32
+    },
+    "missing_counts": {
+      "click": 0,
+      "like": 0,
+      "follow": 0,
+      "share": 0,
+      "watching_times": 0,
+      "gender": 0,
+      "age": 0,
+      "video_category": 0
+    },
+    "missing_fields": []
+  },
+  "rec:qkv:qkv_doc200k_6f148b4adf81:release": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "state": "BUILDING",
+    "source_hash": "6f148b4adf81c813e5f866f82f5e22ea36b3b719fab1f4862ef351fd3c43efd5",
+    "source_rows": 200000,
+    "missing_assets": [
+      "真实DSSM用户向量",
+      "真实SID正反表",
+      "已装载检索索引"
+    ],
+    "note": "文档示例，未装载数据库"
+  }
+}

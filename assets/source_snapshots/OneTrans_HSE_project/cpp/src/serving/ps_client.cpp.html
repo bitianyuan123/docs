@@ -1,0 +1,74 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/serving/ps_client.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/serving/ps_client.cpp</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>b486b7650b429e69f849eec4cb4e64605e013ce7022f802b308cdeb5ec62b9e5</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;serving/ps_client.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;memory&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#include &lt;stdexcept&gt;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#include &lt;utility&gt;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#include &lt;brpc/channel.h&gt;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#include &lt;brpc/controller.h&gt;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>#include &quot;embedding_service.pb.h&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a></span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>namespace onetrans {</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>std::string ps_table_key(const std::string&amp; prefix, const std::string&amp; table) {</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>    return prefix.empty() ? table : prefix + &quot;/&quot; + table;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>}</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a></span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>struct PsLookupClient::Impl {</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    std::string prefix_;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>    brpc::Channel channel_;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>    std::unique_ptr&lt;onetrans::ps::EmbeddingService_Stub&gt; stub_;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>    bool ok_ = false;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    Impl(std::string server, std::string prefix)</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>        : prefix_(std::move(prefix)) {</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>        brpc::ChannelOptions opt;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>        opt.timeout_ms = 5000;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>        opt.connect_timeout_ms = 1000;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>        if (channel_.Init(server.c_str(), &amp;opt) == 0) {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>            stub_ = std::make_unique&lt;onetrans::ps::EmbeddingService_Stub&gt;(&amp;channel_);</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>            ok_ = true;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>        }</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    }</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>};</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>PsLookupClient::PsLookupClient(std::string server, std::string table_prefix)</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    : impl_(std::make_shared&lt;Impl&gt;(std::move(server), std::move(table_prefix))) {}</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>bool PsLookupClient::available() const noexcept { return impl_ &amp;&amp; impl_-&gt;ok_; }</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a></span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>std::vector&lt;float&gt; PsLookupClient::lookup(const std::string&amp; table,</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>                                          const std::vector&lt;int64_t&gt;&amp; ids) const {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    if (!impl_ || !impl_-&gt;ok_)</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>        throw std::runtime_error(&quot;ps client 未就绪（channel 初始化失败）&quot;);</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>    onetrans::ps::EmbeddingLookupRequest req;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    onetrans::ps::EmbeddingLookupResponse resp;</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    req.set_table(ps_table_key(impl_-&gt;prefix_, table));</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    for (int64_t id : ids) req.add_ids(id);</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    brpc::Controller cntl;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    impl_-&gt;stub_-&gt;Lookup(&amp;cntl, &amp;req, &amp;resp, nullptr);</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    if (cntl.Failed())</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>        throw std::runtime_error(&quot;PS Lookup 失败: &quot; + cntl.ErrorText());</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    return std::vector&lt;float&gt;(resp.weights().begin(), resp.weights().end());</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>}</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>LookupFn PsLookupClient::lookup_fn() const {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    const auto impl = impl_;</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    return [impl](const std::string&amp; table,</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>                  const std::vector&lt;int64_t&gt;&amp; ids) -&gt; std::vector&lt;float&gt; {</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>        if (!impl || !impl-&gt;ok_)</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>            throw std::runtime_error(&quot;ps client 未就绪（channel 初始化失败）&quot;);</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>        onetrans::ps::EmbeddingLookupRequest req;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>        onetrans::ps::EmbeddingLookupResponse resp;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>        req.set_table(ps_table_key(impl-&gt;prefix_, table));</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>        for (int64_t id : ids) req.add_ids(id);</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        brpc::Controller cntl;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>        impl-&gt;stub_-&gt;Lookup(&amp;cntl, &amp;req, &amp;resp, nullptr);</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>        if (cntl.Failed())</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>            throw std::runtime_error(&quot;PS Lookup 失败: &quot; + cntl.ErrorText());</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        return std::vector&lt;float&gt;(resp.weights().begin(), resp.weights().end());</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    };</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>}</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>}  // namespace onetrans</span></pre></html>

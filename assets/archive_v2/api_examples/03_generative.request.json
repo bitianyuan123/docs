@@ -1,0 +1,23 @@
+{
+  "user_id": "1",
+  "history": {
+    "$artifact": "deployed raw-item-to-SID map",
+    "raw_item_ids": [
+      "2",
+      "3",
+      "80936",
+      "781",
+      "111774",
+      "1230",
+      "26403",
+      "991",
+      "2362",
+      "1202"
+    ],
+    "width": 4
+  },
+  "topk": 10,
+  "temperature": 1.0,
+  "beam_width": 1,
+  "request_id": "doc_uid1_0001"
+}

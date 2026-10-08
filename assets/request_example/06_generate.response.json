@@ -1,0 +1,37 @@
+{
+  "code": 200,
+  "user_id": "1",
+  "inference_time_ms": 0,
+  "recommendations": [
+    {
+      "item_id": 4,
+      "semantic_id": [
+        21,
+        31,
+        41,
+        51
+      ],
+      "score": 1.0
+    },
+    {
+      "item_id": 1201,
+      "semantic_id": [
+        21,
+        31,
+        41,
+        51
+      ],
+      "score": 1.0
+    },
+    {
+      "item_id": 9002,
+      "semantic_id": [
+        22,
+        32,
+        42,
+        52
+      ],
+      "score": 1.0
+    }
+  ]
+}

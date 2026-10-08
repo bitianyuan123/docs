@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant P as PaiRec
+    participant H as OneTrans历史
+    participant R as OneTrans精排
+    participant PS as 模型参数服务
+    participant D as DataSystem
+    Note over H,R: 启动装载本地TSV与模型；两进程连接同一参数表和存储
+    P->>H: POST /ingest(ingest_request)，user_id="1"
+    H->>PS: Lookup({table:model_version+"/item",<br/>ids:[0]*40+provider_history_ids})
+    PS-->>H: {dim:128,ids:[...],weights:6400个float}
+    H->>H: history_kv = encode_and_run_history(weights)
+    H->>D: Set(kv_key,serialize(history_kv))
+    D-->>H: 写入结果
+    H-->>P: {accepted:true,checksum:SHA256字符串,reason:"",shard:0}
+    P->>R: POST /rank(rank_request)，items[*].item_id=["4","1201","9002","9001"]
+    R->>R: assemble(user_id,items)：从已装载TSV查询与补齐字段
+    R->>PS: Lookup({table,ids})；user/item/artist/album四组参数
+    PS-->>R: {dim:128,ids,weights}；weights为展平数组
+    R->>R: 编码用户和候选输入
+    R->>D: Get(kv_key)
+    D-->>R: serialize(history_kv)
+    R->>R: logits = run_candidates(history_kv)；score = sigmoid(logits[:,0])
+    R-->>P: items按输入顺序给score=[0.72,0.86,0.63,0.91]，trace.kv_hit=true

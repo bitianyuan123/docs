@@ -1,0 +1,10 @@
+flowchart LR
+    Client[推荐客户端] -->|HTTP| Nginx[Nginx网关]
+    Nginx -->|HTTP| PaiRec[PaiRec编排进程]
+    PaiRec -->|原生bRPC| Feature[特征服务进程]
+    Feature -->|Redis协议| Redis[Redis特征存储]
+    PaiRec -->|原生bRPC| Dense[向量召回服务]
+    PaiRec -->|原生bRPC| Sparse[稀疏召回服务]
+    PaiRec -->|原生bRPC| Generate[生成式召回服务]
+    PaiRec -->|现有HTTP ingest| History[OneTrans历史进程]
+    PaiRec -->|现有HTTP rank| Rank[OneTrans精排进程]

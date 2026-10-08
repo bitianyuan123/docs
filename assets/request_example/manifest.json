@@ -1,0 +1,107 @@
+{
+  "kind": "illustrative_not_model_run",
+  "source": "../walkthrough_sample.json",
+  "request_id": "demo-user-1-001",
+  "calls": [
+    {
+      "id": "01_recommend",
+      "caller": "客户端经Nginx",
+      "callee": "PaiRec",
+      "method": "POST /api/recommend",
+      "request_file": "01_recommend.request.json",
+      "request_sample_key": "external_request",
+      "response_file": "01_recommend.response.json",
+      "response_sample_key": "final_response"
+    },
+    {
+      "id": "02_user_context",
+      "caller": "PaiRec",
+      "callee": "特征服务",
+      "method": "GetUserContext",
+      "request_file": "02_user_context.request.json",
+      "request_sample_key": "user_request",
+      "response_file": "02_user_context.response.json",
+      "response_sample_key": "user_context"
+    },
+    {
+      "id": "03_history_sid",
+      "caller": "PaiRec",
+      "callee": "特征服务",
+      "method": "BatchGetItemRepresentations(raw_item_id)",
+      "request_file": "03_history_sid.request.json",
+      "request_sample_key": "history_repr_request",
+      "response_file": "03_history_sid.response.json",
+      "response_sample_key": "history_repr_response"
+    },
+    {
+      "id": "04_vector",
+      "caller": "PaiRec",
+      "callee": "向量召回",
+      "method": "Recall",
+      "request_file": "04_vector.request.json",
+      "request_sample_key": "vector_request",
+      "response_file": "04_vector.response.json",
+      "response_sample_key": "vector_response"
+    },
+    {
+      "id": "05_sparse",
+      "caller": "PaiRec",
+      "callee": "稀疏召回",
+      "method": "Recall",
+      "request_file": "05_sparse.request.json",
+      "request_sample_key": "sparse_request",
+      "response_file": "05_sparse.response.json",
+      "response_sample_key": "sparse_response"
+    },
+    {
+      "id": "06_generate",
+      "caller": "PaiRec",
+      "callee": "生成召回",
+      "method": "Recommend",
+      "request_file": "06_generate.request.json",
+      "request_sample_key": "generation_request",
+      "response_file": "06_generate.response.json",
+      "response_sample_key": "generation_wire_response"
+    },
+    {
+      "id": "07_generated_sid",
+      "caller": "生成召回",
+      "callee": "特征服务",
+      "method": "BatchGetItemRepresentations(semantic_id)",
+      "request_file": "07_generated_sid.request.json",
+      "request_sample_key": "generated_sid_lookup_request",
+      "response_file": "07_generated_sid.response.json",
+      "response_sample_key": "generated_sid_lookup_response"
+    },
+    {
+      "id": "08_item_features",
+      "caller": "PaiRec",
+      "callee": "特征服务",
+      "method": "BatchGetItemFeatures",
+      "request_file": "08_item_features.request.json",
+      "request_sample_key": "item_request",
+      "response_file": "08_item_features.response.json",
+      "response_sample_key": "item_response"
+    },
+    {
+      "id": "09_ingest",
+      "caller": "PaiRec历史任务",
+      "callee": "OneTrans历史",
+      "method": "POST /ingest",
+      "request_file": "09_ingest.request.json",
+      "request_sample_key": "ingest_request",
+      "response_file": "09_ingest.response.json",
+      "response_sample_key": "ingest_response"
+    },
+    {
+      "id": "10_rank",
+      "caller": "PaiRec",
+      "callee": "OneTrans候选",
+      "method": "POST /rank",
+      "request_file": "10_rank.request.json",
+      "request_sample_key": "rank_request",
+      "response_file": "10_rank.response.json",
+      "response_sample_key": "rank_response"
+    }
+  ]
+}

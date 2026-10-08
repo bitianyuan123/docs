@@ -1,0 +1,4 @@
+# Python 3.11+; only needed when rebuilding HTML/SVG, not for reading or validation.
+playwright==1.63.0
+Markdown==3.11
+fonttools[woff]==4.60.1

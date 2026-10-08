@@ -1,0 +1,20 @@
+flowchart LR
+    subgraph Online[在线应用部署]
+        P[PaiRec进程]
+        C[有专属查询的子服务进程]
+        F[FeatureService进程，可多副本]
+    end
+    subgraph Store[在线特征存储]
+        R[(Redis实例或集群)]
+        V[(持久化卷或可重载快照)]
+        R --- V
+    end
+    subgraph Offline[离线数据环境]
+        A[构建与装载进程]
+        O[(源数据和版本化产物)]
+        O --> A
+    end
+    P -->|原生bRPC| F
+    C -->|原生bRPC，按需| F
+    F -->|Redis RESP| R
+    A -->|装载新版本| R

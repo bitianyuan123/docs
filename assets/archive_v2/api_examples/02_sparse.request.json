@@ -1,0 +1,15 @@
+{
+  "request_id": "doc_uid1_0001",
+  "release_id": "qkv_doc200k_6f148b4adf81",
+  "sparse_tokens": [
+    {
+      "token": "video_type_0",
+      "weight": 0.2222222222222222
+    },
+    {
+      "token": "video_type_1",
+      "weight": 0.7777777777777778
+    }
+  ],
+  "topk": 50
+}

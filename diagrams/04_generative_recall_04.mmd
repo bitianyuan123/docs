@@ -1,0 +1,7 @@
+flowchart LR
+    P[PaiRec进程] -->|原生bRPC目标接口| G[生成进程与GPU]
+    P -->|特征RPC| F[特征服务进程]
+    G -->|特征RPC| F
+    F -->|Redis协议| R[(在线特征Redis)]
+    A[(模型引擎与tokenizer文件)] --> G
+    G <-->|DataSystem SDK| K[(模型缓存存储)]

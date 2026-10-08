@@ -1,0 +1,14 @@
+flowchart TD
+    A[请求任务：固定版本、请求ID和总期限] --> U[上下文任务：等待GetUserContext]
+    A --> H[历史任务：现有Provider取数并等待ingest]
+    U --> V[向量任务：等待Recall]
+    U --> S[稀疏任务：等待Recall]
+    U --> G[生成任务：历史ID查SID、Recommend及反查结果]
+    V --> J[候选汇合：检查各分支结果]
+    S --> J
+    G --> J
+    J --> C[候选任务：融合、过滤、查物品属性]
+    C --> B[精排门槛：候选可用且ingest.accepted为true]
+    H --> B
+    B --> D[打分任务：等待rank并核对ID和kv_hit]
+    D --> E[完成任务：后置排序与返回]

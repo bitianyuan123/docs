@@ -1,0 +1,60 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/onetrans/tools/build_domain_features.awk</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/onetrans/tools/build_domain_features.awk</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>0146615d6b086b8cb3fb3d48be9c0d9218f997e224eda49b3ea90f2e4c5bf0c2</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># 单遍流式扫描 ctr_data_1M.csv，聚合出新域特征表（item 侧 + user 侧）。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>#</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a># 列序(1..)：user_id item_id click follow like share video_category watching_times gender age \</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#            hist_1..hist_10</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a># 用法：</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#   awk -v ITEM_FEATURES=item_features.tsv -v USER_FEATURES=user_features.tsv \</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#       -f build_domain_features.awk ctr_data_1M.csv</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a># ITEM_FEATURES(TSV) 列：</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#   item_id  video_category(多数决0/1)  n  click  like  follow  share \</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>#   like_rate  follow_rate  share_rate  ctr  watch_mean  watch_max  watch_sum \</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>#   male_ratio  avg_age  log1p_watch_sum</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a># USER_FEATURES(TSV) 列：</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>#   user_id  gender  age  hist(逗号分隔)</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>BEGIN {</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>    FS=&quot;,&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    OFS=&quot;\t&quot;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    n_lines=0</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>}</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>NR&gt;1 {</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>    n_lines++</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>    u=$1; it=$2</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    # ---------- item 侧聚合 ----------</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    icount[it]++</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    iclick[it]+=$3</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    ilike[it]+=$5</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>    ifollow[it]+=$4</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>    ishare[it]+=$6</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>    iwatch[it]+=$8</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>    if ($8&gt;iwmax[it]) iwmax[it]=$8</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    if ($9&gt;0) imale[it]++</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    iage[it]+=$9</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    if ($7==1) icat1[it]++; else icat0[it]++</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    # ---------- user 侧（首次出现记画像与历史，视为用户常量） ----------</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    if (!(u in ug)) {</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>        ug[u]=$9; ua[u]=$10</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>        uh[u]=$11&quot;,&quot;$12&quot;,&quot;$13&quot;,&quot;$14&quot;,&quot;$15&quot;,&quot;$16&quot;,&quot;$17&quot;,&quot;$18&quot;,&quot;$19&quot;,&quot;$20</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    }</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>}</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>END {</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>    # ---- item 特征 ----</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    print &quot;item_id\tvideo_category\tn\tclick\tlike\tfollow\tshare\tlike_rate\tfollow_rate\tshare_rate\tctr\twatch_mean\twatch_max\twatch_sum\tmale_ratio\tavg_age\tlog1p_watch_sum&quot; &gt; ITEM_FEATURES</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    for (it in icount) {</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>        n  = icount[it]+0</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>        cl = iclick[it]+0; li = ilike[it]+0; fo = ifollow[it]+0; sh = ishare[it]+0</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>        ws = iwatch[it]+0</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>        cat = (icat1[it]&gt;icat0[it]) ? 1 : 0</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>        print it &quot;\t&quot; cat &quot;\t&quot; n &quot;\t&quot; cl &quot;\t&quot; li &quot;\t&quot; fo &quot;\t&quot; sh \</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>              &quot;\t&quot; li/n &quot;\t&quot; fo/n &quot;\t&quot; sh/n &quot;\t&quot; cl/n \</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>              &quot;\t&quot; ws/n &quot;\t&quot; iwmax[it]+0 &quot;\t&quot; ws \</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>              &quot;\t&quot; (imale[it]+0)/n &quot;\t&quot; (iage[it]+0)/n &quot;\t&quot; log(1+ws) &gt; ITEM_FEATURES</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    }</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    # ---- user 特征 ----</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    print &quot;user_id\tgender\tage\thist&quot; &gt; USER_FEATURES</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    for (u in ug) {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>        print u &quot;\t&quot; ug[u]+0 &quot;\t&quot; ua[u]+0 &quot;\t&quot; uh[u] &gt; USER_FEATURES</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    }</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    print &quot;processed_lines=&quot; n_lines &gt; &quot;/dev/stderr&quot;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>}</span></pre></html>

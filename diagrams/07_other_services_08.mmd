@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant P as PaiRec
+    participant B as 稀疏服务桥
+    participant S as 稀疏服务
+    participant O as OpenSearch
+    P->>B: 原生bRPC：类型词项和权重、release、topk=50
+    B->>S: 同机HTTP /recall：相同字段
+    S->>S: 校验词项、合并重复、绑定固定index
+    S->>O: HTTP search：term加权查询和BM25排序
+    O-->>S: hits、score、分片执行状态
+    S->>S: 检查超时与分片失败，恢复原始ID
+    S-->>B: items、source=opensearch、executed、版本
+    B-->>P: 类型化稀疏召回结果

@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant P as PaiRec
+    participant C as 原生特征客户端
+    participant F as 特征服务
+    participant R as Redis
+    P->>C: GetUserContext：用户、固定版本、剩余时间
+    C->>C: 校验并复制参数、受限排队
+    C->>F: 类型化bRPC请求
+    F->>F: 检查版本、字段与剩余预算
+    F->>R: 批量读取用户、历史和用户表示
+    R-->>F: 按key顺序返回String或nil
+    F->>F: 校验schema、history_hash和表示版本
+    F-->>C: 类型化数据与逐项状态，或请求级错误
+    C-->>P: 结果与实际耗时

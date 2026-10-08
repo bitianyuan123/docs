@@ -1,0 +1,81 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/serving/json_io.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/serving/json_io.cpp</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>dbfcd3f8f0086eadbd339e1943968f49d17b75787071f1c7aa9e599aa0fe70bb</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;serving/json_io.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;cstdlib&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#include &lt;iomanip&gt;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#include &lt;sstream&gt;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#include &lt;stdexcept&gt;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#include &quot;common/json.h&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>namespace onetrans {</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a></span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>IngestInput parse_ingest_input(const std::string&amp; body) {</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>    JsonValue root = json_parse(body);</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>    IngestInput in;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>    in.user_id = root.at(&quot;user_id&quot;).as_string();</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>    for (const auto&amp; v : root.at(&quot;item_ids&quot;).as_array()) in.item_ids.push_back(v.as_int());</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>    for (const auto&amp; v : root.at(&quot;timestamps&quot;).as_array()) in.timestamps.push_back(v.as_int());</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    if (in.item_ids.size() != in.timestamps.size())</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>        throw std::runtime_error(&quot;item_ids 与 timestamps 必须等长&quot;);</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>    return in;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>}</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>ScoreInput parse_score_input(const std::string&amp; body) {</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    JsonValue root = json_parse(body);</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    ScoreInput in;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    in.user_id = root.at(&quot;user_id&quot;).as_string();</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    in.uid_sparse = root.at(&quot;uid_sparse&quot;).as_int();</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>    for (const auto&amp; v : root.at(&quot;user_dense&quot;).as_array())</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>        in.user_dense.push_back(static_cast&lt;float&gt;(v.as_number()));</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>    for (const auto&amp; c : root.at(&quot;candidates&quot;).as_array()) {</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>        CandidateInput cand;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>        cand.item_id = c.at(&quot;item_id&quot;).as_int();</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>        for (const auto&amp; v : c.at(&quot;artist_ids&quot;).as_array()) cand.artist_ids.push_back(v.as_int());</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>        for (const auto&amp; v : c.at(&quot;album_ids&quot;).as_array()) cand.album_ids.push_back(v.as_int());</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>        for (const auto&amp; v : c.at(&quot;dense&quot;).as_array())</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>            cand.dense.push_back(static_cast&lt;float&gt;(v.as_number()));</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>        in.candidates.push_back(std::move(cand));</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>    }</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    if (in.candidates.empty()) throw std::runtime_error(&quot;candidates 为空&quot;);</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>    return in;</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>}</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>std::string logits_to_json(const Tensor&amp; logits) {</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    const int64_t M = logits.shape[0], T = logits.shape[1];</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>    std::ostringstream os;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    os &lt;&lt; std::setprecision(9) &lt;&lt; &quot;[&quot;;</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    for (int64_t m = 0; m &lt; M; ++m) {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>        if (m) os &lt;&lt; &quot;,&quot;;</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>        os &lt;&lt; &quot;[&quot;;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>        for (int64_t t = 0; t &lt; T; ++t) {</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>            if (t) os &lt;&lt; &quot;,&quot;;</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>            os &lt;&lt; logits.at(m * T + t);</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>        }</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>        os &lt;&lt; &quot;]&quot;;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    }</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    os &lt;&lt; &quot;]&quot;;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    return os.str();</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>}</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a></span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>PaiRecRankRequest parse_rank_request(const std::string&amp; body) {</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    JsonValue root = json_parse(body);</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    PaiRecRankRequest req;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    req.user_id = root.at(&quot;user_id&quot;).as_string();</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    if (root.as_object().count(&quot;request_id&quot;)) req.request_id = root.at(&quot;request_id&quot;).as_string();</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    for (const auto&amp; it : root.at(&quot;items&quot;).as_array()) {</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        // PaiRec 契约 item_id 为 string（&quot;101&quot;）；也兼容 number（101）型。</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>        const JsonValue&amp; v = it.at(&quot;item_id&quot;);</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>        int64_t id = 0;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>        if (v.is_number()) {</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>            id = v.as_int();</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        } else {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>            const std::string&amp; s = v.as_string();</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>            id = s.empty() ? 0 : std::strtoll(s.c_str(), nullptr, 10);</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>        }</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>        req.item_ids.push_back(id);</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    }</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    if (req.item_ids.empty()) throw std::runtime_error(&quot;rank items 为空&quot;);</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    return req;</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>}  // namespace onetrans</span></pre></html>

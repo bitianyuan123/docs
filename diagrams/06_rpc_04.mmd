@@ -1,0 +1,9 @@
+flowchart LR
+    N[Nginx] -->|HTTP| P[PaiRec与进程内原生客户端]
+    P -->|原生bRPC目标| F[特征服务]
+    F -->|Redis RESP| R[(Redis)]
+    P -->|原生bRPC目标| V[向量或稀疏服务前端]
+    V -->|可选本机HTTP桥| B[原有召回后端]
+    P -->|原生bRPC| G[生成服务]
+    G -->|原生bRPC目标| F
+    P -->|现有HTTP| O[OneTrans历史或精排服务]

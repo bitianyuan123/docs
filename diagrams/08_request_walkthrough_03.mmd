@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant P as PaiRec
+    participant V as 向量召回
+    participant M as Milvus
+    participant S as 稀疏召回
+    participant O as OpenSearch
+    par 向量检索
+        P->>V: Recall(vector_request)
+        V->>M: search(collection,data=[query_vector],limit=50,metric="IP")
+        M-->>V: hits[{id,distance}]，例如{id:"1201",distance:0.92}
+        V-->>P: vector_response.items[{item_id:"1201",score:0.92},...]
+    and 词项检索
+        P->>S: Recall(sparse_request)
+        S->>O: search(index,body=make_query(sparse_tokens,50))
+        O-->>S: hits.hits[{_source:{item_id:"4"},_score:3.2},...]
+        S-->>P: sparse_response.items[{item_id:"4",score:3.2},...]
+    end

@@ -1,0 +1,7 @@
+flowchart LR
+    P[PaiRec 生成客户端] --> F[特征查询客户端]
+    P --> R[生成RPC客户端]
+    H[生成服务处理器] --> T[输入与输出token转换]
+    H --> E[TRT Executor封装]
+    H --> B[编码反查客户端]
+    E --> K[模型缓存存储适配]

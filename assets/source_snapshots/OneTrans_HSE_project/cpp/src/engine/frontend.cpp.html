@@ -1,0 +1,221 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/engine/frontend.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/engine/frontend.cpp</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>39a4127ca56e258ea259d7582ed06ddee3dc77fe32dc61cf5a19e406ff03e1ed</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;engine/frontend.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;cmath&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#include &lt;stdexcept&gt;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a></span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>namespace onetrans {</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>namespace {</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>// _mlp：Linear(in→out) → GELU → Linear(out→out)（均无 bias）</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>struct Mlp {</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>    Tensor w1, w2;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>    void apply(const float* x, float* y, int64_t rows, int64_t in, int64_t out) const {</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>        std::vector&lt;float&gt; h(static_cast&lt;size_t&gt;(rows * out));</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>        linear_rows(x, w1.data.data(), h.data(), rows, in, out);</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>        for (auto&amp; v : h) v = gelu(v);</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>        linear_rows(h.data(), w2.data.data(), y, rows, out, out);</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    }</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>};</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a></span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>// piecewise 分箱编码（对齐 onetrans/nn/encoders/piecewise.py forward）</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>// x [M, n_features] → out [M, sum(n_bins)]（行主序：feature 主、bin 次）</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>Tensor piecewise_forward(const Tensor&amp; w, const Tensor&amp; b, const std::vector&lt;int64_t&gt;&amp; n_bins,</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>                         const float* x, int64_t M, int n_features) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    const int64_t max_bins = w.shape[1];</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    int64_t out_dim = 0;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    for (auto nb : n_bins) out_dim += nb;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>    Tensor out({M, out_dim});</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>    for (int64_t m = 0; m &lt; M; ++m) {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>        const float* xm = x + m * n_features;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>        float* om = out.data.data() + m * out_dim;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>        int64_t o = 0;</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>        for (int i = 0; i &lt; n_features; ++i) {</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>            const int64_t nb = n_bins[i];</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>            for (int64_t j = 0; j &lt; nb; ++j, ++o) {</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>                float v = b.at(i * max_bins + j) + w.at(i * max_bins + j) * xm[i];</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>                if (nb == 1) {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>                    // single bin：x &gt;= bias ? 1 : 0</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>                    v = (xm[i] &gt;= b.at(i * max_bins)) ? 1.0f : 0.0f;</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>                } else if (j == 0) {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>                    v = std::min(v, 1.0f);</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>                } else if (j == nb - 1) {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>                    v = std::max(v, 0.0f);</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>                } else {</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>                    v = std::min(std::max(v, 0.0f), 1.0f);</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>                }</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>                om[o] = v;</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>            }</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>        }</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    }</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    return out;</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>}</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a></span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>}  // namespace</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>EmbeddingFrontend EmbeddingFrontend::load(const ArtifactStore&amp; store) {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    EmbeddingFrontend f;</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    f.cfg_ = store.config();</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    const int D = f.cfg_.d_model;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    f.s_mlp_w1 = store.get(&quot;tokenizer.s_tokenizer.mlps.0.0.weight&quot;);</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    f.s_mlp_w2 = store.get(&quot;tokenizer.s_tokenizer.mlps.0.2.weight&quot;);</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    f.s_type_emb = store.get(&quot;tokenizer.s_tokenizer.type_embeddings.weight&quot;);</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    f.pos_emb = store.get(&quot;tokenizer.pos_embedding.weight&quot;);</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    f.tok_rms_g = store.get(&quot;tokenizer.rms_norm.weight&quot;);</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    f.ns_w1.resize(f.cfg_.ns_group_dims.size());</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    f.ns_w2.resize(f.cfg_.ns_group_dims.size());</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    for (size_t g = 0; g &lt; f.cfg_.ns_group_dims.size(); ++g) {</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        f.ns_w1[g] = store.get(&quot;tokenizer.ns_tokenizer.mlps.&quot; + std::to_string(g) + &quot;.0.weight&quot;);</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        f.ns_w2[g] = store.get(&quot;tokenizer.ns_tokenizer.mlps.&quot; + std::to_string(g) + &quot;.2.weight&quot;);</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    }</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    f.pw_w = store.get(&quot;embedder.piecewise_encoder.weight&quot;);</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    f.pw_b = store.get(&quot;embedder.piecewise_encoder.bias&quot;);</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    return f;</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>}</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a></span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>std::pair&lt;Tensor, Tensor&gt; EmbeddingFrontend::encode_s(const std::vector&lt;int64_t&gt;&amp; item_ids,</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>                                                      const LookupFn&amp; lookup) const {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    const int S = cfg_.max_seq_len;</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    const int D = cfg_.d_model;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    const float eps = static_cast&lt;float&gt;(cfg_.rms_eps);</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    // 截尾保留最新 + 左 padding</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    size_t valid = item_ids.size() &gt; static_cast&lt;size_t&gt;(S) ? static_cast&lt;size_t&gt;(S) : item_ids.size();</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    std::vector&lt;int64_t&gt; ids(valid);</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    if (valid) ids.assign(item_ids.end() - static_cast&lt;long&gt;(valid), item_ids.end());</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    const size_t pad = static_cast&lt;size_t&gt;(S) - valid;</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a></span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    std::vector&lt;int64_t&gt; padded(static_cast&lt;size_t&gt;(S), 0);</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    std::copy(ids.begin(), ids.end(), padded.begin() + static_cast&lt;long&gt;(pad));</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    std::vector&lt;uint8_t&gt; mask(static_cast&lt;size_t&gt;(S), 0);</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    std::fill(mask.begin() + static_cast&lt;long&gt;(pad), mask.end(), 1);</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a></span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    // item 查表 → [S, D]，padding 位置（id=0 → 表 0 行）再乘 mask</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    std::vector&lt;float&gt; seq_emb = lookup(&quot;item&quot;, padded);</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    for (size_t i = 0; i &lt; static_cast&lt;size_t&gt;(S); ++i)</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>        if (!mask[i]) std::fill_n(seq_emb.begin() + static_cast&lt;long&gt;(i * D), D, 0.0f);</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a></span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>    // STokenizer：mlp × mask（timestamp_agnostic 合并不加 type_emb、无 sep token）</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>    Mlp mlp;</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    mlp.w1 = s_mlp_w1;</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    mlp.w2 = s_mlp_w2;</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>    Tensor s_tokens({1, S, D});</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    mlp.apply(seq_emb.data(), s_tokens.data.data(), S, cfg_.seq_in_dim, D);</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    for (int i = 0; i &lt; S; ++i)</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>        if (!mask[i]) std::fill_n(s_tokens.data.begin() + i * D, D, 0.0f);</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a></span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>    // + pos_emb → RMSNorm（OneTransTokenizer.encode_s）</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    Tensor s_emb({1, S, D});</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>    std::vector&lt;float&gt; tmp(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>    for (int i = 0; i &lt; S; ++i)</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>        for (int t = 0; t &lt; D; ++t) tmp[i * D + t] = s_tokens.at(i * D + t) + pos_emb.at(i * D + t);</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>    rms_norm_rows(tmp.data(), tok_rms_g.data.data(), s_emb.data.data(), S, D, eps);</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>    Tensor s_mask({1, S});</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>    for (int i = 0; i &lt; S; ++i) s_mask.at(i) = mask[i] ? 1.0f : 0.0f;</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>    return {s_emb, s_mask};</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>}</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a></span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>// ---- 两步式（SEDA，§7.4.3）----------------------------------------------- //</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>// 阶段 1（EmbedLookup Pool）：查表 + mean-bag 聚合（阻塞 I/O 归 IO 池）</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>NsEmbeddings EmbeddingFrontend::lookup_ns(const ScoreInput&amp; in, const LookupFn&amp; lookup) const {</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>    if (in.candidates.empty()) throw std::runtime_error(&quot;score: candidates 为空&quot;);</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>    const int M = static_cast&lt;int&gt;(in.candidates.size());</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    const int D = cfg_.d_model;</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a></span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    NsEmbeddings emb;</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>    emb.uid = lookup(&quot;user&quot;, {in.uid_sparse});</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a></span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>    std::vector&lt;int64_t&gt; item_ids;</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    item_ids.reserve(in.candidates.size());</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>    for (const auto&amp; c : in.candidates) item_ids.push_back(c.item_id);</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>    emb.items = lookup(&quot;item&quot;, item_ids);</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a></span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>    // mean-bag（artist/album）：多值查表求均值，空 bag → 0</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>    auto bag = [&amp;](const std::string&amp; table,</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>                   const std::vector&lt;std::vector&lt;int64_t&gt;&gt;&amp; ids_per) -&gt; std::vector&lt;float&gt; {</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>        std::vector&lt;int64_t&gt; flat;</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>        for (const auto&amp; v : ids_per) flat.insert(flat.end(), v.begin(), v.end());</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>        std::vector&lt;float&gt; rows =</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>            flat.empty() ? std::vector&lt;float&gt;(D, 0.0f) : lookup(table, flat);</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>        std::vector&lt;float&gt; out(static_cast&lt;size_t&gt;(M) * D, 0.0f);</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>        size_t off = 0;</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>        for (int m = 0; m &lt; M; ++m) {</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>            size_t n = ids_per[static_cast&lt;size_t&gt;(m)].size();</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>            if (n == 0) continue;</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>            for (int t = 0; t &lt; D; ++t) {</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>                float acc = 0.0f;</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>                for (size_t r = 0; r &lt; n; ++r) acc += rows[(off + r) * D + t];</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>                out[static_cast&lt;size_t&gt;(m) * D + t] = acc / static_cast&lt;float&gt;(n);</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>            }</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>            off += n;</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>        }</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>        return out;</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>    };</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>    std::vector&lt;std::vector&lt;int64_t&gt;&gt; artist_ids, album_ids;</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>    for (const auto&amp; c : in.candidates) {</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>        artist_ids.push_back(c.artist_ids);</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>        album_ids.push_back(c.album_ids);</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>    }</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>    emb.artists = bag(&quot;artist&quot;, artist_ids);</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>    emb.albums = bag(&quot;album&quot;, album_ids);</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>    return emb;</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>}</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a></span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>// 阶段 2（Frontend Encode Pool）：piecewise + 组 MLP + RMSNorm（纯 CPU 计算）</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>Tensor EmbeddingFrontend::encode_ns_with(const ScoreInput&amp; in, const NsEmbeddings&amp; emb) const {</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>    const int M = static_cast&lt;int&gt;(in.candidates.size());</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>    const int D = cfg_.d_model;</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>    const int Ns = static_cast&lt;int&gt;(cfg_.ns_group_dims.size());</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>    const float eps = static_cast&lt;float&gt;(cfg_.rms_eps);</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a></span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    // dense：用户级 ∥ 候选级 → piecewise</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>    const int nf = cfg_.piecewise_n_features;</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>    std::vector&lt;float&gt; dense(static_cast&lt;size_t&gt;(M * nf));</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>    for (int m = 0; m &lt; M; ++m) {</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>        const auto&amp; c = in.candidates[static_cast&lt;size_t&gt;(m)];</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>        if (in.user_dense.size() != static_cast&lt;size_t&gt;(cfg_.n_user_dense) ||</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>            c.dense.size() != static_cast&lt;size_t&gt;(cfg_.n_cand_dense))</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>            throw std::runtime_error(&quot;dense 列数不匹配&quot;);</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>        std::copy(in.user_dense.begin(), in.user_dense.end(),</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>                  dense.begin() + static_cast&lt;long&gt;(m * nf));</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>        std::copy(c.dense.begin(), c.dense.end(),</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>                  dense.begin() + static_cast&lt;long&gt;(m * nf + cfg_.n_user_dense));</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>    }</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>    Tensor dense_enc = piecewise_forward(pw_w, pw_b, cfg_.piecewise_n_bins, dense.data(), M, nf);</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a></span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>    // uid 广播 M 行</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>    if (emb.uid.size() != static_cast&lt;size_t&gt;(D)) throw std::runtime_error(&quot;uid 表维度不匹配&quot;);</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>    std::vector&lt;float&gt; uid_emb(static_cast&lt;size_t&gt;(M) * D);</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>    for (int m = 0; m &lt; M; ++m)</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>        std::copy(emb.uid.begin(), emb.uid.end(), uid_emb.begin() + static_cast&lt;long&gt;(m * D));</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a></span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>    // NSGroupWise：各组 mlp → stack [M, Ns, D] → RMSNorm</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>    Tensor ns_emb({M, Ns, D});</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>    std::vector&lt;const std::vector&lt;float&gt;*&gt; groups = {&amp;dense_enc.data, &amp;uid_emb, &amp;emb.items,</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>                                                      &amp;emb.artists, &amp;emb.albums};</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>    std::vector&lt;float&gt; stacked(static_cast&lt;size_t&gt;(M * Ns * D));</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>    std::vector&lt;float&gt; g_tmp(static_cast&lt;size_t&gt;(M) * D);</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>    for (size_t g = 0; g &lt; cfg_.ns_group_dims.size(); ++g) {</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>        Mlp mlp;</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>        mlp.w1 = ns_w1[g];</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>        mlp.w2 = ns_w2[g];</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>        // 组 g：[M, in] → [M, D] → 散射到 [M, Ns, D] 的 token g 槽位</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>        mlp.apply(groups[g]-&gt;data(), g_tmp.data(), M, cfg_.ns_group_dims[g], D);</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>        for (int m = 0; m &lt; M; ++m)</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>            std::copy_n(g_tmp.begin() + static_cast&lt;long&gt;(m * D), D,</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>                        stacked.begin() + static_cast&lt;long&gt;((m * Ns + static_cast&lt;int&gt;(g)) * D));</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>    }</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>    rms_norm_rows(stacked.data(), tok_rms_g.data.data(), ns_emb.data.data(), M * Ns, D, eps);</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>    return ns_emb;</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>}</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a></span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>// 一步式 = 两步式组合（兼容路径）</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>Tensor EmbeddingFrontend::encode_ns(const ScoreInput&amp; in, const LookupFn&amp; lookup) const {</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>    NsEmbeddings emb = lookup_ns(in, lookup);</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>    return encode_ns_with(in, emb);</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>}</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a></span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>}  // namespace onetrans</span></pre></html>

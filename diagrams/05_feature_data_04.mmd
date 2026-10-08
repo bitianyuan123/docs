@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant P as PaiRec编排
+    participant F as 特征服务
+    participant R as Redis
+    participant D as 向量召回
+    participant S as 稀疏召回
+    participant G as 生成式召回
+    P->>F: GetUserContext：用户1、release、所需表示版本
+    F->>R: 批读用户、历史、用户表示
+    R-->>F: 对应键值或缺失槽位
+    F->>F: 校验版本、字段、history_hash
+    F-->>P: 用户画像、历史、用户向量、兴趣词项
+    par 向量召回
+        P->>D: 用户向量、向量空间版本、候选数
+        D-->>P: 原始物品ID和向量相似度
+    and 稀疏召回
+        P->>S: 兴趣词项及权重、候选数
+        S-->>P: 原始物品ID和文本匹配分数
+    and 生成召回
+        P->>F: BatchGetItemRepresentations：历史ID查SID
+        F->>R: 批读物品语义编码
+        R-->>F: 按输入位置返回编码或缺失
+        F-->>P: 历史SID、逐物品覆盖结果
+        P->>G: 历史SID、生成参数、release与SID版本
+        G->>G: 模型推理产生SID序列
+        G->>F: BatchGetItemRepresentations：生成SID反查原始ID
+        F->>R: 批读SID反向关联
+        R-->>F: 每个SID对应的原始ID列表
+        F-->>G: 同版本合法原始ID与缺失结果
+        G-->>P: 确定性去重和限量后的原始物品ID
+    end
+    P->>P: 融合去重、前置排序
+    P->>F: BatchGetItemFeatures：候选ID、所需物品字段
+    F->>R: 有界批读物品画像与统计
+    R-->>F: 与键对应的值或缺失
+    F-->>P: 同序逐ID特征、缺失ID
+    P->>P: 检查候选可用性，执行精排和后排序

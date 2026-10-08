@@ -1,0 +1,93 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "remaining_timeout_ms": 800,
+  "user_id": "1",
+  "sid_version": "demo_sid_v1",
+  "history": [
+    {
+      "value": [
+        1,
+        11,
+        21,
+        31
+      ]
+    },
+    {
+      "value": [
+        2,
+        12,
+        22,
+        32
+      ]
+    },
+    {
+      "value": [
+        3,
+        13,
+        23,
+        33
+      ]
+    },
+    {
+      "value": [
+        4,
+        14,
+        24,
+        34
+      ]
+    },
+    {
+      "value": [
+        5,
+        15,
+        25,
+        35
+      ]
+    },
+    {
+      "value": [
+        6,
+        16,
+        26,
+        36
+      ]
+    },
+    {
+      "value": [
+        7,
+        17,
+        27,
+        37
+      ]
+    },
+    {
+      "value": [
+        8,
+        18,
+        28,
+        38
+      ]
+    },
+    {
+      "value": [
+        9,
+        19,
+        29,
+        39
+      ]
+    },
+    {
+      "value": [
+        10,
+        20,
+        30,
+        40
+      ]
+    }
+  ],
+  "topk": 10,
+  "temperature": 1.0,
+  "beam_width": 1
+}

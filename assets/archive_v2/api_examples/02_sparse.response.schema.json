@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "title": "Proposed successful response, not an observed output",
+  "required": [
+    "request_id",
+    "source",
+    "executed",
+    "versions",
+    "items"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string"
+    },
+    "source": {
+      "const": "opensearch"
+    },
+    "executed": {
+      "const": true
+    },
+    "versions": {
+      "type": "object",
+      "required": [
+        "release_id"
+      ],
+      "properties": {
+        "release_id": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "embedding_space_id": {
+          "type": "string"
+        },
+        "model_version": {
+          "type": "string"
+        },
+        "sid_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "score"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

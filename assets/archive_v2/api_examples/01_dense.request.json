@@ -1,0 +1,11 @@
+{
+  "request_id": "doc_uid1_0001",
+  "release_id": "qkv_doc200k_6f148b4adf81",
+  "embedding_space_id": "${EMBEDDING_SPACE_ID}",
+  "query_vector": {
+    "$artifact": "actual DSSM user-vector export",
+    "user_id": "1",
+    "dimension": "checkpoint.config.out_dim"
+  },
+  "topk": 50
+}

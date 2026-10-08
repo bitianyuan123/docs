@@ -1,0 +1,48 @@
+sequenceDiagram
+    autonumber
+    participant U as 客户端
+    participant N as Nginx
+    participant P as PaiRec
+    participant F as 特征服务
+    participant V as 向量召回
+    participant S as 稀疏召回
+    participant G as 生成式召回
+    participant H as OneTrans历史
+    participant R as OneTrans精排
+    U->>N: POST /api/recommend<br/>{uid:"1",scene_id:"home_feed",size:10}
+    N->>P: 同一JSON；X-Gateway-Request-ID
+    P->>P: request_id="demo-user-1-001"<br/>release_id="demo_tenrec_v1"
+    par 候选准备
+        P->>F: GetUserContext(user_request)，user_id="1"
+        F-->>P: user_context {user,history,<br/>dense_query,sparse_query,view_status}
+        par 向量召回
+            P->>V: Recall(vector_request)<br/>query_vector = user_context.dense_query.vector
+            V-->>P: items[*].item_id=["1201","9001","3","4"]
+        and 稀疏召回
+            P->>S: Recall(sparse_request)<br/>sparse_tokens = user_context.sparse_query.tokens
+            S-->>P: items[*].item_id=["4","9002","9003"]
+        and 生成式召回
+            P->>F: BatchGetItemRepresentations(<br/>history_repr_request)
+            F-->>P: results[*].value.semantic_id，按10项历史原顺序
+            P->>G: Recommend(generation_request)，history=[{value:SID}]
+            G->>G: generated_sids=[[21,31,41,51],[22,32,42,52]]
+            G->>F: BatchGetItemRepresentations(<br/>generated_sid_lookup_request)
+            F-->>G: results[*].item_ids=[["4","1201"],["9002"]]
+            G-->>P: recommendations[*].item_id=[4,1201,9002]
+            P->>P: recommendations转为generative_response.items，ID转字符串
+        end
+        P->>P: candidate_ids=<br/>["4","1201","9002","9001","9003"]
+        P->>F: BatchGetItemFeatures(item_request)
+        F-->>P: results：前4项FOUND；9003为NOT_FOUND
+        P->>P: rankable_ids=["4","1201","9002","9001"]
+    and 历史计算；数据来自现有Provider
+        P->>P: GetUserHistory("1")，本例另行设定返回同10项历史
+        P->>H: POST /ingest {user_id:"1",<br/>item_ids:[2,3,...,1202],timestamps:[0,...,9]}
+        H-->>P: ingest_response {accepted:true,checksum,reason:""}
+    end
+    P->>P: require(ingest_response.accepted)；候选与历史两路汇合
+    P->>R: POST /rank，user_id="1"，items[*].item_id=rankable_ids
+    R-->>P: items[*].score=[0.72,0.86,0.63,0.91]；trace.kv_hit=true
+    P->>P: 按score降序，items[*].item_id=["9001","1201","4","9002"]
+    P-->>N: final_response {returned_size:4,shortfall:true,items}
+    N-->>U: 同一推荐JSON响应

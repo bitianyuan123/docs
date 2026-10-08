@@ -1,0 +1,97 @@
+{
+  "action": "download_and_extract_only_no_system_install",
+  "platform": "Debian 13 amd64",
+  "extract_root": "/tmp/rec-architecture-browser-deps/root",
+  "packages": [
+    {
+      "deb": "libasound2t64_1.2.14-1+deb13u1_amd64.deb",
+      "metadata": "Package: libasound2t64\nVersion: 1.2.14-1+deb13u1\nArchitecture: amd64",
+      "sha256": "5495496142d57e5ad6d581ac5456ec3c87f872c109a2bfb815d154b673eebc67",
+      "bytes": 380896
+    },
+    {
+      "deb": "libatk-bridge2.0-0t64_2.56.2-1+deb13u2_amd64.deb",
+      "metadata": "Package: libatk-bridge2.0-0t64\nVersion: 2.56.2-1+deb13u2\nArchitecture: amd64",
+      "sha256": "c0fe87ea1bdca2f938eaa8286af5ad38ecd15cf18c6cfb5961d7d46ac3192325",
+      "bytes": 68516
+    },
+    {
+      "deb": "libatk1.0-0t64_2.56.2-1+deb13u2_amd64.deb",
+      "metadata": "Package: libatk1.0-0t64\nVersion: 2.56.2-1+deb13u2\nArchitecture: amd64",
+      "sha256": "24786bc90e3ff80c4d1d8bdb5ec18bb5f06df9081a5233eb080f3202fcf6a1c3",
+      "bytes": 51996
+    },
+    {
+      "deb": "libatspi2.0-0t64_2.56.2-1+deb13u2_amd64.deb",
+      "metadata": "Package: libatspi2.0-0t64\nVersion: 2.56.2-1+deb13u2\nArchitecture: amd64",
+      "sha256": "65e9c9ecbd820fba2d04104cddd0bad33d256cbdfe0d1cb5365f10e363df2315",
+      "bytes": 81056
+    },
+    {
+      "deb": "libdrm2_2.4.124-2_amd64.deb",
+      "metadata": "Package: libdrm2\nVersion: 2.4.124-2\nArchitecture: amd64",
+      "sha256": "fe2276901c7cd7b8079de63072d37fe1cbeb4eb001a3bc1f1d662ad89aa0890e",
+      "bytes": 39032
+    },
+    {
+      "deb": "libgbm1_25.0.7-2+deb13u1_amd64.deb",
+      "metadata": "Package: libgbm1\nVersion: 25.0.7-2+deb13u1\nArchitecture: amd64",
+      "sha256": "31fb6d76b9ceaf13848fa617df53f85f62626b4fe7464a93811c720af6d5f2dd",
+      "bytes": 44592
+    },
+    {
+      "deb": "libnspr4_2%3a4.36-1_amd64.deb",
+      "metadata": "Package: libnspr4\nVersion: 2:4.36-1\nArchitecture: amd64",
+      "sha256": "87fc2039ee89cff2b8010fa9535706b1def40031acfc52bf12197dcb3cb7b064",
+      "bytes": 109800
+    },
+    {
+      "deb": "libnss3_2%3a3.110-1+deb13u4_amd64.deb",
+      "metadata": "Package: libnss3\nVersion: 2:3.110-1+deb13u4\nArchitecture: amd64",
+      "sha256": "8d20d0754039e15e9bd2c8484e98dc9c2982907d4f20834da29a9501913d00b5",
+      "bytes": 1394236
+    },
+    {
+      "deb": "libxcomposite1_1%3a0.4.6-1_amd64.deb",
+      "metadata": "Package: libxcomposite1\nVersion: 1:0.4.6-1\nArchitecture: amd64",
+      "sha256": "20e3c1d9b2135f0c8c4246a9fd26a51a57d5850c3b36ecc173c45d6be7328af3",
+      "bytes": 16348
+    },
+    {
+      "deb": "libxdamage1_1%3a1.1.6-1+b2_amd64.deb",
+      "metadata": "Package: libxdamage1\nVersion: 1:1.1.6-1+b2\nArchitecture: amd64",
+      "sha256": "e51e43f23f3befbc1f9408271f4df6773d37caece9ce7e1f38abade382f7fbf7",
+      "bytes": 15460
+    },
+    {
+      "deb": "libxfixes3_1%3a6.0.0-2+b4_amd64.deb",
+      "metadata": "Package: libxfixes3\nVersion: 1:6.0.0-2+b4\nArchitecture: amd64",
+      "sha256": "3fdd95d86d8e9d63e11f52070935c8f9f912c36aa3b17338d969f7685f3ed4fb",
+      "bytes": 20228
+    },
+    {
+      "deb": "libxi6_2%3a1.8.2-1_amd64.deb",
+      "metadata": "Package: libxi6\nVersion: 2:1.8.2-1\nArchitecture: amd64",
+      "sha256": "093d0903f35bb7a9f6815180ee040e6951fecf9b66c128cd72f064710210606e",
+      "bytes": 78896
+    },
+    {
+      "deb": "libxkbcommon0_1.7.0-2_amd64.deb",
+      "metadata": "Package: libxkbcommon0\nVersion: 1.7.0-2\nArchitecture: amd64",
+      "sha256": "f75ee544f55acc6a271debfab3ea4ae0458afc89d81cfe1a71137e07d4895b86",
+      "bytes": 112700
+    },
+    {
+      "deb": "libxrandr2_2%3a1.5.4-1+b3_amd64.deb",
+      "metadata": "Package: libxrandr2\nVersion: 2:1.5.4-1+b3\nArchitecture: amd64",
+      "sha256": "11e3490de93a8bbee3daba719cb8e1325a26fb3c125525c34bdcb7deb05eb9b2",
+      "bytes": 36312
+    },
+    {
+      "deb": "libxrender1_1%3a0.9.12-1_amd64.deb",
+      "metadata": "Package: libxrender1\nVersion: 1:0.9.12-1\nArchitecture: amd64",
+      "sha256": "9d042dfd5e613be1e02e6ddd0c5c4adef19c5eb08f6db838c2eba672c496dca4",
+      "bytes": 27896
+    }
+  ]
+}

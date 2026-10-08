@@ -1,0 +1,20 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "remaining_timeout_ms": 900,
+  "lookup_by": "raw_item_id",
+  "item_ids": [
+    "2",
+    "3",
+    "80936",
+    "781",
+    "111774",
+    "1230",
+    "26403",
+    "991",
+    "2362",
+    "1202"
+  ],
+  "sid_version": "demo_sid_v1"
+}

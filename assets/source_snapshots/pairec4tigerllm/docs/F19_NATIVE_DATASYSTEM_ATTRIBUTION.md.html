@@ -1,0 +1,390 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/docs/F19_NATIVE_DATASYSTEM_ATTRIBUTION.md</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/docs/F19_NATIVE_DATASYSTEM_ATTRIBUTION.md</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>b39e90a3e0a531991d6e3044ba94cf36b05d4c036451d4505ddfa35cd5256137</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># F19 Native DataSystem Request Attribution</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>## Contract</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>PaiRec keeps its current response path. It does not wait for DataSystem Set completion.</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>The native TensorRT-LLM process emits one later completion event for each PaiRec UUID:</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>```json</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>{&quot;event&quot;:&quot;datasystem_request_complete&quot;,&quot;request_id&quot;:&quot;&lt;uuid&gt;&quot;,&quot;get_count&quot;:2,&quot;get_us&quot;:12000,&quot;set_count&quot;:3,&quot;set_us&quot;:19000,&quot;get_failed_count&quot;:0,&quot;set_failed_count&quot;:0,&quot;pending_count&quot;:0,&quot;unknown_count&quot;:0,&quot;attribution_complete&quot;:true}</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>```</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a></span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>The same event now carries the V3 native Executor phase breakdown:</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>```text</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>executor_queue_us</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>add_sequence_us</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>prefill_gap_us</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>add_token_us</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>decode_gap_us</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>finalization_gap_us</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>remove_sequence_us</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>native_lifecycle_us</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>native_accounted_us</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>native_closure_error_us</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>```</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>`prefill_gap_us` is the interval from KV sequence allocation to the first generation</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>`addToken`; `decode_gap_us` is the sum of intervals between later `addToken` calls;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>`finalization_gap_us` is the interval from the final KV update to sequence removal.</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>These gaps include scheduler and GPU execution between KV-manager calls. The detailed</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>`attribution_lookup_us`, `sequence_lookup_us`, and `kv_update_us` fields are subsets of</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>`add_token_us` and must not be added to the lifecycle total. `phase_record_us` reports</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>the tracker bookkeeping cost; it is already present in a following gap and is also not</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>an additive phase.</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>The gateway emits one `trt_executor_request_complete` event per Executor sample after</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>the measured runner interval has ended. It breaks runner time into request construction,</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>the enqueue call, waiting for the final response, and response extraction. Logging is</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>therefore outside the measured interval. Gateway phase clocks and this event are enabled</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>only with `TRTLLM_DATASYSTEM_REQUEST_ATTRIBUTION=1`; the disabled path does not collect</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>these timings.</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>The correlation path is exact:</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>```text</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>PaiRec UUID</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>  -&gt; brpc RecommendRequest.request_id</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>  -&gt; gateway monotonic uint64 correlation ID</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>  -&gt; Executor Request.clientId</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>  -&gt; LlmRequest.mClientId</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>  -&gt; KVCacheManager sequence</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>  -&gt; DataSystem Get/Set scope</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>  -&gt; native completion event joined back by PaiRec UUID</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>```</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>Set belongs to the request whose allocation evicts and offloads a block. Get belongs</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>to the request whose cache reuse onboards the block. Operations without a request</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>context are reported as unattributed and are never assigned by timestamp proximity.</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a></span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>The tracker closes only after every native Executor sequence for the Recommend has</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>been removed and every tracked operation has returned. The default TTL is 30 seconds;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>expiry emits `attribution_complete=false` instead of silently dropping the sample.</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a></span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>## Build</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a></span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>Run on the machine that owns the patched TensorRT-LLM source and ARM64/GPU runtime:</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a></span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>```bash</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>cd /home/zcx/workspace/pairec4tigerllm</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>git pull gitcode pairec-brpc-observability</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>TRTLLM_DIR=/home/zcx/TensorRT-LLM \</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>  bash scripts/build_f19_attribution_runtime_worker1.sh \</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>  | tee /tmp/f19-v2-runtime-build.log</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>```</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a></span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>The source tree must already contain the project DataSystem KVC modifications. The</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>F19 patch is idempotent, but it is not a replacement for those earlier modifications.</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a></span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>The build script idempotently reapplies the current repository patch by default, so</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>an already-patched V1/V2 tree also receives managed-source updates such as the V3</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>phase timing marker. Set `APPLY_PATCH=0` only for a deliberate compile-only rerun.</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>The recovered worker1 history contains both `zcx-pairec-image:v1.1` exploration and</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>the successful `zcx-pairec-trtllm-brpc-sdk:parallel-get-ctx224-v1` build container.</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>Only the latter was followed by successful checks for `libcudadevrt.a` and</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>`libcudart_static.a`; it is therefore the first candidate for the native build.</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a></span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>The script consequently uses two isolated build stages:</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a></span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>1. `TRT_BUILD_IMAGE` is selected only after an executable preflight confirms the</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>   ARM64 compiler and both CUDA static runtime libraries. The historical</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>   `zcx-pairec-trtllm-brpc-sdk:parallel-get-ctx224-v1` image is tried first. The</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>   selected image builds only `libtensorrt_llm.so`.</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>2. `GATEWAY_BUILD_IMAGE` first tries the recovered historical SDK image</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>   `zcx-pairec-trtllm-brpc-sdk:parallel-get-ctx224-v1`, then local BRPC inference</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>   images. Every candidate must pass an executable preflight for protobuf headers</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>   and the brpc C++ SDK. The selected image builds only `brpc_inference_server`</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>   against the stage-one native library. It does not need `protoc`: the F19 build</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>   enables checked-in C++ sources generated by protoc 25.1 for the image&#x27;s</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>   Protobuf C++ 4.25.1 headers and runtime.</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a></span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>Both containers mount the host TensorRT-LLM tree at `/TensorRT-LLM`; the gateway</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>container mounts this repository at `/mnt/pairec-src`. The default build parallelism</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>is capped at 32 even when worker1 reports hundreds of CPUs. Set `JOBS` explicitly</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>only when a different memory/CPU tradeoff has been validated.</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a></span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>The build script writes both artifacts to a staging directory. It publishes them to</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>`/home/zcx/pairec-f19-runtime/{bin,lib}` only after both stages, marker checks and</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>gateway `ldd` validation pass. Override either stage only with a locally verified</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>ARM64 image:</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a></span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>```bash</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>TRT_BUILD_IMAGE=zcx-pairec-trtllm-brpc-sdk:parallel-get-ctx224-v1 \</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>GATEWAY_BUILD_IMAGE=pairec-brpc-inference:&lt;local-brpc-sdk-tag&gt; \</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>TRTLLM_DIR=/home/zcx/TensorRT-LLM \</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>  bash scripts/build_f19_attribution_runtime_worker1.sh</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>```</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a></span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>The script reproduces the two requirements discovered during the manual native</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>build: it mounts only worker1&#x27;s `libcuda.so.1` at</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>`/host-driver/libcuda.so.1`, and adds the CUDA directory containing</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>`libcudadevrt.a` and `libcudart_static.a` to `LIBRARY_PATH`. It deliberately does</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>not add `/host-driver` to `LD_LIBRARY_PATH`; mounting the whole host `/lib64`</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>overrode the build image&#x27;s `libstdc++` and made PyTorch fail its GLIBCXX check.</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>Before compiling, it reconfigures the existing TensorRT-LLM build tree with</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>`CMAKE_BUILD_TYPE=Release` and rejects a cache without the Release `-O3 -DNDEBUG`</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>flags. This is mandatory: the recovered worker1 cache had an empty build type and</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>produced a library whose warm decode cost was about twice the historical runtime.</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>It rejects unresolved gateway libraries, missing V2 attribution/V3 timing markers and</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>missing output-token or Executor-phase trace fields before replacing the overlay. Success ends with</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>`F19_ATTRIBUTION_RUNTIME_BUILD_OK`.</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a></span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>The full image rebuild remains available as a slower fallback when a hostPath overlay</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>is not acceptable:</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>```bash</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>BASE_IMAGE=zcx-pairec-trtllm-brpc-sdk:v1 \</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>  bash scripts/build_brpc_trtllm_inference_image.sh \</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>    docker.io/library/pairec-brpc-inference:k8s-arm64-v1 \</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>    /home/zcx/pairec-brpc-inference-k8s-arm64-v1.tar</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>```</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a></span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>Import the rebuilt image into the Kubernetes node&#x27;s `k8s.io` containerd namespace</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>using the existing local image flow. Do not transfer the historical 122 GiB tar when</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>the node can rebuild or receive the changed binary and native libraries directly.</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a></span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>When worker1 already contains the rebuilt gateway and native library under</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>`/home/zcx/pairec-f19-runtime`, deploy and validate both hostPath overlays from the</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>master with one command:</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a></span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>```bash</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>bash scripts/deploy_f19_datasystem_attribution_overlay.sh apply</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>```</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a></span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>The script backs up the current Deployment, first rolls out with attribution</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>disabled to verify the executable, hashes, dynamic libraries and Health endpoint,</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>then enables strict attribution and runs one exact request-id smoke. It is</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>idempotent. Use `verify` for a read-only recheck, `smoke` to continue from an</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>already enabled strict Pod without another rollout, and `rollback` to undo one</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>Deployment revision. The native ready marker is emitted when the first tracked</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>Recommend constructs the attribution tracker, not during process startup or Health.</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>Set `RUN_EXACT_SMOKE=0` only when deployment validation must be separated from the</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>business request.</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a></span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>## Validation</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a></span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>Three-request strict smoke:</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>```bash</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>REQUIRE_DATASYSTEM_ATTRIBUTION=1 \</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>REQUESTS=3 \</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>WARMUP_REQUESTS=1 \</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>RUN_HTTP_AB=0 \</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>BUILD_IMAGES=0 \</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>IMPORT_IMAGES=0 \</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>  bash scripts/deploy_and_validate_pairec_brpc_observed.sh</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>```</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a></span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>For a workload-only retry after all rendered resources and images have already</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>been validated, also set `FORCE_INFERENCE_RESTART=0` and</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>`FORCE_PAIREC_RESTART=0`. This avoids destroying a healthy PaiRec Pod on a node</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>whose CRI sandbox image lookup cannot currently reach the registry. Keep the</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>default `FORCE_PAIREC_RESTART=1` whenever configuration or image changes must be</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>activated.</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a></span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>Formal run:</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a></span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>```bash</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>REQUIRE_DATASYSTEM_ATTRIBUTION=1 \</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>REQUESTS=1000 \</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>WARMUP_REQUESTS=1 \</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>RUN_HTTP_AB=0 \</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>BUILD_IMAGES=0 \</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>IMPORT_IMAGES=0 \</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>  bash scripts/deploy_and_validate_pairec_brpc_observed.sh</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>```</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a></span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>The strict gate requires exactly one native completion event for each workload UUID,</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>`attribution_complete=true`, and zero failed, pending, unknown, duplicate, missing, or</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>invalid events. `pipeline_trace_complete.datasystem` remains an immediate snapshot;</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>the summary joins the later native event from `inference.log` by exact `request_id`.</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a></span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>For a single request, use:</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a></span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>```bash</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>NAMESPACE=pairec \</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>PAIREC_TARGET=deploy/pairec-brpc-observed \</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>BRPC_TARGET=deployment/inference-brpc-trtllm \</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>REQUIRE_EXACT_DATASYSTEM_ATTRIBUTION=1 \</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>  bash scripts/trace_single_brpc_datasystem_request.sh</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>```</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a></span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>The output prints both closure layers. Diagnose the regression from this request before</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>running another enabled/disabled benchmark:</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a></span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>1. A large `request_setup_us` or `enqueue_call_us` points to the gateway/Executor API.</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>2. A large `executor_queue_us` points to scheduler admission or existing work.</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>3. A large `prefill_gap_us` points to context execution after KV allocation.</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>4. A large `decode_gap_us` points to token generation/model iterations.</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>5. A large `add_token_us`, `finalization_gap_us`, or `remove_sequence_us` points to KV</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>   management, DataSystem copy/offload, or request teardown.</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>6. `runner_minus_native_us` in the single-request output isolates gateway work before</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>   native admission and after native sequence removal. The aggregate summary reports</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>   the same value as `runner_minus_native_ms` after converting microseconds to milliseconds.</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a></span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>The strict 1000-request summary emits p50/p95/p99 for all of these fields and fails if</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>the native phase event is absent, incomplete, duplicated, or cannot close within 100us.</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a></span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>If an old aggregate report has expired, compare the still-cached historical runtime</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>instead of inferring its output-token count. First extract the known gateway/native</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>pair on worker1. The extractor pins the previously recorded SHA256 values by default:</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a></span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>```bash</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>cd /home/zcx/workspace/pairec4tigerllm-f19</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>git pull --ff-only gitcode pairec-brpc-observability</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>bash scripts/extract_f19_historical_runtime_worker1.sh</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>```</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a></span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>Then run the guarded comparison from master:</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a></span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>```bash</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>cd /home/zcx/workspace/pairec4tigerllm</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>git pull --ff-only gitcode pairec-brpc-observability</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>SAMPLES=5 bash scripts/benchmark_f19_historical_runtime.sh</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>```</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a></span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>The benchmark deploys the historical gateway and TensorRT-LLM library as one pair,</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>collects one cold plus four warm requests, restores the exact original Deployment</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>template, and collects the same current-runtime samples. An EXIT trap restores the</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>current template after failures as well. Do not compare a historical gateway against</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>the current library or vice versa: their native symbol contracts differ.</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a></span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>That fresh-cache smoke may correctly report `Get=0/Set=0`; it proves identity and</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>lifecycle closure, but not real DataSystem I/O. To reproduce the previously stable</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>cache shape and require the same UUID to own exactly three Sets and two Gets, run:</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a></span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>```bash</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>bash scripts/validate_f19_datasystem_real_io.sh \</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>  | tee /tmp/f19-datasystem-real-io.log</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>```</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a></span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>The command verifies the strict runtime, restarts inference before every round,</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>primes 195 requests, and performs three replay requests. A round passes only when</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>the legacy offload/onboard trace and the unique native completion both report</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>`3 Set + 2 Get`, with no failed, pending, or unattributed operation.</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a></span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>## Performance Check</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a></span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>Measure disabled and enabled modes with alternating 1000-request runs after warmup.</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>Use at least three pairs and compare pair medians. The accepted overhead budget is:</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a></span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>- client E2E average increase: at most 0.1 ms</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>- client E2E p99 increase: at most 0.5 ms</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>- throughput loss: at most 1 percent</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>- every disabled and enabled run runner average: at most 110 ms</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>- paired output-token average difference: exactly zero</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a></span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>Both modes must use the same image, workload, CPU limits, DataSystem endpoint, and</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>cache preparation. Changing only `TRTLLM_DATASYSTEM_REQUEST_ATTRIBUTION` requires an</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>inference rollout because the native process reads the flag once at startup.</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a></span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>Run the formal paired benchmark from the master repository that controls the K8s</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>Deployment:</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a></span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>```bash</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>PAIRS=3 \</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>REQUESTS=1000 \</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>WARMUP_REQUESTS=1 \</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>  bash scripts/benchmark_f19_attribution_ab.sh \</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>  | tee /tmp/f19-attribution-ab.log</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>```</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a></span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>Each pair runs `disabled` followed by `enabled`. Every round forces an inference</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>rollout after setting the mode, which resets the native cache before the identical</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>warmup. Images are neither rebuilt nor imported. The inner validator still checks</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>business responses, trace closure, BRPC-only protocols, rerank, resource limits and</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>Pod health; enabled rounds additionally require one exact native completion per</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>request. Workload throughput is measured from immediately before the first request</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>until the last response, excluding rollout and completion-wait time.</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a></span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>The final result is written to the printed `summary_json` path. A passing run ends</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>with both markers:</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a></span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>```text</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>classification=F19_ATTRIBUTION_AB_PASS</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>F19_ATTRIBUTION_AB_BENCHMARK_COMPLETE</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>```</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a></span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>The final enabled round intentionally leaves strict attribution enabled.</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>Disabled rows report zero DataSystem counts because request attribution is disabled;</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>the underlying DataSystem KVC path remains configured and is not disabled by this</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>benchmark.</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a></span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>## Formal Result</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a></span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>The 2026-08-11 ARM64/Kubernetes run completed three 1000-request pairs. Every round</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>passed the business, trace, BRPC-only, rerank, resource and Pod-health gates. All</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>enabled rounds joined 1000/1000 exact native completion events and each observed 54</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>Gets plus 1995 Sets. Pair-median attribution overhead was:</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a></span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>- client E2E average: -0.672 ms</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>- client E2E p99: -1.947 ms</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>- closed-loop throughput loss: 0.076 percent</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>- runner average: -0.188 ms</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>- runner p99: -1.000 ms</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a></span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>That result is retained as evidence for the tracker statistics and logging path, but</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>it is no longer accepted as proof for the complete attribution patch. The disabled</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>mode still set Executor `clientId` and performed the request-map lookup under</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>`mSequencesMtx` for every generated token. Both modes therefore shared the most</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>intrusive code path.</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a></span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>The V2 patch makes disabled mode a real no-identity baseline: it does not allocate a</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>correlation ID, set Executor `clientId`, or access the native request map. Enabled</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>mode keeps exact attribution but moves the request map to a dedicated mutex so token</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>accounting cannot contend with the scheduler&#x27;s sequence critical section. Trace</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>fields 40 and 41 report output-token count and runner milliseconds per output token.</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>The benchmark fails if token counts differ or if either mode remains above 110 ms</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>average runner latency. The final Release validation passed this gate remotely.</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a></span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>## Bounded Business Failure Handling</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a></span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>The strict workload validates successful end-to-end recommendation requests. A</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>generation can occasionally finish normally but map to no catalog item; the gateway</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>then returns `code=299` (`items size not enough`) and the F20 source-quota reranker</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>correctly fails closed with payload `code=500,msg=rerank failed`.</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a></span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>Do not disable that production behavior for F19. Instead, the workload driver can</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>explicitly skip a bounded number of exactly those responses and continue until it</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>has collected the requested number of successful samples:</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a></span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>```bash</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>MAX_EXPECTED_RERANK_FAILURES=20 \</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>REQUESTS=1000 \</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>WARMUP_REQUESTS=1 \</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>REQUIRE_DATASYSTEM_ATTRIBUTION=1 \</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>BUILD_IMAGES=0 \</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>IMPORT_IMAGES=0 \</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>FORCE_INFERENCE_RESTART=0 \</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>FORCE_PAIREC_RESTART=0 \</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>  bash scripts/deploy_and_validate_pairec_brpc_observed.sh \</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>  | tee /tmp/f19-release-1000-validation.log</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>```</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a></span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>The default limit is zero. The exception applies only when source rerank validation</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>is enabled and only to the exact `500/rerank failed` contract. Transport failures,</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>other application errors, malformed responses and an exceeded limit still stop the</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>run immediately. Skipped attempts are written to</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>`expected-rerank-failures.tsv`; `request-attempts.json` records accepted, attempted</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>and skipped counts. They are excluded from the 1000 successful request IDs used for</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>latency and exact DataSystem joins, while their request time remains part of the</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>closed-loop workload wall clock.</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a></span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>Health events are evaluated as a workload interval, not as Pod-lifetime history.</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>The validator snapshots each Ready Pod name and cumulative `OOMKilled`, `BackOff`</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>and `Unhealthy` Event count before warmup, then requires the same Pod, zero restarts</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>and no count increase after the workload. Historical startup events therefore do not</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>invalidate a healthy run, while any new event during validation remains fail-closed.</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a></span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>## Final Acceptance</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a></span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>F19 completed on 2026-08-12. The Release workload accepted 1000/1000 requests with</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>1000/1000 exact native completion joins. Runner average/p99 was</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>`95.085/105.199 ms`, client E2E average/p99 was `110.002/120.946 ms`, and all five</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>container CPU throttling ratios were zero. Output-token count was fixed at 32.</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a></span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>The old lifetime Event gate reported a historical image-pull `BackOff` whose last</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>timestamp was `2026-08-12T08:01:43Z` (16:01:43 Asia/Shanghai), around 23 minutes</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>before the 16:25:23 validation output directory. It was not a workload failure.</span></pre></html>

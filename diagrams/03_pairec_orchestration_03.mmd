@@ -1,0 +1,10 @@
+flowchart TB
+    Controller[请求控制器] --> Engine[推荐编排模块]
+    Engine --> Feature[特征服务客户端]
+    Engine --> Recall[三路召回客户端]
+    Engine --> History[现有OneTrans历史提供器]
+    Engine --> Ranking[OneTrans客户端]
+    Engine --> Rules[前后排序函数]
+    Feature --> Transport[原生通信封装]
+    Recall --> Transport
+    Ranking --> Http[现有HTTP调用封装]

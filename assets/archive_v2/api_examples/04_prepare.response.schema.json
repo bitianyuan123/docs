@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "title": "Proposed response after compute and successful shared-store write",
+  "required": [
+    "request_id",
+    "executed",
+    "kv_backend",
+    "kv_key",
+    "history_hash",
+    "versions",
+    "accepted",
+    "ready",
+    "backend",
+    "kv_bytes"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string"
+    },
+    "executed": {
+      "const": true
+    },
+    "kv_backend": {
+      "const": "datasystem"
+    },
+    "kv_key": {
+      "type": "string"
+    },
+    "history_hash": {
+      "type": "string"
+    },
+    "versions": {
+      "type": "object",
+      "required": [
+        "release_id",
+        "model_version"
+      ],
+      "properties": {
+        "release_id": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "embedding_space_id": {
+          "type": "string"
+        },
+        "model_version": {
+          "type": "string"
+        },
+        "sid_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "accepted": {
+      "const": true
+    },
+    "ready": {
+      "const": true
+    },
+    "backend": {
+      "const": "cpp_cpu"
+    },
+    "kv_bytes": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "additionalProperties": true
+}

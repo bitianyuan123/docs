@@ -1,0 +1,111 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_sh/pairec-demo/src/cpp/brpcClients/opensearch_client.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_sh/pairec-demo/src/cpp/brpcClients/opensearch_client.cpp</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>f7c4c49cbea73bada4dbb45fcd7d89078496a6e2</code><br>原文件 SHA256：<code>5ca44d117a4cf88b6c02940c3f90a17a60b1b1280ee3cc4df08244e5cf4c3cbc</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;opensearch_client.hpp&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;gflags/gflags.h&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#include &lt;openssl/bio.h&gt;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#include &lt;openssl/evp.h&gt;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#include &lt;openssl/buffer.h&gt;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>Opensearch_Clientor* Opensearch_Clientor::instance_ = nullptr;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>Opensearch_Clientor::Opensearch_Clientor()</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>{</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>    m_options.protocol = brpc::PROTOCOL_HTTP;  // brpc 用 http 协议处理 REST API</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>    m_options.connection_type = brpc::CONNECTION_TYPE_POOLED;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>    m_options.timeout_ms = 5000;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>    m_options.connect_timeout_ms = 2000;  // 连接超时需小于 RPC 超时</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>    </span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a></span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    m_options.mutable_ssl_options()-&gt;verify.verify_depth = 0;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>}</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>Opensearch_Clientor::~Opensearch_Clientor()</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>{</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    if (instance_) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>        delete instance_;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>        instance_ = nullptr;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    }</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>}</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a></span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>int Opensearch_Clientor::Connect(const std::string&amp; addr, const std::string&amp; user, const std::string&amp; password)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>{</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    if (m_channel.Init(addr.c_str(), &amp;m_options) != 0) {</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>        LOG(ERROR) &lt;&lt; &quot;Fail to init channel to opensearch-server, addr=&quot; &lt;&lt; addr;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>        return -1;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    }</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    m_userInfo = Base64_encode(user + &quot;:&quot; + password);</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    return 0;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>}</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a></span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>Opensearch_Clientor* Opensearch_Clientor::getInstance()</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>{</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>    if (!instance_) {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>        instance_ = new Opensearch_Clientor();</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    }</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>    return instance_;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>}</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>std::string Opensearch_Clientor::Base64_encode(const std::string&amp; input) {</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    BIO* b64 = BIO_new(BIO_f_base64());</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    BIO* mem = BIO_new(BIO_s_mem());</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    b64 = BIO_push(b64, mem);</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    BIO_write(b64, input.c_str(), input.length());</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    BIO_flush(b64);</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    BUF_MEM* bptr = nullptr;</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    BIO_get_mem_ptr(b64, &amp;bptr);</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    std::string result(bptr-&gt;data, bptr-&gt;length);</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    BIO_free_all(b64);</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    return result;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>}</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>int Opensearch_Clientor::PostRequest(std::string indexName, std::string queryInfo)</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>{</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    brpc::Controller cntl;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    cntl.http_request().set_method(brpc::HTTP_METHOD_POST);</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    cntl.http_request().uri() = &quot;/&quot; + indexName + &quot;/_search?pretty&quot;;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    cntl.http_request().SetHeader(&quot;Authorization&quot;,</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>        &quot;Basic &quot; + m_userInfo);</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    cntl.http_request().SetHeader(&quot;Content-Type&quot;, &quot;application/json&quot;);</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    // Query body</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    // std::string body = R&quot;({&quot;query&quot;:{&quot;match&quot;:{&quot;content&quot;:&quot;Python 编程语言&quot;}},&quot;explain&quot;:false})&quot;;</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    std::string body = R&quot;({&quot;query&quot;:{&quot;match&quot;:{&quot;content&quot;:&quot;)&quot; + queryInfo + R&quot;(&quot;}},&quot;explain&quot;:false})&quot;;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    cntl.request_attachment().append(body);</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a></span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    m_channel.CallMethod(nullptr, &amp;cntl, nullptr, nullptr, nullptr);</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    if (cntl.Failed()) {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>        LOG(ERROR) &lt;&lt; &quot;Request failed: &quot; &lt;&lt; cntl.ErrorText();</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>        return -1;</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    }</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a></span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    LOG(INFO) &lt;&lt; &quot;Response: &quot; &lt;&lt; cntl.response_attachment();</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    return 0;</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>}</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a></span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>int Opensearch_Clientor::Search(const std::string&amp; indexName, const std::string&amp; queryBody, std::string* pResponse)</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>{</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    if (pResponse == NULL) {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>        return -1;</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    }</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a></span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    brpc::Controller cntl;</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    cntl.http_request().set_method(brpc::HTTP_METHOD_POST);</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>    cntl.http_request().uri() = &quot;/&quot; + indexName + &quot;/_search?pretty&quot;;</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    cntl.http_request().SetHeader(&quot;Authorization&quot;,</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>        &quot;Basic &quot; + m_userInfo);</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    cntl.http_request().SetHeader(&quot;Content-Type&quot;, &quot;application/json&quot;);</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    std::string body = R&quot;({&quot;query&quot;:{&quot;match&quot;:{&quot;content&quot;:&quot;)&quot; + queryBody + R&quot;(&quot;}},&quot;explain&quot;:false})&quot;;</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    cntl.request_attachment().append(body);</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a></span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>    m_channel.CallMethod(nullptr, &amp;cntl, nullptr, nullptr, nullptr);</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    if (cntl.Failed()) {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>        LOG(ERROR) &lt;&lt; &quot;Opensearch search failed, index=&quot; &lt;&lt; indexName</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>                   &lt;&lt; &quot;, error=&quot; &lt;&lt; cntl.ErrorText()</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>                   &lt;&lt; &quot;, response=&quot; &lt;&lt; cntl.response_attachment();</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>        return -1;</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    }</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a></span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>    pResponse-&gt;assign(cntl.response_attachment().to_string());</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    return 0;</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>}</span></pre></html>

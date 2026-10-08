@@ -1,0 +1,79 @@
+{
+  "scope": "仓库文档与证据静态校验；不执行模型或在线服务",
+  "mode": "repository_only",
+  "real_data_reverification_requested": false,
+  "ok": true,
+  "checks": {
+    "documents": 18,
+    "local_links": 221,
+    "mermaid_blocks": 56,
+    "five_views_present_in_all_module_documents": true,
+    "json_files": 52,
+    "copied_assets_verified": 15,
+    "vendor_assets_verified": 4,
+    "source_snapshot_files_verified": 37,
+    "stored_history_evidence": {
+      "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+      "compared_with_archived_request": true
+    },
+    "real_input_reverified": {
+      "status": "not_run",
+      "reason": "默认仅检查随仓库保存的证据；未重新读取Tenrec源文件。使用--source-workspace启用。"
+    },
+    "current_feature_examples": {
+      "files": 10,
+      "values_match_stored_evidence": true,
+      "onetrans_id_only_contract": true,
+      "no_model_outputs_or_deployment_claim": true
+    },
+    "illustrative_walkthrough": {
+      "kind": "illustrative_data_consistency_only",
+      "model_or_service_executed": false,
+      "passed": true,
+      "check_count": 31,
+      "checks": [
+        "样例显式标记为未执行模型",
+        "用户ID从外部入口传入用户查询",
+        "历史哈希重算及两种派生表示绑定一致",
+        "用户上下文四视图均存在",
+        "向量调用取自上下文且维度为64",
+        "演示向量单位范数",
+        "向量空间版本贯穿查询与结果",
+        "稀疏下游使用sparse_tokens而不是内部tokens字段",
+        "稀疏词项完整转交且权重和为1",
+        "历史SID查询保持历史次序",
+        "生成请求history保持proto对象形状与SID来源",
+        "生成proto用户ID为字符串而物品ID为整数",
+        "生成调用显式保留proto默认推理参数",
+        "SID查询方向互斥",
+        "反向结果保留SID次序及一对多",
+        "生成服务展开反查结果",
+        "旧proto响应经适配保留原始ID",
+        "融合次序与样例策略一致",
+        "候选已去重且已看物品3被过滤",
+        "候选特征逐位置返回且缺失不移位",
+        "物品投影仅含请求字段且statistics字段完整",
+        "物品统计中点击率与计数一致",
+        "仅有特征的候选进入精排",
+        "OneTrans历史来自独立提供器且整数转换不丢ID",
+        "两种位置约定不同且都不是事件时间",
+        "当前OneTrans入参只含源码接受的业务字段",
+        "精排响应按输入顺序归属分数",
+        "后排序不混用三路召回分数",
+        "最终顺序与不足10项标志一致",
+        "四次特征RPC共享请求与发布身份",
+        "SID版本贯穿正查生成反查"
+      ]
+    },
+    "concrete_request_response_pairs": 10,
+    "main_document_examples": {
+      "python_blocks_parsed": 13,
+      "rank_and_final_json_match_attachment": true
+    },
+    "source_repositories": {
+      "status": "not_run",
+      "reason": "未指定--source-workspace；不要求本机存在四个源工程。"
+    }
+  },
+  "errors": []
+}

@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant B as 离线构建进程
+    participant M as 模型表示生产进程
+    participant L as 装载进程
+    participant V as 发布校验进程
+    participant F as 特征服务
+    B->>B: 校验源文件，固定用户与历史，聚合物品统计
+    B->>M: 同一快照的用户、历史、物品
+    M-->>B: 真实用户向量、物品SID、索引资产
+    B->>L: 装载上述模型产物及用户、历史、物品、来源记录
+    L->>L: 装载新release的Redis键及检索索引
+    L->>V: 清单、实际数量、错误与校验值
+    V->>V: 读回、版本、ID覆盖与索引关联检查
+    V-->>L: 校验通过
+    L-->>B: 本次装载完成
+    B->>F: 发布READY清单
+    F->>F: 允许绑定此release的新请求
+    F-->>B: 发布结果

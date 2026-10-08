@@ -1,0 +1,99 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/docs/PERSISTENT_NATIVE_KEY_LIFECYCLE.md</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/docs/PERSISTENT_NATIVE_KEY_LIFECYCLE.md</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>e2dfd982f980902433e83c027c3695c504cd3eae4c386bd1cad583d49df7226b</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># 持久模式 native key 增长审查（2026-09-27）</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>## 远端运行证据</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>persistent-cache-n3-20260927-144713：连续三次正式请求均3Set2Get，但排空后</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>DS对象106/146/186，对象数据393.577/533.579/673.582MiB。</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>准备/正式native首次观测key分别47+3、39+1、40+1。</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>后两轮净增40对象和约140MiB与native 3.5MiB对象高度吻合，尚不是逐key库存证明。</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>不能将该增长仅归入已释放空间的600秒延迟回收。暂停扩20/300/1000。</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>## 已检查的本地代码</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>当前仓库cpp/brpc_gateway/brpc_inference_server.cpp：</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>- seed_初始42；Recommend调用seed_.fetch_add(trt_num_samples)。</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>- base_seed+sample传给RunExecutor，再写入SamplingConfig.setSeed。</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>- 所以固定UID不会固定进程内每次请求的采样seed；重建进程会重置seed。</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>- seed不同不必然意味着输出不同，实际输出及远端部署版本还需证据。</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a></span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>本地参考TRT源码（不是已证明远端加载的构建）：</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>- LlmRequest::addNewToken/addNewTokens将生成token加入mUniqueTokens，extraId为0。</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>- WindowBlockManager::storeNewBlock使用uniqueTokens并建立blockKeys。</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>- BlockKeyHasher读取tokenId及可选extraIds/LoRA等，固定输入不能保证生成块key固定。</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>- KVCacheBlock::freeLeafBlock解除父子连接，removeNextBlock删除本地树条目。</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>- kvCacheTransferManager.cpp用BlockKeyHasher生成DS key，Create/MCreate后Set/MSet，</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>  使用NONE_L2_CACHE_EVICT；该文件未找到显式ttlSecond设置。</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>- 已检查的manager/transfer文件未发现kvClient-&gt;Del/Delete调用。</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>  这不证明整个系统无删除/TTL/容量淘汰，也不代表DS对象永久保留。</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>候选链路：进程seed前进 → 生成token变化 → 新block key → DS对象增加；</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>本地树释放与DS删除未见直接联动。远端源码和实际二进制身份仍需核对，不能标为已确认根因。</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>## 只读复核</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>```bash</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>D=/home/zcx/pairec-495ms-recovery/persistent-cache-n3-20260927-144713</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>A=/home/zcx/pairec-495ms-recovery/native-key-lifecycle-$(date +%Y%m%d-%H%M%S)</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>python3 scripts/audit_persistent_native_keys.py --run &quot;$D/run&quot; --output &quot;$A&quot;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>```</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a></span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>读取已有准备/正式日志；SSH到worker1读取三个指定TRT源码文件及git commit/diff，</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>读取master当前仓库gateway源码。SSH总超时60秒，不执行kubectl、不发请求、不删除key、不重启。</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>每个源码文件上限2MB（读后检查）；输出原文native-source.stdout和逐key/源码上下文report.json。</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>可用--native-evidence复用已有JSON，缺llmRequest.h等会明确报错；不补猜。</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>源码快照不证明当前进程加载的二进制同源。已有trace不包含block角色，报告保留UNKNOWN。</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>接下来依据实际源码决定最小观测补丁：记录请求使用的seed、输入token数、block token区间/</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>角色、key及驱逐原因，避免打印完整用户token。新key来自生成块得到实测确认后，再评审</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>对象所有权/引用与删除时机，或仅准备请求使用有界确定性采样的方案。</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>不能为了降低对象数直接改变正式请求采样参数，也不能删除仍被其他请求引用的key。</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a></span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>## 默认关闭的运行观测 V1</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>`PAIREC_NATIVE_KEY_DIAGNOSTICS=1` 是**推理进程环境变量**，默认关闭；需同时编译新版 gateway 和打补丁的 native 库。仅在成功执行的每个 sample 后记录 `native_key_request_v1`：request_id、correlation_id、原来的 seed、输入/输出数量及 FNV-1a token 摘要。不固定 seed、不改采样、不输出原始 token。</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a></span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>`native_key_block_v1` 在 buildBlockKeys 处记录 key、当前归因 request_id（无作用域时为 null）、零起始位置区间、原 prompt 长度和 prompt/generated/mixed 角色。这是**构造记录**，须和现有成功 offload 的 key 对齐才算实际写入。角色按原 prompt 边界划分，仅适用于已核实的完整序列、非滑动窗口路径；跨请求复用、切片或哈希歧义不能直接推断所属请求。`native_key_unlink_v1` 只表示本地树解除引用，绝不表示 DS Delete/TTL 已发生。无需新增无界内存映射。</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>开启时新增日志和摘要计算可能影响 E2E，诊断组不能作为时延 A/B。仍限制 n3，不开放20/300/1000。需要保留准备和正式日志，检查：</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a></span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>1. 输入摘要是否相同、seed/输出摘要是否变化。</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>2. 首次见 offload key 是否能匹配 generated/mixed 构造记录；缺失/多种角色显式 UNKNOWN。</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>3. 本地 unlink 后对应 DS 对象是否仍保留（日志本身不提供 DS 逐 key 库存）。</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a></span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>### worker1 构建前检查（不重启、不写 KV）</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a></span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>在包含最新代码的 worker1 仓库执行：</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>```bash</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>python3 scripts/patch_trtllm_native_key_diagnostics.py \</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>  --trtllm-dir /home/zcx/TensorRT-LLM</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>```</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>默认仅验证锚点和 attribution 接口，输出 `check_only`。未知源码布局直接失败。真正应用时所有锚点先验证，再备份 manager 为 `.before-key-diagnostics`；重复应用幂等。该检查不证明构建成功。</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>### 隔离构建，不覆盖正在运行的 runtime</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a></span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>先确认磁盘空间足够保存 native 源码/构建树和新产物。在 worker1 执行，`REPO_DIR` 设为本次更新的仓库绝对路径：</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a></span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>```bash</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>: &quot;${REPO_DIR:?设为 worker1 上本次更新的仓库路径}&quot;</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>KDIAG=/home/zcx/native-key-diag-$(date +%Y%m%d-%H%M%S)</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>mkdir -p &quot;$KDIAG&quot;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>cp -a --reflink=auto /home/zcx/TensorRT-LLM &quot;$KDIAG/TensorRT-LLM&quot;</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>TRTLLM_DIR=&quot;$KDIAG/TensorRT-LLM&quot; RUNTIME_DIR=&quot;$KDIAG/runtime&quot; \</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>  APPLY_PATCH=0 APPLY_KVC_BURST_PROXY=0 APPLY_NATIVE_KEY_DIAGNOSTICS=1 \</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>  BUILD_TRTLLM=1 bash &quot;$REPO_DIR/scripts/build_f19_attribution_runtime_worker1.sh&quot; \</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>  &gt; &quot;$KDIAG/build.log&quot; 2&gt;&amp;1</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>cat &quot;$KDIAG/runtime/native-key-build.sha256&quot;</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>```</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a></span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>沿用已打 attribution/proxy 补丁的源码，避免重打旧补丁覆盖新观测。现有构建脚本在容器仍挂载到 `/TensorRT-LLM`；若历史 CMakeCache 使用其他绝对路径，应检查并重新配置，不能绕过构建失败。脚本末尾通用 overlay 部署提示不适用于此隔离诊断产物，**此处先不执行该提示**。</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a></span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>后续部署必须把 gateway/native 库一起指向新目录，并在进程启动前设置诊断环境变量。当前还未执行远端编译、部署或重新测量；部署前需核对现有 volumeMount/overlay 行为及回滚路径。构建 hash 清单仅关联本次文件与产物，不替代进程 `/proc/PID/exe`、maps 映射 inode/加载库和容器身份验证。</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a></span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>本机验证：</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a></span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>```bash</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>python3 -m unittest discover -s scripts -p test_native_key_diagnostics.py -v</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>bash -n scripts/build_f19_attribution_runtime_worker1.sh</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>```</span></pre></html>

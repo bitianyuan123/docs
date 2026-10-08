@@ -1,0 +1,25 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "embedding_space_id": "demo_dssm_64_v1",
+  "score_semantics": "cosine_similarity",
+  "items": [
+    {
+      "item_id": "1201",
+      "score": 0.92
+    },
+    {
+      "item_id": "9001",
+      "score": 0.89
+    },
+    {
+      "item_id": "3",
+      "score": 0.82
+    },
+    {
+      "item_id": "4",
+      "score": 0.81
+    }
+  ]
+}

@@ -1,0 +1,244 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm_8506/services/brpcwire/client.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm_8506/services/brpcwire/client.go</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>530f77327f0d7f7f15f54b1ddbfe422b58e94a88</code><br>原文件 SHA256：<code>a218c0020400f98da263acff9276d148cee61d7a8e2fb1d887a31fbc1be14cad</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package brpcwire</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;context&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;encoding/binary&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;fmt&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;io&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;net&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;strings&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;sync&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;sync/atomic&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;time&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	proto &quot;github.com/gogo/protobuf/proto&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>)</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>const (</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	magic         = &quot;PRPC&quot;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	headerSize    = 12</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	maxBodySize   = 32 &lt;&lt; 20</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	noCompression = int32(0)</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>)</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>// Client implements protobuf calls over brpc baidu_std/TCP. Attempts is the</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>// total number of attempts, so Attempts=1 means zero retries.</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>type Client struct {</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>	endpoint string</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	service  string</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	timeout  time.Duration</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	attempts int</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	nextID   int64</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>}</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>// Session keeps one baidu_std TCP connection alive across sequential calls.</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>// Calls on one session are serialized; concurrency is expressed with multiple</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>// preconnected sessions.</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>type Session struct {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	client *Client</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	mu     sync.Mutex</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	conn   net.Conn</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>}</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>func NewClient(endpoint, service string, timeout time.Duration, attempts int) (*Client, error) {</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	endpoint = strings.TrimSpace(endpoint)</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	service = strings.TrimSpace(service)</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	if endpoint == &quot;&quot; || service == &quot;&quot; {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>		return nil, fmt.Errorf(&quot;brpc endpoint and service are required&quot;)</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	}</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>	if timeout &lt;= 0 {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>		return nil, fmt.Errorf(&quot;brpc timeout must be positive&quot;)</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>	}</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	if attempts &lt;= 0 {</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>		return nil, fmt.Errorf(&quot;brpc attempts must be positive&quot;)</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	}</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>	return &amp;Client{endpoint: endpoint, service: service, timeout: timeout, attempts: attempts}, nil</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>}</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a></span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>func (c *Client) Call(ctx context.Context, method string, request, response proto.Message) error {</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	if strings.TrimSpace(method) == &quot;&quot; || request == nil || response == nil {</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>		return fmt.Errorf(&quot;brpc method, request, and response are required&quot;)</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	}</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	var lastErr error</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	for attempt := 0; attempt &lt; c.attempts; attempt++ {</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		attemptCtx, cancel := context.WithTimeout(ctx, c.timeout)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		lastErr = c.callOnce(attemptCtx, method, request, response)</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		cancel()</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>		if lastErr == nil {</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>			return nil</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>		}</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>		if ctx.Err() != nil {</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>			return ctx.Err()</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>		}</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	}</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	return fmt.Errorf(&quot;brpc %s failed after %d attempt(s): %w&quot;, method, c.attempts, lastErr)</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>}</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a></span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>func (c *Client) NewSession() *Session { return &amp;Session{client: c} }</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>func (s *Session) Connect(ctx context.Context) error {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>	s.mu.Lock()</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	defer s.mu.Unlock()</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>	if s.conn != nil {</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>		return nil</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	}</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>	var dialer net.Dialer</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>	conn, err := dialer.DialContext(ctx, &quot;tcp&quot;, s.client.endpoint)</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>	if err != nil {</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>		return fmt.Errorf(&quot;dial %s failed: %w&quot;, s.client.endpoint, err)</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	}</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	s.conn = conn</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	return nil</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>}</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a></span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>func (s *Session) Call(ctx context.Context, method string, request, response proto.Message) error {</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	if strings.TrimSpace(method) == &quot;&quot; || request == nil || response == nil {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		return fmt.Errorf(&quot;brpc method, request, and response are required&quot;)</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	}</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>	s.mu.Lock()</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>	defer s.mu.Unlock()</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	var lastErr error</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	for attempt := 0; attempt &lt; s.client.attempts; attempt++ {</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>		attemptCtx, cancel := context.WithTimeout(ctx, s.client.timeout)</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>		lastErr = nil</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>		if s.conn == nil {</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>			var dialer net.Dialer</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>			s.conn, lastErr = dialer.DialContext(attemptCtx, &quot;tcp&quot;, s.client.endpoint)</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>		}</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>		if lastErr == nil {</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>			lastErr = s.client.callOnConn(attemptCtx, s.conn, method, request, response)</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>		}</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>		cancel()</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>		if lastErr == nil {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>			return nil</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>		}</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>		_ = s.closeLocked()</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>		if ctx.Err() != nil {</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>			return ctx.Err()</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>		}</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	}</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>	return fmt.Errorf(&quot;brpc %s failed after %d attempt(s): %w&quot;, method, s.client.attempts, lastErr)</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>}</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a></span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>func (s *Session) Close() error {</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	s.mu.Lock()</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>	defer s.mu.Unlock()</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>	return s.closeLocked()</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>}</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a></span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>func (s *Session) closeLocked() error {</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	if s.conn == nil {</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>		return nil</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	}</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	err := s.conn.Close()</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>	s.conn = nil</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>	return err</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>}</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a></span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>func (c *Client) callOnce(ctx context.Context, method string, request, response proto.Message) error {</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	var dialer net.Dialer</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>	conn, err := dialer.DialContext(ctx, &quot;tcp&quot;, c.endpoint)</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>	if err != nil {</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>		return fmt.Errorf(&quot;dial %s failed: %w&quot;, c.endpoint, err)</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>	}</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>	defer conn.Close()</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>	return c.callOnConn(ctx, conn, method, request, response)</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>}</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a></span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>func (c *Client) callOnConn(ctx context.Context, conn net.Conn, method string, request, response proto.Message) error {</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>	if deadline, ok := ctx.Deadline(); ok {</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>		if err := conn.SetDeadline(deadline); err != nil {</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>			return fmt.Errorf(&quot;set deadline failed: %w&quot;, err)</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>		}</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>	}</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a></span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>	payload, err := proto.Marshal(request)</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>	if err != nil {</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>		return fmt.Errorf(&quot;marshal %s request failed: %w&quot;, method, err)</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>	}</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>	id := atomic.AddInt64(&amp;c.nextID, 1)</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>	meta := &amp;rpcMeta{</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>		CompressType: proto.Int32(0), CorrelationID: proto.Int64(id),</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>		AttachmentSize: proto.Int32(0), ContentType: proto.Int32(0),</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>		ChecksumType: proto.Int32(0), Request: &amp;requestMeta{</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>			ServiceName: proto.String(c.service), MethodName: proto.String(method), LogID: proto.Int64(id),</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>		},</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	}</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	metaBytes, err := proto.Marshal(meta)</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>	if err != nil {</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>		return fmt.Errorf(&quot;marshal brpc meta failed: %w&quot;, err)</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>	}</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>	frame, err := buildFrame(metaBytes, payload)</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>	if err != nil {</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>		return err</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	}</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>	if _, err := conn.Write(frame); err != nil {</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>		return fmt.Errorf(&quot;write brpc frame failed: %w&quot;, err)</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>	}</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>	responsePayload, err := readResponse(conn, id)</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>	if err != nil {</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>		return err</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>	}</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>	if err := proto.Unmarshal(responsePayload, response); err != nil {</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>		return fmt.Errorf(&quot;unmarshal %s response failed: %w&quot;, method, err)</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>	}</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>	return nil</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>}</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a></span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>func buildFrame(meta, payload []byte) ([]byte, error) {</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>	bodySize := len(meta) + len(payload)</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>	if bodySize &gt; maxBodySize {</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>		return nil, fmt.Errorf(&quot;brpc request body too large: %d&quot;, bodySize)</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>	}</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>	frame := make([]byte, headerSize+bodySize)</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>	copy(frame[:4], magic)</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>	binary.BigEndian.PutUint32(frame[4:8], uint32(bodySize))</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>	binary.BigEndian.PutUint32(frame[8:12], uint32(len(meta)))</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>	copy(frame[headerSize:], meta)</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	copy(frame[headerSize+len(meta):], payload)</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>	return frame, nil</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>}</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a></span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>func readResponse(reader io.Reader, expectedID int64) ([]byte, error) {</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>	header := make([]byte, headerSize)</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	if _, err := io.ReadFull(reader, header); err != nil {</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>		return nil, fmt.Errorf(&quot;read brpc header failed: %w&quot;, err)</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>	}</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>	if string(header[:4]) != magic {</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>		return nil, fmt.Errorf(&quot;invalid brpc magic: %q&quot;, string(header[:4]))</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>	}</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>	bodySize := binary.BigEndian.Uint32(header[4:8])</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>	metaSize := binary.BigEndian.Uint32(header[8:12])</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>	if bodySize &gt; maxBodySize || metaSize &gt; bodySize {</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>		return nil, fmt.Errorf(&quot;invalid brpc sizes: body=%d meta=%d&quot;, bodySize, metaSize)</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>	}</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>	body := make([]byte, int(bodySize))</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>	if _, err := io.ReadFull(reader, body); err != nil {</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>		return nil, fmt.Errorf(&quot;read brpc body failed: %w&quot;, err)</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>	}</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>	var meta rpcMeta</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>	if err := proto.Unmarshal(body[:metaSize], &amp;meta); err != nil {</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>		return nil, fmt.Errorf(&quot;unmarshal brpc response meta failed: %w&quot;, err)</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>	}</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>	if meta.CorrelationID != nil &amp;&amp; *meta.CorrelationID != 0 &amp;&amp; *meta.CorrelationID != expectedID {</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>		return nil, fmt.Errorf(&quot;brpc correlation mismatch: got=%d want=%d&quot;, *meta.CorrelationID, expectedID)</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>	}</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>	if meta.CompressType != nil &amp;&amp; *meta.CompressType != noCompression {</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>		return nil, fmt.Errorf(&quot;unsupported brpc compression type: %d&quot;, *meta.CompressType)</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>	}</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>	if meta.Response != nil &amp;&amp; meta.Response.ErrorCode != nil &amp;&amp; *meta.Response.ErrorCode != 0 {</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>		text := &quot;&quot;</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>		if meta.Response.ErrorText != nil {</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>			text = *meta.Response.ErrorText</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>		}</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>		return nil, fmt.Errorf(&quot;brpc server error %d: %s&quot;, *meta.Response.ErrorCode, text)</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>	}</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>	attachment := int32(0)</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>	if meta.AttachmentSize != nil {</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>		attachment = *meta.AttachmentSize</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>	}</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>	if attachment &lt; 0 || uint32(attachment) &gt; bodySize-metaSize {</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>		return nil, fmt.Errorf(&quot;invalid brpc attachment size: %d&quot;, attachment)</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>	}</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>	return body[metaSize : bodySize-uint32(attachment)], nil</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>}</span></pre></html>

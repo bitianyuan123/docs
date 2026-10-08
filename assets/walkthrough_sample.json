@@ -1,0 +1,1006 @@
+{
+  "metadata": {
+    "kind": "illustrative_not_model_run",
+    "purpose": "第08章逐阶段字段、来源、顺序的教学例；不是在线请求记录。",
+    "real_source_fields": {
+      "user_id_gender_age_history": "Tenrec首条数据行；历史保留10项原始ID与顺序。",
+      "sparse_tokens": "已有前20万行证据中的9个已知历史类型，权重2/9、7/9。",
+      "item_4_and_1201_statistics": "从tenrec_sample_evidence.json的字段名与数组对应关系读取已有前20万行聚合证据；不能据此推断它们被真实召回。",
+      "history_hash": "按特征字典规范，从本例历史重新计算。"
+    },
+    "illustrative_fields": [
+      "release与模型版本、DSSM查询向量、全部SID及映射、三路召回候选和分数",
+      "9001与9002物品字段、9003缺失状态、精排分数、最终推荐",
+      "OneTrans独立历史提供器恰好返回相同10项的假设",
+      "accepted、kv_hit、shard、全部耗时、checksum及其他运行诊断值"
+    ],
+    "vector_note": "64维单位向量只说明格式，不是DSSM模型产物，不能装载为真实发布数据。",
+    "item_projection_note": "本附件statistics包含10_feature_catalog定义的全部15个具名统计字段；第08章正文只节选n和ctr。",
+    "protocol_note": "特征服务及召回封装是目标接口；generation_request新增版本元数据，history保留旧proto形状。generation_wire_response仅展示旧响应字段形状。",
+    "onetrans_data_boundary": "ingest_request来自独立历史提供器假设；rank_request仅传ID，用户/物品TSV和参数服务取数仍由当前OneTrans负责。",
+    "checksum_note": "64个0是格式占位符，不是任何模型KV载荷的SHA256。",
+    "timing_note": "所有时间值0只是字段格式示意，没有执行或测量服务。",
+    "model_role_note": "engineering是当前程序默认配置值，不表示已部署模型角色。"
+  },
+  "external_request": {
+    "uid": "1",
+    "scene_id": "home_feed",
+    "size": 10
+  },
+  "user_request": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "remaining_timeout_ms": 1000,
+    "user_id": "1",
+    "required_views": [
+      "USER",
+      "HISTORY",
+      "DENSE_QUERY",
+      "SPARSE_QUERY"
+    ],
+    "representation_versions": {
+      "embedding_space_id": "demo_dssm_64_v1",
+      "sparse_recipe_id": "video_type_binary_v1"
+    }
+  },
+  "user_context": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "view_status": {
+      "USER": "FOUND",
+      "HISTORY": "FOUND",
+      "DENSE_QUERY": "FOUND",
+      "SPARSE_QUERY": "FOUND"
+    },
+    "user": {
+      "release_id": "demo_tenrec_v1",
+      "schema_version": "feature_v1",
+      "user_id": "1",
+      "gender_code": 1,
+      "age_code": 4,
+      "missing_fields": [],
+      "source_data_row": 1
+    },
+    "history": {
+      "release_id": "demo_tenrec_v1",
+      "schema_version": "feature_v1",
+      "user_id": "1",
+      "item_ids": [
+        "2",
+        "3",
+        "80936",
+        "781",
+        "111774",
+        "1230",
+        "26403",
+        "991",
+        "2362",
+        "1202"
+      ],
+      "positions": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "time_semantics": "ordinal",
+      "valid_length": 10,
+      "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+      "source_data_row": 1
+    },
+    "dense_query": {
+      "release_id": "demo_tenrec_v1",
+      "schema_version": "feature_v1",
+      "user_id": "1",
+      "embedding_space_id": "demo_dssm_64_v1",
+      "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+      "vector": [
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125,
+        0.125,
+        -0.125
+      ],
+      "dimension": 64
+    },
+    "sparse_query": {
+      "release_id": "demo_tenrec_v1",
+      "schema_version": "feature_v1",
+      "user_id": "1",
+      "sparse_recipe_id": "video_type_binary_v1",
+      "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+      "tokens": [
+        {
+          "token": "video_type_0",
+          "weight": 0.2222222222222222
+        },
+        {
+          "token": "video_type_1",
+          "weight": 0.7777777777777778
+        }
+      ],
+      "known_history_count": 9,
+      "missing_history_count": 1
+    }
+  },
+  "history_repr_request": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "remaining_timeout_ms": 900,
+    "lookup_by": "raw_item_id",
+    "item_ids": [
+      "2",
+      "3",
+      "80936",
+      "781",
+      "111774",
+      "1230",
+      "26403",
+      "991",
+      "2362",
+      "1202"
+    ],
+    "sid_version": "demo_sid_v1"
+  },
+  "history_repr_response": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "lookup_by": "raw_item_id",
+    "sid_version": "demo_sid_v1",
+    "results": [
+      {
+        "item_id": "2",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "2",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            1,
+            11,
+            21,
+            31
+          ]
+        }
+      },
+      {
+        "item_id": "3",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "3",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            2,
+            12,
+            22,
+            32
+          ]
+        }
+      },
+      {
+        "item_id": "80936",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "80936",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            3,
+            13,
+            23,
+            33
+          ]
+        }
+      },
+      {
+        "item_id": "781",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "781",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            4,
+            14,
+            24,
+            34
+          ]
+        }
+      },
+      {
+        "item_id": "111774",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "111774",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            5,
+            15,
+            25,
+            35
+          ]
+        }
+      },
+      {
+        "item_id": "1230",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "1230",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            6,
+            16,
+            26,
+            36
+          ]
+        }
+      },
+      {
+        "item_id": "26403",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "26403",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            7,
+            17,
+            27,
+            37
+          ]
+        }
+      },
+      {
+        "item_id": "991",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "991",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            8,
+            18,
+            28,
+            38
+          ]
+        }
+      },
+      {
+        "item_id": "2362",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "2362",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            9,
+            19,
+            29,
+            39
+          ]
+        }
+      },
+      {
+        "item_id": "1202",
+        "status": "FOUND",
+        "value": {
+          "release_id": "demo_tenrec_v1",
+          "schema_version": "feature_v1",
+          "item_id": "1202",
+          "sid_version": "demo_sid_v1",
+          "semantic_id": [
+            10,
+            20,
+            30,
+            40
+          ]
+        }
+      }
+    ]
+  },
+  "vector_request": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "remaining_timeout_ms": 900,
+    "query_vector": [
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125,
+      0.125,
+      -0.125
+    ],
+    "embedding_space_id": "demo_dssm_64_v1",
+    "topk": 50
+  },
+  "vector_response": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "embedding_space_id": "demo_dssm_64_v1",
+    "score_semantics": "cosine_similarity",
+    "items": [
+      {
+        "item_id": "1201",
+        "score": 0.92
+      },
+      {
+        "item_id": "9001",
+        "score": 0.89
+      },
+      {
+        "item_id": "3",
+        "score": 0.82
+      },
+      {
+        "item_id": "4",
+        "score": 0.81
+      }
+    ]
+  },
+  "sparse_request": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "remaining_timeout_ms": 900,
+    "sparse_tokens": [
+      {
+        "token": "video_type_0",
+        "weight": 0.2222222222222222
+      },
+      {
+        "token": "video_type_1",
+        "weight": 0.7777777777777778
+      }
+    ],
+    "sparse_recipe_id": "video_type_binary_v1",
+    "topk": 50
+  },
+  "sparse_response": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "sparse_recipe_id": "video_type_binary_v1",
+    "score_semantics": "bm25",
+    "items": [
+      {
+        "item_id": "4",
+        "score": 3.2
+      },
+      {
+        "item_id": "9002",
+        "score": 2.7
+      },
+      {
+        "item_id": "9003",
+        "score": 2.1
+      }
+    ]
+  },
+  "generation_request": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "remaining_timeout_ms": 800,
+    "user_id": "1",
+    "sid_version": "demo_sid_v1",
+    "history": [
+      {
+        "value": [
+          1,
+          11,
+          21,
+          31
+        ]
+      },
+      {
+        "value": [
+          2,
+          12,
+          22,
+          32
+        ]
+      },
+      {
+        "value": [
+          3,
+          13,
+          23,
+          33
+        ]
+      },
+      {
+        "value": [
+          4,
+          14,
+          24,
+          34
+        ]
+      },
+      {
+        "value": [
+          5,
+          15,
+          25,
+          35
+        ]
+      },
+      {
+        "value": [
+          6,
+          16,
+          26,
+          36
+        ]
+      },
+      {
+        "value": [
+          7,
+          17,
+          27,
+          37
+        ]
+      },
+      {
+        "value": [
+          8,
+          18,
+          28,
+          38
+        ]
+      },
+      {
+        "value": [
+          9,
+          19,
+          29,
+          39
+        ]
+      },
+      {
+        "value": [
+          10,
+          20,
+          30,
+          40
+        ]
+      }
+    ],
+    "topk": 10,
+    "temperature": 1.0,
+    "beam_width": 1
+  },
+  "generated_sid_lookup_request": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "remaining_timeout_ms": 700,
+    "lookup_by": "semantic_id",
+    "semantic_ids": [
+      [
+        21,
+        31,
+        41,
+        51
+      ],
+      [
+        22,
+        32,
+        42,
+        52
+      ]
+    ],
+    "sid_version": "demo_sid_v1"
+  },
+  "generated_sid_lookup_response": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "lookup_by": "semantic_id",
+    "sid_version": "demo_sid_v1",
+    "results": [
+      {
+        "semantic_id": [
+          21,
+          31,
+          41,
+          51
+        ],
+        "status": "FOUND",
+        "item_ids": [
+          "4",
+          "1201"
+        ]
+      },
+      {
+        "semantic_id": [
+          22,
+          32,
+          42,
+          52
+        ],
+        "status": "FOUND",
+        "item_ids": [
+          "9002"
+        ]
+      }
+    ]
+  },
+  "generation_wire_response": {
+    "code": 200,
+    "user_id": "1",
+    "inference_time_ms": 0,
+    "recommendations": [
+      {
+        "item_id": 4,
+        "semantic_id": [
+          21,
+          31,
+          41,
+          51
+        ],
+        "score": 1.0
+      },
+      {
+        "item_id": 1201,
+        "semantic_id": [
+          21,
+          31,
+          41,
+          51
+        ],
+        "score": 1.0
+      },
+      {
+        "item_id": 9002,
+        "semantic_id": [
+          22,
+          32,
+          42,
+          52
+        ],
+        "score": 1.0
+      }
+    ]
+  },
+  "generative_response": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "sid_version": "demo_sid_v1",
+    "score_semantics": "constant_placeholder",
+    "items": [
+      {
+        "item_id": "4",
+        "score": 1.0
+      },
+      {
+        "item_id": "1201",
+        "score": 1.0
+      },
+      {
+        "item_id": "9002",
+        "score": 1.0
+      }
+    ]
+  },
+  "candidate_ids": [
+    "4",
+    "1201",
+    "9002",
+    "9001",
+    "9003"
+  ],
+  "item_request": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "remaining_timeout_ms": 650,
+    "item_ids": [
+      "4",
+      "1201",
+      "9002",
+      "9001",
+      "9003"
+    ],
+    "fields": [
+      "category_code",
+      "metadata_available",
+      "statistics",
+      "missing_fields"
+    ]
+  },
+  "item_response": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "schema_version": "feature_v1",
+    "results": [
+      {
+        "item_id": "4",
+        "status": "FOUND",
+        "value": {
+          "category_code": 1,
+          "metadata_available": true,
+          "statistics": {
+            "n": 36,
+            "click_sum": 6,
+            "like_sum": 0,
+            "follow_sum": 0,
+            "share_sum": 0,
+            "like_rate": 0.0,
+            "follow_rate": 0.0,
+            "share_rate": 0.0,
+            "ctr": 0.16666666666666666,
+            "watch_mean": 0.7777777777777778,
+            "watch_max": 2,
+            "watch_sum": 28,
+            "gender1_share": 0.75,
+            "avg_age_code": 2.5555555555555554,
+            "log1p_watch_sum": 3.367295829986474
+          },
+          "missing_fields": []
+        }
+      },
+      {
+        "item_id": "1201",
+        "status": "FOUND",
+        "value": {
+          "category_code": 1,
+          "metadata_available": true,
+          "statistics": {
+            "n": 32,
+            "click_sum": 8,
+            "like_sum": 0,
+            "follow_sum": 0,
+            "share_sum": 0,
+            "like_rate": 0.0,
+            "follow_rate": 0.0,
+            "share_rate": 0.0,
+            "ctr": 0.25,
+            "watch_mean": 0.875,
+            "watch_max": 2,
+            "watch_sum": 28,
+            "gender1_share": 0.59375,
+            "avg_age_code": 3.0625,
+            "log1p_watch_sum": 3.367295829986474
+          },
+          "missing_fields": []
+        }
+      },
+      {
+        "item_id": "9002",
+        "status": "FOUND",
+        "value": {
+          "category_code": 0,
+          "metadata_available": true,
+          "statistics": {
+            "n": 20,
+            "click_sum": 2,
+            "like_sum": 0,
+            "follow_sum": 0,
+            "share_sum": 0,
+            "ctr": 0.1,
+            "like_rate": 0.0,
+            "follow_rate": 0.0,
+            "share_rate": 0.0,
+            "watch_mean": 0.0,
+            "watch_max": 0,
+            "watch_sum": 0,
+            "gender1_share": 0.5,
+            "avg_age_code": 4.0,
+            "log1p_watch_sum": 0.0
+          },
+          "missing_fields": []
+        }
+      },
+      {
+        "item_id": "9001",
+        "status": "FOUND",
+        "value": {
+          "category_code": 1,
+          "metadata_available": true,
+          "statistics": {
+            "n": 40,
+            "click_sum": 8,
+            "like_sum": 0,
+            "follow_sum": 0,
+            "share_sum": 0,
+            "ctr": 0.2,
+            "like_rate": 0.0,
+            "follow_rate": 0.0,
+            "share_rate": 0.0,
+            "watch_mean": 0.0,
+            "watch_max": 0,
+            "watch_sum": 0,
+            "gender1_share": 0.5,
+            "avg_age_code": 4.0,
+            "log1p_watch_sum": 0.0
+          },
+          "missing_fields": []
+        }
+      },
+      {
+        "item_id": "9003",
+        "status": "NOT_FOUND",
+        "value": null
+      }
+    ]
+  },
+  "rankable_ids": [
+    "4",
+    "1201",
+    "9002",
+    "9001"
+  ],
+  "onetrans_history_provider": {
+    "source": "independent_provider_assumed_for_this_example",
+    "user_id": "1",
+    "item_ids": [
+      "2",
+      "3",
+      "80936",
+      "781",
+      "111774",
+      "1230",
+      "26403",
+      "991",
+      "2362",
+      "1202"
+    ]
+  },
+  "ingest_request": {
+    "user_id": "1",
+    "item_ids": [
+      2,
+      3,
+      80936,
+      781,
+      111774,
+      1230,
+      26403,
+      991,
+      2362,
+      1202
+    ],
+    "timestamps": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ]
+  },
+  "ingest_response": {
+    "accepted": true,
+    "shard": 0,
+    "checksum": "0000000000000000000000000000000000000000000000000000000000000000",
+    "reason": "",
+    "ingest_us": 0
+  },
+  "rank_request": {
+    "request_id": "demo-user-1-001",
+    "user_id": "1",
+    "items": [
+      {
+        "item_id": "4"
+      },
+      {
+        "item_id": "1201"
+      },
+      {
+        "item_id": "9002"
+      },
+      {
+        "item_id": "9001"
+      }
+    ]
+  },
+  "rank_response": {
+    "code": 200,
+    "msg": "ok",
+    "request_id": "demo-user-1-001",
+    "model_version": "demo_onetrans_v1",
+    "model_role": "engineering",
+    "items": [
+      {
+        "item_id": "4",
+        "score": 0.72
+      },
+      {
+        "item_id": "1201",
+        "score": 0.86
+      },
+      {
+        "item_id": "9002",
+        "score": 0.63
+      },
+      {
+        "item_id": "9001",
+        "score": 0.91
+      }
+    ],
+    "trace": {
+      "kv_hit": true,
+      "score_unique_count": 4,
+      "feature_us": 0,
+      "compute_us": 0,
+      "backend_rpc_us": 0,
+      "lookup_us": 0,
+      "encode_us": 0,
+      "kv_us": 0,
+      "batch_wait_us": 0,
+      "batch_compute_us": 0,
+      "batch_size": 1,
+      "n_candidates": 4
+    }
+  },
+  "final_response": {
+    "request_id": "demo-user-1-001",
+    "release_id": "demo_tenrec_v1",
+    "items": [
+      {
+        "item_id": "9001",
+        "score": 0.91
+      },
+      {
+        "item_id": "1201",
+        "score": 0.86
+      },
+      {
+        "item_id": "4",
+        "score": 0.72
+      },
+      {
+        "item_id": "9002",
+        "score": 0.63
+      }
+    ],
+    "returned_size": 4,
+    "shortfall": true
+  }
+}

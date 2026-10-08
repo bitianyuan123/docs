@@ -1,0 +1,92 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/scripts/load_item_embeddings_to_milvus.py</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/scripts/load_item_embeddings_to_milvus.py</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>01e508eb49372b1428b54b135a53a2cbcf3de67d5ac567823458c26c26d4b96b</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#!/usr/bin/env python3</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a># scripts/load_item_embeddings_to_milvus.py</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a># 把 DSSM 导出的 item 向量灌入 Milvus.</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a># 用法:</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#   python3 scripts/load_item_embeddings_to_milvus.py \</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#     --milvus_host 127.0.0.1 --milvus_port 19530 \</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#     --export_dir checkpoints/dssm/export \</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>#     --collection dssm_item_vectors [--drop]</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a># 需要 pymilvus: pip install pymilvus</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>import argparse</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>import json</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>import os</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a></span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>import numpy as np</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>from pymilvus import (Collection, CollectionSchema, DataType, FieldSchema,</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>                      connections, utility)</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>def parse_args():</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    p = argparse.ArgumentParser()</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    p.add_argument(&quot;--milvus_host&quot;, default=&quot;127.0.0.1&quot;)</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    p.add_argument(&quot;--milvus_port&quot;, default=&quot;19530&quot;)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    p.add_argument(&quot;--export_dir&quot;, default=&quot;checkpoints/dssm/export&quot;)</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>    p.add_argument(&quot;--collection&quot;, default=&quot;dssm_item_vectors&quot;)</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>    p.add_argument(&quot;--batch_size&quot;, type=int, default=5000)</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>    p.add_argument(&quot;--nlist&quot;, type=int, default=1024)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>    p.add_argument(&quot;--drop&quot;, action=&quot;store_true&quot;, help=&quot;先删除已有同名 collection&quot;)</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    return p.parse_args()</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a></span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>def main():</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    args = parse_args()</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    connections.connect(host=args.milvus_host, port=args.milvus_port)</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    if args.drop and utility.has_collection(args.collection):</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>        utility.drop_collection(args.collection)</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>        print(f&quot;[milvus] dropped existing collection {args.collection}&quot;)</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    vectors = np.load(os.path.join(args.export_dir, &quot;item_vectors.npy&quot;))</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    with open(os.path.join(args.export_dir, &quot;item_ids.json&quot;)) as f:</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>        item_ids = json.load(f)</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    assert len(item_ids) == vectors.shape[0], &quot;item_ids 与 vectors 行数不一致&quot;</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    dim = vectors.shape[1]</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    print(f&quot;[milvus] {len(item_ids)} vectors, dim={dim}&quot;)</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    if utility.has_collection(args.collection):</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>        collection = Collection(args.collection)</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    else:</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>        fields = [</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>            FieldSchema(name=&quot;item_id&quot;, dtype=DataType.INT64, is_primary=True,</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>                        auto_id=False),</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>            FieldSchema(name=&quot;vector&quot;, dtype=DataType.FLOAT_VECTOR, dim=dim),</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>        ]</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>        schema = CollectionSchema(fields, description=&quot;DSSM item vectors&quot;)</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>        collection = Collection(args.collection, schema)</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>        print(f&quot;[milvus] created collection {args.collection}&quot;)</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    for start in range(0, len(item_ids), args.batch_size):</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>        ids_part = item_ids[start:start + args.batch_size]</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>        vec_part = vectors[start:start + args.batch_size].tolist()</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>        collection.insert([ids_part, vec_part])</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        if (start // args.batch_size) % 20 == 0:</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>            print(f&quot;[milvus] inserted {start + len(ids_part)}/{len(item_ids)}&quot;)</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    collection.flush()</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    print(&quot;[milvus] insert done, creating index...&quot;)</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a></span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    collection.create_index(</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>        field_name=&quot;vector&quot;,</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>        index_params={&quot;index_type&quot;: &quot;IVF_FLAT&quot;, &quot;metric_type&quot;: &quot;IP&quot;,</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>                      &quot;params&quot;: {&quot;nlist&quot;: args.nlist}})</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    collection.load()</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    print(f&quot;[milvus] index created, entities={collection.num_entities}&quot;)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a></span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    # smoke: 用第 0 条向量自查询, 第一名应该是它自己</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    if len(item_ids) &gt; 0:</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>        res = collection.search(</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>            data=[vectors[0].tolist()], anns_field=&quot;vector&quot;,</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>            param={&quot;metric_type&quot;: &quot;IP&quot;, &quot;params&quot;: {&quot;nprobe&quot;: 16}},</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>            limit=3, output_fields=[&quot;item_id&quot;])</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>        top = [(h.entity.get(&quot;item_id&quot;), round(float(h.distance), 4))</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>               for h in res[0]]</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>        print(f&quot;[milvus] self-search smoke item_id={item_ids[0]} top3={top}&quot;)</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>        assert top and top[0][0] == item_ids[0], &quot;self-search 第一名不是自身, 灌库异常&quot;</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>        print(&quot;[milvus] PASS&quot;)</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a></span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a></span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>if __name__ == &quot;__main__&quot;:</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    main()</span></pre></html>

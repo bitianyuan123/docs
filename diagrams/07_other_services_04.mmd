@@ -1,0 +1,6 @@
+flowchart LR
+    P[PaiRec进程] -->|原生bRPC| B[向量服务桥进程]
+    B -->|同机HTTP| V[向量服务进程]
+    V -->|Milvus SDK| M[(Milvus服务)]
+    L[离线向量装载进程] --> M
+    M --- D[(索引与数据持久化)]

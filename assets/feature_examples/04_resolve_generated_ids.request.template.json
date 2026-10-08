@@ -1,0 +1,16 @@
+{
+  "template_only": true,
+  "missing_bindings": [
+    "sid_version",
+    "模型实际生成的semantic_ids"
+  ],
+  "request": {
+    "release_id": "qkv_doc200k_6f148b4adf81",
+    "schema_version": "feature_v1",
+    "request_id": "documentation_user_1",
+    "remaining_timeout_ms": 1000,
+    "lookup_by": "semantic_id",
+    "semantic_ids": null,
+    "sid_version": null
+  }
+}

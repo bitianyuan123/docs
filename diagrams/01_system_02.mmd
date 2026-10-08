@@ -1,0 +1,36 @@
+classDiagram
+    direction LR
+    class Request["推荐请求"] {
+        uid
+        scene_id
+        size
+    }
+    class UserContext["用户上下文"] {
+        user
+        history
+        dense_query
+        sparse_query
+    }
+    class Candidate["候选物品"] {
+        item_id
+        sources
+        fusion_order
+    }
+    class Evidence["召回来源记录"] {
+        source
+        source_rank
+        raw_score
+    }
+    class ScoredItem["已打分候选"] {
+        item_id
+        score
+    }
+    class Result["推荐结果"] {
+        items
+        returned_size
+        shortfall
+    }
+    Candidate "1" --> "1..*" Evidence : sources
+    ScoredItem "0..1" --> "1" Candidate : 按item_id对应
+    Result "0..1" --> "0..*" ScoredItem : items 有序选取
+    Request "1" --> "0..1" Result : 对应结果

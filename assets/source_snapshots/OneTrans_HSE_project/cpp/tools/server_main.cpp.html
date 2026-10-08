@@ -1,0 +1,370 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/tools/server_main.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/tools/server_main.cpp</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>13995c4b9526bc61e17b94906ece54109f797baeb4a860848779b297d4a405a5</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// OneTrans 精排服务入口：接入层 HTTP + SEDA 编排层 + 数据面 + 混合引擎装配。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 启动：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>//   ./onetrans_server --weights cpp/artifacts/weights --port 8080 [--compute-backend auto]</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>// 接口：</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>//   GET  /healthz                     存活探测（含实际生效计算后端）</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>//   POST /ingest                      Stage I：行为序列 → UserKV（nearline，全 C++ CPU）</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>//   POST /score                       Stage II：候选交叉打分（SEDA 流水线，异步路由）</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>//   POST /rank                        PaiRec 精排：自装配 → Stage II → sigmoid 回填</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>//   GET  /metrics                     Prometheus 风格指标</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>//</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>// 计算后端（§7.4.1 混合架构）：</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>//   python  Stage II 前向经 PythonComputeBridge 下发 PyTorch 算子（CUDA/CPU）</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>//   cpp     Stage II 前向走 C++ CPU score_ns_batch（数值等价的降级路径）</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>//   auto    优先 python（torch 可用即启用），失败/队列满自动降级 cpp</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>#include &lt;chrono&gt;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>#include &lt;cstring&gt;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>#include &lt;cmath&gt;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>#include &lt;iomanip&gt;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>#include &lt;iostream&gt;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>#include &lt;memory&gt;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>#include &lt;sstream&gt;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>#include &lt;string&gt;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>#include &quot;common/json.h&quot;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>#include &quot;common/log.h&quot;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>#include &quot;common/tensor.h&quot;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>#include &quot;engine/frontend.h&quot;</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>#include &quot;engine/model.h&quot;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>#include &quot;engine/two_stage.h&quot;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>#include &quot;kv/router.h&quot;</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>#include &quot;kv/store.h&quot;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>#ifdef ONETRANS_WITH_DATASYSTEM</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>#include &quot;kv/datasystem_store.h&quot;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>#endif</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>#include &quot;net/http_server.h&quot;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>#include &quot;serving/compute_bridge.h&quot;</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>#include &quot;serving/embed_lookup.h&quot;</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>#include &quot;serving/flow.h&quot;</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>#include &quot;serving/json_io.h&quot;</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>#include &quot;serving/rank_assembler.h&quot;</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>#include &quot;serving/pipeline.h&quot;</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>#ifdef ONETRANS_WITH_PS</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>#include &quot;serving/ps_client.h&quot;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>#endif</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>using namespace onetrans;</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>namespace {</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>struct ServerConfig {</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    std::string weights_dir = &quot;cpp/artifacts/weights&quot;;</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    std::string host = &quot;0.0.0.0&quot;;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    int port = 8080;</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    int http_threads = 8;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    // SEDA 池（§7.4.2）</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    int lookup_threads = 4;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    int encode_threads = 2;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>    int kv_threads = 4;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    int compute_threads = 0;  // ≤0 → 硬件核数</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    size_t queue_cap = 1024;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    size_t max_batch = 32;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    int max_wait_ms = 5;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    int nearline_threads = 2;  // Stage I Compute Pool（nearline prefill）</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    std::string model_version = &quot;v42&quot;;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    int shards = 1;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    // PaiRec 精排契约：响应 model_role 必须等于 PaiRec 配置 required_model_role</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    std::string model_role = &quot;engineering&quot;;</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    // /rank 自装配特征源（dense 是&quot;数值&quot;，不进 PS，从本地文件装）</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    std::string rank_item_lookup = &quot;artifacts/domain_features/item_rank_lookup.tsv&quot;;</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    std::string rank_user_features = &quot;artifacts/domain_features/user_features.tsv&quot;;</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    int64_t kv_ttl_seconds = 0;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    std::string kv_backend = &quot;local&quot;;       // local | datasystem</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    std::string datasystem_host = &quot;127.0.0.1&quot;;</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    int datasystem_port = 9088;</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    std::string embedding_source = &quot;local&quot;; // local | ps（稀疏查表数据面，D2）</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    std::string ps_server = &quot;127.0.0.1:8000&quot;;</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    std::string compute_backend = &quot;auto&quot;;  // auto | python | cpp</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    std::string bridge_module_dir = &quot;cpp/tools&quot;;</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    int bridge_init_timeout_s = 120;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    int log_level = onetrans::L_INFO;  // --log-level: debug|info|warn|error</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>};</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a></span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>ServerConfig parse_args(int argc, char** argv) {</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    ServerConfig c;</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    for (int i = 1; i &lt; argc; ++i) {</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>        std::string a = argv[i];</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>        auto next = [&amp;]() -&gt; std::string {</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>            if (i + 1 &gt;= argc) throw std::runtime_error(&quot;参数缺值: &quot; + a);</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>            return argv[++i];</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>        };</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>        if (a == &quot;--weights&quot;) c.weights_dir = next();</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>        else if (a == &quot;--host&quot;) c.host = next();</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>        else if (a == &quot;--port&quot;) c.port = std::atoi(next().c_str());</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>        else if (a == &quot;--http-threads&quot;) c.http_threads = std::atoi(next().c_str());</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>        else if (a == &quot;--lookup-threads&quot;) c.lookup_threads = std::atoi(next().c_str());</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>        else if (a == &quot;--encode-threads&quot;) c.encode_threads = std::atoi(next().c_str());</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>        else if (a == &quot;--kv-threads&quot;) c.kv_threads = std::atoi(next().c_str());</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>        else if (a == &quot;--compute-threads&quot;) c.compute_threads = std::atoi(next().c_str());</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>        else if (a == &quot;--nearline-threads&quot;) c.nearline_threads = std::atoi(next().c_str());</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>        else if (a == &quot;--queue-cap&quot;) c.queue_cap = static_cast&lt;size_t&gt;(std::atoi(next().c_str()));</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>        else if (a == &quot;--max-batch&quot;) c.max_batch = static_cast&lt;size_t&gt;(std::atoi(next().c_str()));</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>        else if (a == &quot;--max-wait-ms&quot;) c.max_wait_ms = std::atoi(next().c_str());</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>        else if (a == &quot;--model-version&quot;) c.model_version = next();</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>        else if (a == &quot;--model-role&quot;) c.model_role = next();</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>        else if (a == &quot;--rank-item-lookup&quot;) c.rank_item_lookup = next();</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>        else if (a == &quot;--rank-user-features&quot;) c.rank_user_features = next();</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>        else if (a == &quot;--shards&quot;) c.shards = std::atoi(next().c_str());</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>        else if (a == &quot;--kv-ttl-seconds&quot;) c.kv_ttl_seconds = std::atoll(next().c_str());</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>        else if (a == &quot;--kv-backend&quot;) c.kv_backend = next();</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>        else if (a == &quot;--datasystem-host&quot;) c.datasystem_host = next();</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>        else if (a == &quot;--datasystem-port&quot;) c.datasystem_port = std::atoi(next().c_str());</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>        else if (a == &quot;--embedding-source&quot;) c.embedding_source = next();</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>        else if (a == &quot;--ps-server&quot;) c.ps_server = next();</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>        else if (a == &quot;--compute-backend&quot;) c.compute_backend = next();</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>        else if (a == &quot;--bridge-module-dir&quot;) c.bridge_module_dir = next();</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>        else if (a == &quot;--bridge-init-timeout&quot;) c.bridge_init_timeout_s = std::atoi(next().c_str());</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>        else if (a == &quot;--log-level&quot;)</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>            c.log_level = onetrans::parse_level(next().c_str());</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>        else throw std::runtime_error(&quot;未知参数: &quot; + a);</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>    }</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>    return c;</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>}</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a></span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>}  // namespace</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a></span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>int main(int argc, char** argv) {</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>    ServerConfig conf;</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>    try {</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>        conf = parse_args(argc, argv);</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    } catch (const std::exception&amp; e) {</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>        std::cerr &lt;&lt; &quot;参数错误: &quot; &lt;&lt; e.what() &lt;&lt; &quot;\n&quot;;</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>        return 2;</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>    }</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>    try {</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>        onetrans::set_log_level(conf.log_level);</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>        ONETRANS_INFO(&quot;log level=%d&quot;, conf.log_level);</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>        // ---- 装配：权重 → 引擎 → 数据面 → 桥 → SEDA 编排 → 接入 ---- //</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>        auto store = std::make_shared&lt;ArtifactStore&gt;();</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>        store-&gt;load(conf.weights_dir, &quot;weights.bin&quot;);</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>        auto model = std::make_shared&lt;OneTransModel&gt;(OneTransModel::load(*store));</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>        auto frontend = std::make_shared&lt;EmbeddingFrontend&gt;(EmbeddingFrontend::load(*store));</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>        auto tables = std::make_shared&lt;EmbeddingTables&gt;(EmbeddingTables::load(*store));</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>        // 稀疏查表数据面（D2）：默认进程内直查；--embedding-source ps 切 PS(brpc) 拉表。</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>        LookupFn lookup_fn = tables-&gt;lookup_fn();</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>#ifdef ONETRANS_WITH_PS</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>        std::shared_ptr&lt;PsLookupClient&gt; ps_client;</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>        if (conf.embedding_source == &quot;ps&quot;) {</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>            ps_client = std::make_shared&lt;PsLookupClient&gt;(conf.ps_server, conf.model_version);</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>            if (!ps_client-&gt;available())</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>                throw std::runtime_error(&quot;PS 客户端初始化失败: &quot; + conf.ps_server);</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>            lookup_fn = ps_client-&gt;lookup_fn();</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>            std::cout &lt;&lt; &quot;[onetrans] embedding source = PS(&quot; &lt;&lt; conf.ps_server</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>                      &lt;&lt; &quot;, table prefix=&quot; &lt;&lt; conf.model_version &lt;&lt; &quot;)\n&quot;;</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>        }</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>#endif</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>        // KV 后端选择（§1.4/§1.5）：datasystem（C++ SDK）或进程内 local 回退。</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>        std::shared_ptr&lt;KVStore&gt; kv_store;</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>#ifdef ONETRANS_WITH_DATASYSTEM</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>        if (conf.kv_backend == &quot;datasystem&quot;) {</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>            DatasystemKVStore::Options ds_opt;</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>            ds_opt.host = conf.datasystem_host;</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>            ds_opt.port = conf.datasystem_port;</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>            ds_opt.default_ttl_seconds = conf.kv_ttl_seconds;</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>            kv_store = std::make_shared&lt;DatasystemKVStore&gt;(ds_opt);</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>        }</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>#endif</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>        if (!kv_store) {</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>            kv_store = std::make_shared&lt;LocalKVStore&gt;(conf.kv_ttl_seconds);</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>        }</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>        auto metrics = std::make_shared&lt;Metrics&gt;();</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>        auto runner = std::make_shared&lt;TwoStageRunner&gt;(*model);</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>        Router router(conf.shards);</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a></span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>        // Python 计算桥（Stage II 算子下发；cpp 后端时跳过启动）</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>        auto bridge = std::make_shared&lt;PythonComputeBridge&gt;();</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>        bool want_python = conf.compute_backend == &quot;python&quot; || conf.compute_backend == &quot;auto&quot;;</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>        if (want_python) {</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>            if (bridge-&gt;start(conf.bridge_module_dir, conf.weights_dir,</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>                              conf.bridge_init_timeout_s)) {</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>                std::cout &lt;&lt; &quot;[onetrans] python bridge ready (Stage II → PyTorch)\n&quot;;</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>            } else if (conf.compute_backend == &quot;python&quot;) {</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>                std::cerr &lt;&lt; &quot;[onetrans] python bridge 启动失败: &quot; &lt;&lt; bridge-&gt;last_error()</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>                          &lt;&lt; &quot;\n&quot;;</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>                return 1;</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>            } else {</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>                std::cerr &lt;&lt; &quot;[onetrans] python bridge 不可用（降级 C++ CPU）: &quot;</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>                          &lt;&lt; bridge-&gt;last_error() &lt;&lt; &quot;\n&quot;;</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>            }</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>        }</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a></span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>        // SEDA 流水线（§7.4.3：lookup → encode → kv → batch → python/cpp 计算）</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>        ScoreFlow::Config fc;</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>        fc.lookup_threads = conf.lookup_threads;</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>        fc.encode_threads = conf.encode_threads;</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>        fc.kv_threads = conf.kv_threads;</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>        fc.compute_threads = conf.compute_threads;</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>        fc.queue_cap = conf.queue_cap;</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>        fc.max_batch = conf.max_batch;</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>        fc.batch_wait_ms = conf.max_wait_ms;</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>        ScoreFlow flow(*frontend, *runner, *kv_store, lookup_fn, *metrics,</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>                      want_python ? bridge.get() : nullptr, conf.model_version, fc);</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>        flow.start();</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a></span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>        // Nearline（§7.4.4：全 C++ CPU，Stage I Compute Pool 异步执行）</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>        ExecutorSet nearline_execs;</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>        auto nearline_pool =</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>            nearline_execs.make(&quot;stage1_compute&quot;, conf.nearline_threads, conf.queue_cap, false);</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>        NearlineWorker nearline(*frontend, *runner, *kv_store, *metrics, lookup_fn,</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>                                conf.model_version);</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a></span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>        // PaiRec 精排 /rank 自装配：PaiRec 只给 user_id + item_id[]，dense/id 从这里装</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>        RankAssembler assembler(frontend-&gt;config().n_user_dense, frontend-&gt;config().n_cand_dense);</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>        assembler.load_item_lookup(conf.rank_item_lookup);</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>        assembler.load_user_features(conf.rank_user_features);</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>        std::cout &lt;&lt; &quot;[onetrans] rank assembler loaded: items=&quot; &lt;&lt; assembler.item_size()</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>                  &lt;&lt; &quot; users=&quot; &lt;&lt; assembler.user_size()</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>                  &lt;&lt; &quot; model_role=&quot; &lt;&lt; conf.model_role &lt;&lt; &quot;\n&quot;;</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a></span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>        HttpServer server(conf.host, conf.port, conf.http_threads);</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a></span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>        server.route(&quot;GET&quot;, &quot;/healthz&quot;, [&amp;](const HttpRequest&amp;) {</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>            JsonValue j = JsonValue::object();</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>            j.set(&quot;status&quot;, JsonValue::str(&quot;ok&quot;));</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>            j.set(&quot;model_version&quot;, JsonValue::str(conf.model_version));</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>            j.set(&quot;compute_backend&quot;, JsonValue::str(flow.backend()));</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>            j.set(&quot;kv_objects&quot;, JsonValue::number(static_cast&lt;double&gt;(kv_store-&gt;size())));</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>            return HttpResponse::json(200, j.dump());</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>        });</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a></span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>        // 异步路由：接入线程提交后立即释放（响应由完成线程写回，§7.4.3）</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>        server.route_async(&quot;POST&quot;, &quot;/ingest&quot;, [&amp;](const HttpRequest&amp; req, auto done) {</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>            try {</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>                IngestInput in = parse_ingest_input(req.body);</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>                int shard = router.route(in.user_id);</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>                metrics-&gt;count(&quot;ingest.qps&quot;);</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>                nearline_pool-&gt;add([&amp;nearline, in = std::move(in), shard, done]() mutable {</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>                    IngestResult res = nearline.ingest(in);</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>                    JsonValue j = JsonValue::object();</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>                    j.set(&quot;accepted&quot;, JsonValue::boolean(res.accepted));</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>                    j.set(&quot;shard&quot;, JsonValue::number(static_cast&lt;double&gt;(shard)));</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>                    j.set(&quot;checksum&quot;, JsonValue::str(res.checksum));</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>                    j.set(&quot;reason&quot;, JsonValue::str(res.reason));</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>                    j.set(&quot;ingest_us&quot;, JsonValue::number(double(res.ingest_us)));</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>                    done(HttpResponse::json(res.accepted ? 200 : 400, j.dump()));</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>                    ONETRANS_DEBUG(&quot;ingest user=%s accepted=%d shard=%d ingest_us=%ld reason=%s&quot;,</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>                                   in.user_id.c_str(), (int)res.accepted, shard,</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>                                   (long)res.ingest_us, res.reason.c_str());</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>                });</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>            } catch (const std::exception&amp; e) {</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>                done(HttpResponse::json(400, std::string(&quot;{\&quot;error\&quot;:\&quot;&quot;) + e.what() + &quot;\&quot;}&quot;));</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>            }</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>        });</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a></span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>        server.route_async(&quot;POST&quot;, &quot;/score&quot;, [&amp;](const HttpRequest&amp; req, auto done) {</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>            try {</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>                ScoreInput in = parse_score_input(req.body);</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>                std::string user_id = in.user_id;</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>                int shard = router.route(user_id);</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>                // 回调式：流水线完成线程直接驱动响应写回（不占接入线程）</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>                flow.submit(</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>                    std::move(in),</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>                    [done, user_id = std::move(user_id), shard](ScoreOutcome out,</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>                                                                const std::string&amp; err) mutable {</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>                        if (!err.empty()) {</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>                            done(HttpResponse::json(</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>                                503, std::string(&quot;{\&quot;error\&quot;:\&quot;&quot;) + err + &quot;\&quot;}&quot;));</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>                            return;</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>                        }</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>                        JsonValue j = JsonValue::object();</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>                        j.set(&quot;user_id&quot;, JsonValue::str(user_id));</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>                        j.set(&quot;shard&quot;, JsonValue::number(static_cast&lt;double&gt;(shard)));</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>                        j.set(&quot;kv_hit&quot;, JsonValue::boolean(out.kv_hit));</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>                        j.set(&quot;logits&quot;, json_parse(logits_to_json(out.logits)));</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>                        done(HttpResponse::json(200, j.dump()));</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>                    });</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>            } catch (const std::exception&amp; e) {</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>                done(HttpResponse::json(400, std::string(&quot;{\&quot;error\&quot;:\&quot;&quot;) + e.what() + &quot;\&quot;}&quot;));</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>            }</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>        });</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a></span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>        // PaiRec 精排 /rank（契约见 docs/pairec_rank_integration_plan.md §3.2）：</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>        // 请求 {request_id, user_id, items:[{item_id}]}，自装配 → Stage II → sigmoid → 回填。</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>        server.route_async(&quot;POST&quot;, &quot;/rank&quot;, [&amp;](const HttpRequest&amp; req, auto done) {</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>            try {</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>                PaiRecRankRequest rank = parse_rank_request(req.body);</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>                std::string user_id = rank.user_id;</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>                int shard = router.route(user_id);</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>                ScoreInput in = assembler.assemble(user_id, rank.item_ids);</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>                flow.submit(</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>                    std::move(in),</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>                    [done, rank = std::move(rank), user_id = std::move(user_id), shard,</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>                     model_version = conf.model_version, model_role = conf.model_role](</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>                        ScoreOutcome out, const std::string&amp; err) mutable {</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>                        if (!err.empty()) {</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>                            done(HttpResponse::json(</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>                                503, std::string(&quot;{\&quot;code\&quot;:503,\&quot;error\&quot;:\&quot;&quot;) + err + &quot;\&quot;}&quot;));</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>                            return;</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>                        }</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>                        const int64_t M = out.logits.shape[0];</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>                        const int64_t T = out.logits.shape[1] &gt; 0 ? out.logits.shape[1] : 1;</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>                        JsonValue items = JsonValue::array({});</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>                        std::size_t distinct = 0;</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>                        float score_prev = 0.0f;</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>                        for (int64_t m = 0; m &lt; M; ++m) {</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>                            float logit = out.logits.at(m * T);  // 首类 logit 作排序分数</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>                            float score = 1.0f / (1.0f + std::exp(-logit));</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>                            if (m == 0 || score != score_prev) ++distinct;</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>                            score_prev = score;</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>                            JsonValue it = JsonValue::object();</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>                            it.set(&quot;item_id&quot;, JsonValue::str(std::to_string(rank.item_ids[m])));</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>                            it.set(&quot;score&quot;, JsonValue::number(score));</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>                            items.push_back(it);</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>                        }</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>                        JsonValue resp = JsonValue::object();</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>                        resp.set(&quot;code&quot;, JsonValue::number(200));</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>                        resp.set(&quot;msg&quot;, JsonValue::str(&quot;ok&quot;));</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>                        resp.set(&quot;request_id&quot;, JsonValue::str(rank.request_id));</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>                        resp.set(&quot;model_version&quot;, JsonValue::str(model_version));</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>                        resp.set(&quot;model_role&quot;, JsonValue::str(model_role));</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>                        resp.set(&quot;items&quot;, items);</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>                        JsonValue trace = JsonValue::object();</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>                        trace.set(&quot;kv_hit&quot;, JsonValue::boolean(out.kv_hit));</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>                        trace.set(&quot;score_unique_count&quot;, JsonValue::number(double(distinct)));</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>                        trace.set(&quot;feature_us&quot;, JsonValue::number(double(out.feature_us)));</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>                        trace.set(&quot;compute_us&quot;, JsonValue::number(double(out.compute_us)));</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>                        trace.set(&quot;backend_rpc_us&quot;, JsonValue::number(double(out.backend_rpc_us)));</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>                        trace.set(&quot;lookup_us&quot;, JsonValue::number(double(out.lookup_us)));</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>                        trace.set(&quot;encode_us&quot;, JsonValue::number(double(out.encode_us)));</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>                        trace.set(&quot;kv_us&quot;, JsonValue::number(double(out.kv_us)));</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>                        trace.set(&quot;batch_wait_us&quot;, JsonValue::number(double(out.batch_wait_us)));</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>                        trace.set(&quot;batch_compute_us&quot;, JsonValue::number(double(out.batch_compute_us)));</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>                        trace.set(&quot;batch_size&quot;, JsonValue::number(double(out.batch_size)));</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>                        trace.set(&quot;n_candidates&quot;,</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>                                  JsonValue::number(double(rank.item_ids.size())));</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>                        resp.set(&quot;trace&quot;, trace);</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>                        done(HttpResponse::json(200, resp.dump()));</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>                        ONETRANS_DEBUG(</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>                            &quot;rank user=%s items=%zu kv_hit=%d distinct=%zu &quot;</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>                            &quot;feature_us=%ld compute_us=%ld backend_rpc_us=%ld batch=%d&quot;,</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>                            user_id.c_str(), rank.item_ids.size(), (int)out.kv_hit, distinct,</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>                            (long)out.feature_us, (long)out.compute_us, (long)out.backend_rpc_us,</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>                            (int)out.batch_size);</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>                    });</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>            } catch (const std::exception&amp; e) {</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>                done(HttpResponse::json(400, std::string(&quot;{\&quot;code\&quot;:400,\&quot;error\&quot;:\&quot;&quot;) + e.what() +</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>                                               &quot;\&quot;}&quot;));</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>            }</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>        });</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a></span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>        server.route(&quot;GET&quot;, &quot;/metrics&quot;, [&amp;](const HttpRequest&amp;) {</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>            return HttpResponse::text(200, metrics-&gt;dump());</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>        });</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a></span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>        std::cout &lt;&lt; &quot;[onetrans] listening on &quot; &lt;&lt; conf.host &lt;&lt; &quot;:&quot; &lt;&lt; conf.port</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>                  &lt;&lt; &quot; model=&quot; &lt;&lt; conf.model_version &lt;&lt; &quot; shards=&quot; &lt;&lt; conf.shards</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>                  &lt;&lt; &quot; batch&lt;=&quot; &lt;&lt; conf.max_batch &lt;&lt; &quot; wait=&quot; &lt;&lt; conf.max_wait_ms &lt;&lt; &quot;ms&quot;</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>                  &lt;&lt; &quot; backend=&quot; &lt;&lt; (want_python ? &quot;auto→&quot; : &quot;cpp&quot;) &lt;&lt; flow.backend() &lt;&lt; &quot;\n&quot;;</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>        server.run();</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>        flow.stop();</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>        nearline_execs.stop_all();</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>        bridge-&gt;stop();</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>    } catch (const std::exception&amp; e) {</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>        std::cerr &lt;&lt; &quot;[onetrans] 启动失败: &quot; &lt;&lt; e.what() &lt;&lt; &quot;\n&quot;;</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>        return 1;</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>    }</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>    return 0;</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>}</span></pre></html>

@@ -1,0 +1,17 @@
+flowchart LR
+    N[Nginx工作进程] -->|HTTP| P[PaiRec进程]
+    P -->|特征RPC| F[特征服务进程]
+    F --> R[(Redis服务)]
+    P -->|召回RPC| V[向量召回进程]
+    V --> M[(Milvus服务)]
+    P -->|召回RPC| S[稀疏召回进程]
+    S --> O[(OpenSearch服务)]
+    P -->|召回RPC| G[生成召回进程]
+    G -->|SID反查RPC| F
+    P -->|HTTP ingest| H[OneTrans历史进程]
+    P -->|HTTP rank| D[OneTrans候选进程]
+    H --> PS[参数服务进程]
+    D --> PS
+    H --> K[(DataSystem服务)]
+    D --> K
+    G --> K

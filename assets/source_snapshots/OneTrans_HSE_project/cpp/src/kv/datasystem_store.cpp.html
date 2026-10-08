@@ -1,0 +1,88 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>406d27c1f4c80a875b685ef9a854105435c5f5451050d292ea26d0332d8b83d2</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;kv/datasystem_store.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;datasystem/kv_client.h&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#include &quot;kv/serialize.h&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>namespace onetrans {</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>namespace {</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>// 从 datasystem 取回的 payload 重建 UserKVRecord（元数据回读 header）。</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>std::shared_ptr&lt;const UserKVRecord&gt; build_record(const KVKey&amp; key, std::string payload) {</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>    if (payload.empty()) return nullptr;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>    try {</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>        auto rec = std::make_shared&lt;UserKVRecord&gt;();</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>        rec-&gt;key = key;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>        rec-&gt;payload = std::move(payload);</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>        KvPayload hdr = kv_read_header(rec-&gt;payload);</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>        rec-&gt;s_len = hdr.s_len;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>        rec-&gt;per_layer_len = hdr.per_layer_len;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>        rec-&gt;dtype = hdr.dtype;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>        rec-&gt;created_at = 0;  // datasystem 未单独记录，置 0（计算只依赖 payload）</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>        return rec;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    } catch (const std::exception&amp;) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>        return nullptr;  // 损坏/旧格式 → 按 miss 降级</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    }</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>}</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>}  // namespace</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>DatasystemKVStore::DatasystemKVStore(const Options&amp; options)</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    : default_ttl_(options.default_ttl_seconds) {</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    datasystem::ConnectOptions co;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    co.host = options.host;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    co.port = options.port;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    client_ = std::make_unique&lt;datasystem::KVClient&gt;(co);</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    // Init 建立与 worker 的连接（空配置：走环境变量/默认）；失败不抛，</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>    // 后续 put/get 返回错误并由 G8 miss 语义统一降级。</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    (void)client_-&gt;Init();</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>}</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>DatasystemKVStore::~DatasystemKVStore() {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    if (client_) client_-&gt;ShutDown();</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>}</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>bool DatasystemKVStore::put(const UserKVRecord&amp; rec) {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    datasystem::SetParam param;</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    if (default_ttl_ &gt; 0) param.ttlSecond = static_cast&lt;uint32_t&gt;(default_ttl_);</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    datasystem::Status s = client_-&gt;Set(rec.key.str(), rec.payload, param);</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    return s.IsOk();</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>}</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>std::shared_ptr&lt;const UserKVRecord&gt; DatasystemKVStore::get(const KVKey&amp; key) {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    std::string val;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    datasystem::Status s = client_-&gt;Get(key.str(), val);</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    // 未命中 / 传输错误统一降级为 miss（与 LocalKVStore 的 not-found 语义一致）。</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    if (s.GetCode() == datasystem::K_NOT_FOUND || s.IsError()) return nullptr;</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    return build_record(key, std::move(val));</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>std::vector&lt;std::shared_ptr&lt;const UserKVRecord&gt;&gt; DatasystemKVStore::mget(</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    const std::vector&lt;KVKey&gt;&amp; keys) {</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    std::vector&lt;std::shared_ptr&lt;const UserKVRecord&gt;&gt; out(keys.size());</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    // SEDA 热路径按请求逐 key get（KV I/O 池并发）；mget 仅用于测试/旧同步路径，</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    // 逐 key 保证顺序与 miss 语义严格一致。</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    for (size_t i = 0; i &lt; keys.size(); ++i) out[i] = get(keys[i]);</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    return out;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>}</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>int DatasystemKVStore::del(const std::vector&lt;KVKey&gt;&amp; keys) {</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    if (keys.empty()) return 0;</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    std::vector&lt;std::string&gt; kstr;</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    kstr.reserve(keys.size());</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    for (const auto&amp; k : keys) kstr.push_back(k.str());</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    std::vector&lt;std::string&gt; failed;</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    datasystem::Status s = client_-&gt;Del(kstr, failed);</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    if (s.IsError()) return 0;</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    return static_cast&lt;int&gt;(keys.size() - failed.size());</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>void DatasystemKVStore::ttl(const KVKey&amp; key, int64_t seconds) {</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    std::vector&lt;std::string&gt; failed;</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    // seconds&lt;=0 → Expire 传 0，表示取消 TTL（改由显式 Del 管理生命周期）。</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    uint32_t ttl = seconds &gt; 0 ? static_cast&lt;uint32_t&gt;(seconds) : 0;</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    (void)client_-&gt;Expire({key.str()}, ttl, failed);</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>}</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a></span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>}  // namespace onetrans</span></pre></html>

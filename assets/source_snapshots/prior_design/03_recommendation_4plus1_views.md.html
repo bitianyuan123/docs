@@ -1,0 +1,749 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>prior_design/03_recommendation_4plus1_views.md</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>prior_design/03_recommendation_4plus1_views.md</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>前期保存文件，无Git提交号</code><br>原文件 SHA256：<code>b165aad685e306b84f634169da4e220f98aa4bb667db130295defdcfa1b1c105</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># Tenrec 推荐负载模型：干净 PaiRec 应用与原生通信适配的 4+1 视图</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>设计修订：**v2，2026-09-29**。本文为开发与评审设计，没有创建新工程、修改原仓库或部署服务。配套 [详细设计](/root/half_latency/01_recommendation_detailed_design.md) 定义业务字段和接口，[开发指导](/root/half_latency/02_recommendation_development_guide.md) 定义源码实施步骤；本文解释逻辑、开发、进程、物理部署与场景五个视图。</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>## 0. 目标、基线与事实边界</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>### 0.1 本轮主线</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>建立一个依赖**未修改的官方 PaiRec**的新最小应用，自有 controller 和 `RecommendEngine` 负责推荐业务；进程内 C++ client adapter 负责原生 bRPC 通信。应用不以 8506 为最终维护分支，不复制它的 vendor、Go wire、DeepFM、压力模块或旧编排插件。</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>默认路径如下：</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>```text</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>客户端 → 官方 PaiRec HTTP 入口 → 自有 controller → RecommendEngine</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>                                                    │</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>                        Go 业务接口 → CGO / 稳定 C ABI（进程内）</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>                                                    │</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>                                     C++ native client adapter</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>                                  ┌─────────────────┼─────────────────────┐</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>                        Redis RESP/TCP       bRPC baidu_std/TCP    bRPC baidu_std/TCP</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>                                  │                 │                     │</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>                               Redis        C++ server adapter     Gen 原生服务</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>                                             │ 本机 HTTP             │</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>                                      Dense / Sparse / S / NS      TRT + DataSystem</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>```</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>CGO/C ABI 是语言和依赖边界，**不是额外本地网络跳数，也不提供 C++ 崩溃的进程隔离**。同机 HTTP/UDS sidecar 是后续可选方案；本轮不并行实现两套客户端适配。</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>“干净”指自己维护的应用代码与变更边界，不是裁剪官方框架的全部通用能力。`RecommendEngine` 是固定流程的普通函数组合，不建设通用 DAG 平台或动态策略系统。</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>业务目标仍是负载模型：真实特征读取、真实召回、真实 S/NS 前向和模型 KV 访问。OneTrans 采用显式发布的固定随机参数可接受，训练和准确率优化后置。模型输出同分可以接受，跳过前向后填同分不算执行完成。</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>### 0.2 版本与证据</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a></span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>| 对象 | 核实依据 | 在 v2 中的位置 |</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>|---|---|---|</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>| 官方 PaiRec | `github.com/alibaba/pairec/v2 v2.6.2`，commit `3f6b92acb261cc65bf680b8db5335048f9afb7eb` | 新应用依赖；锁定同版以减少迁移变量，不称为最新版本 |</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>| 官方源码证据 | [SOURCE_PROVENANCE.json](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/SOURCE_PROVENANCE.json) | 选定上游文件及其 hash/原始地址，不是完整工程副本 |</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>| 8506 | `530f77327f0d7f7f15f54b1ddbfe422b58e94a88` 的[只读快照](/root/half_latency/recommendation_design_assets/source_8506_530f773) | 模型协议、后端接线与回归行为参考；不是最终应用树 |</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>| OneTrans | `61f8ee328b146e19583ba71f706754e6f495c4da` | 复用 S/NS、PS、DataSystem，实现新特征与 KV 契约 |</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>| pairec_sh | `0203724fdd57deceb5c195b2f637cdf751646a0a` | 参考 CGO/C++ 访问桥、Redis/OpenSearch 查询；错误实现不直接迁入 |</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>| 既有 adapter | [F18 说明](/root/real_model/pairec4tigerllm/docs/F18_BRPC_OBSERVABILITY.md:7)、[pipeline_service_adapter.cpp](/root/real_model/pairec4tigerllm/cpp/brpc_gateway/pipeline_service_adapter.cpp:63) | 已有服务端 bRPC→本机 HTTP 桥接；不能据此声称新客户端 adapter 已完成 |</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a></span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>“已有”指源码具备，不能推导本次已启动；“新增”指本轮计划开发。本文所有架构图是 **v2 目标**，没有虚构当前主机、端口、部署数量或运行结果。</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>### 0.3 数据事实不随架构修订改变</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>业务是 Tenrec QK-video 衍生 `ctr_data_1M` 固定快照的信息流推荐。入口保持 `POST /api/recommend`，业务场景 `home_feed`，profile `tenrec_load_v1`；以 `design_revision=2` 标明软件架构变化，不能误称数据/模型已重新发布。</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>[真实样例证据](/root/half_latency/recommendation_design_assets/tenrec_sample_evidence.json) 来自前 200,000 数据行。uid=`1` 的首行历史有 10 项，样例目录中 9 项有视频类型编码，派生 `video_type_0=2/9`、`video_type_1=7/9`；类型缺失项保留缺失。这些覆盖和比例只描述该样例范围，不是全量统计。物品 `4`、`1201` 来自实际曝光行，用于接口输入说明，不声称是在线召回输出。</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>`video_category` 表示**长/短视频类型，不是内容主题类目**；官方维护者在 [issue #11](https://github.com/yuangh-x/2022-NIPS-Tenrec/issues/11) 中确认了这一含义，但没有给出 0、1 分别对应长视频还是短视频。因此保留原始数值编码，不自行补命名。接口中的 `category_code` 仅为兼容字段名，语义固定为 `video_length_type`；词项使用 `video_type_0`、`video_type_1`。</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a></span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>本地 CTR 文件为 20 列，QK/QB 视频原文件均为 10 列；其中 `item_id` 是物品标识，`video_category` 是上述粗属性，`click/like/follow/share/watching_times` 是交互记录，可按固定快照离线聚合，`age/gender` 属于用户特征。视频文件没有标题或标签，官方 [issue #14](https://github.com/yuangh-x/2022-NIPS-Tenrec/issues/14) 也未提供视频/内容链接。官方 CTR 生成程序保留原始 ID，因此可在核对实际数据版本后与 QK-video 关联，补充该版本已有的缺失字段或历史物品属性；这不会产生新的内容字段。Article 数据的 `category_first/category_second/item_score` 属于另一数据类型，不能仅凭同数字 ID 贴到 video 上。字段核对及后续统计见[数据审计](/root/half_latency/recommendation_design_assets/tenrec_audit/README.md)。</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>历史按 `hist_1…10` 原顺序去零、保留重复，不追加目标点击；`positions=1…n` 是顺序编号。Tenrec 没有本方案可用的商品标题、库存、价格或艺术家/专辑，不为接口演示制造这些数据。缺少实际 DSSM 向量、SID 映射或分数时，样例保持待绑定并明确失败，不造随机值冒充运行产物。</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a></span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>---</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a></span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>## 1. 逻辑视图：业务与通信分别负责什么</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>### 1.1 系统总图</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a></span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>```mermaid</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>flowchart TB</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    subgraph Offline[离线生产与装载]</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>        T[Tenrec 固定范围] --&gt; E[统一用户 历史 物品视图]</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>        E --&gt; UV[DSSM 用户塔离线导出]</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>        E --&gt; IV[DSSM 物品塔离线导出]</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        E --&gt; TOK[实际视频类型词项文档]</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        E --&gt; AS[SID 映射与 OneTrans 模型资产]</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    end</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    E --&gt; R[(Redis USER HISTORY ITEM_RANK)]</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    UV --&gt; R</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    IV --&gt; M[(Milvus)]</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    TOK --&gt; O[(OpenSearch)]</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    AS --&gt; PS[(模型参数与 PS)]</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    Q[uid 场景 推荐数量] --&gt; P[PaiRec 自有 RecommendEngine]</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    P --&gt;|两次业务特征查询| F[FeatureRepository]</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    P --&gt; D[DenseClient]</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    P --&gt; B[SparseClient]</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    P --&gt; G[GenerativeClient]</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    P --&gt; S[PrepareClient]</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    P --&gt; N[ScoreClient]</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    F --&gt; C[进程内 native client adapter]</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    D --&gt; C</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    B --&gt; C</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    G --&gt; C</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>    S --&gt; C</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    N --&gt; C</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    C --&gt;|RESP| R</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    C --&gt;|native bRPC| DA[Dense server adapter]</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    C --&gt;|native bRPC| BA[Sparse server adapter]</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>    C --&gt;|native bRPC| GA[Gen 原生服务]</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    C --&gt;|native bRPC| SA[S server adapter]</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    C --&gt;|native bRPC| NA[NS server adapter]</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    DA --&gt;|本机 HTTP| DB[Dense 后端]</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    BA --&gt;|本机 HTTP| BB[Sparse 后端]</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    SA --&gt;|本机 HTTP| SB[OneTrans S 后端]</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>    NA --&gt;|本机 HTTP| NB[OneTrans NS 后端]</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>    DB --&gt; M</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    BB --&gt; O</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    SB --&gt; PS</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>    NB --&gt; PS</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    SB --&gt;|真实历史 KV| DS[(DataSystem)]</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    DS --&gt; NB</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    GA &lt;--&gt;|原生生成 KV| DS</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>    NB --&gt;|分数经 adapter 返回| P</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>    P --&gt; OUT[后排与最终推荐列表]</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>```</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a></span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>图中四个 server adapter 是各服务的协议前端，共用源码不等于共用一个模型进程。Gen 已有原生 bRPC 终结点，不再加一层 HTTP 桥。Redis 使用 bRPC 库的 Redis 协议客户端，不存在新远端 Feature server。</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a></span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>### 1.2 PaiRec 逻辑：自有 RecommendEngine</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>```mermaid</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>flowchart LR</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>    C[自有 controller] --&gt; V[固定请求 ID release deadline]</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>    V --&gt; U[FeatureRepository 读 USER 和 HISTORY]</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>    U --&gt; A[Dense Sparse Gen 并行]</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>    U --&gt; S[启动 S Future]</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>    A --&gt; F[融合 去重 已看过滤 限量]</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>    F --&gt; I[FeatureRepository 批读 ITEM_RANK]</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>    I --&gt; J[候选特征与 S 结果汇合]</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>    S --&gt; J</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    J --&gt; N[ScoreClient 调用 NS]</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>    N --&gt; P[按首 logit 稳定后排]</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    P --&gt; R[响应 执行状态 回收]</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>```</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a></span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>controller 负责请求校验、内部唯一 request_id、剩余总期限、HTTP 错误映射与响应。`RecommendEngine` 直接依赖业务接口，显式表达并行和等待；不借用 Recall 来触发 S，也不把真正精排藏在 Sort 插件中。</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a></span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>源业务规则保留：Dense 50、Sparse 50、Gen 10；融合优先保留最多 10 个 Gen 候选，再按 Sparse/Dense 固定轮询补至最多 50。保留多来源，原始分数不相加；第二次 Redis 后不补拉。最终按 NS 第一个 logit 降序，依融合次序及原始 ID 稳定打破同分，最多返回 10 项。</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a></span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>### 1.3 业务字段与模型状态的所有权</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>| 数据 | 权威位置 | 谁在何时读取 | adapter 的职责 |</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>|---|---|---|---|</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>| 用户编码、`user_dense`、DSSM 用户向量、稀疏视频类型词项 | Redis USER | Engine 召回前，经过 FeatureRepository | 执行 MGET、保持 nil 位置、返回字节与错误；不自己建画像 |</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>| 原始有序历史、positions、长度与 hash | Redis HISTORY | 与 USER 同次逻辑读取；生成/S/过滤共享 | 不自行改写历史或追加点击 |</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>| 视频长短类型编码、候选 dense、缺失/有效计数 | Redis ITEM_RANK | 候选产生后按 ID 批读 | 不以本地 TSV 替代库访问 |</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>| DSSM 物品向量与 ANN 索引 | Milvus | Dense 后端查询 | server adapter 只转协议，不代替 Milvus |</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>| 真实物品词项与倒排索引 | OpenSearch | Sparse 后端查询 | server adapter 不伪造命中 |</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>| OneTrans item/user/category embedding 与前端参数；category 表兼容槽使用视频长短类型编码 | PS/模型资产 | S/NS 内部按需 lookup | 保持模型参数路径，不经 PaiRec 每次搬整张表 |</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>| 生成 engine/tokenizer/SID 表 | 模型资产；编码所需映射可随应用发布 | 启动装载、请求内进行 SID 适配 | 转换契约，不换另一套编码 |</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>| S KV | DataSystem 精排 namespace | S 写、NS 读同一请求对象 | 完整传递身份；不主动制造额外 KV Get/Set |</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>| TRT 原生 KV | DataSystem 生成 namespace | Executor 按其块生命周期处理 | 不把推荐结果缓存当原生 KV |</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a></span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>DSSM 用户塔输出属于用户状态的派生结果，放 Redis；OneTrans user embedding 表属于模型参数，放 PS。两个“用户向量”不能按名称混同。静态快照仍经过规定的业务特征查询，才能覆盖目标数据库负载。</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a></span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>### 1.4 Dense 服务逻辑</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a></span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>```mermaid</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>flowchart LR</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>    U[Go DenseClient 业务请求] --&gt; C[进程内 native client]</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>    C --&gt;|typed bRPC| A[Dense server adapter]</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>    A --&gt;|本机 POST /recall| D[向量维度与版本校验]</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>    D --&gt; M[(Milvus 实际 search)]</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>    M --&gt; R[原始 item_id score 本路次序]</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>    R --&gt; A</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>```</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a></span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>已有后端原来以 uid 查本地画像、运行用户塔；目标改为接收真实离线 `query_vector`。用户/物品向量由同 checkpoint、词表、归一化和快照生成；维度取实际配置，源码默认 64 不等于所有产物都是 64。</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a></span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>在线 Dense 不再运行 user tower，不在正常路径加载本地全物品矩阵作 NumPy 回退。server adapter 的 protobuf 必须包含新向量契约，不能直接沿用旧 VectorRecall 的 uid-only 结构。该服务的真实在线负载为协议转换、向量传输、Milvus 检索与结果返回。</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a></span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>### 1.5 Sparse 服务逻辑</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a></span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>```mermaid</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>flowchart LR</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>    Q[Go SparseClient 兴趣词项] --&gt; C[进程内 native client]</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>    C --&gt;|typed bRPC| A[Sparse server adapter]</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>    A --&gt;|本机 POST /recall| D[固定词项校验与查询 DSL]</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    D --&gt; O[(OpenSearch BM25)]</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>    O --&gt; R[原始 item_id 分数 本路次序]</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>    R --&gt; A</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>```</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a></span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>`pairec_sh` 已有查询适配，尚无本目标独立薄服务。短期新增后端入口及 typed server adapter，装载真实 `video_type_&lt;category_code&gt;` 词项文档，其中 `category_code` 是兼容字段名，实际表示 `video_length_type`。mapping 固定 `tokens:text`、whitespace analyzer、BM25，`item_id:keyword`；index 由服务 manifest 绑定。</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a></span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>用户词项来自同份 HISTORY 与实际 catalog 的视频长短类型关联、计数归一。unknown 不混入 `video_type_0`，空兴趣不造随机词项。正式 P0 保留这条二值类型词项的真实 BM25 链路；它验证服务联通及这种低选择性倒排访问的特定负载，不代表主题兴趣召回或文本搜索负载。0、1 的长短对应关系未知，不影响按原始编码匹配，但禁止将其解释成两个内容主题。</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a></span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>### 1.6 生成召回逻辑</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a></span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>```mermaid</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>flowchart LR</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>    H[同源 raw history] --&gt; I[业务侧固定 SID 适配]</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>    I --&gt; C[进程内 native client]</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>    C --&gt;|现有 Recommend protobuf| G[Gen 原生 bRPC 服务]</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>    G --&gt; T[TRT Executor 实际推理]</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>    T &lt;--&gt;|原生块换入换出| DS[(生成 KV)]</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>    T --&gt; P[合法 SID 与原始物品映射]</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>    P --&gt; R[候选 经 native adapter 返回]</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>```</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a></span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>Gen 直接复用现有 `RecommendService.Recommend`，不用远端 HTTP 桥。历史每项四层 SID，未知映射显式剔除；按实际 tokenizer/engine 输入容量保留完整项。现 proto 的候选 `item_id` 是 int32，发布检查必须验证范围，不能因其他服务用 int64 而忽略它。</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a></span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>现有简化 SID 候选构造与常量分数可暂留，只要真实推理并返回合法 ID；不把它称为完整序列概率排序。adapter 不执行 semantic_map 假后端，不缓存推荐结果，不发 pressure Health，也不添加 KV probe 凑调用次数。</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a></span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>### 1.7 OneTrans S 逻辑</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a></span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>```mermaid</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>flowchart LR</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>    H[Go PrepareClient 历史与请求身份] --&gt; C[进程内 native client]</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>    C --&gt;|typed bRPC| A[S server adapter]</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>    A --&gt;|本机 POST /ingest| S[历史 PS lookup 与 S CPU 前向]</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>    S --&gt; E[真实逐层 KV 与身份 envelope]</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>    E --&gt; DS[(共享 DataSystem)]</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>    DS --&gt; RD[写成功后 ready kv_key]</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>    RD --&gt; A</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>```</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a></span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>S 与候选无关，和三路召回并行。历史已经来自 Redis，不再用另一份 Kafka/JSON provider。当前 `/ingest` 的 HTTP 响应就在 `nearline.ingest()` 和 `store.put()` 之后；缺的是业务成功校验、请求身份、真实共享后端、错误传播与回收，不是重新发明写后响应。</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a></span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>首期 S 固定 C++ CPU；模型固定随机参数可用，但 raw ID 到 PS 表必须真实命中或按明确 OOV 规则处理。左 padding 与 mask 属于模型形状，不能靠任意业务大包增加工作量。</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a></span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>### 1.8 OneTrans NS 逻辑</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a></span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>```mermaid</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>flowchart LR</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>    F[Go ScoreClient 完整特征与 kv_key] --&gt; C[进程内 native client]</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>    C --&gt;|typed bRPC| A[NS server adapter]</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>    A --&gt;|本机 POST /score| FE[模型前端与 PS lookup]</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>    FE --&gt; N[真实 NS CPU 前向]</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>    DS[(对应历史 KV)] --&gt; V[验证 envelope 并反序列化]</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>    V --&gt; N</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>    N --&gt; R[同序 item_ids logits 执行状态]</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>    R --&gt; A</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>```</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a></span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>NS 不从本地 `user_features.tsv/item_rank_lookup.tsv` 自装配业务字段；保留 `/score` 的完整输入。`user_dense` 为两个原始编码加 13 个 reserved zero；`artist_ids=[category_code+1]` 是旧槽位中的视频长短类型编码适配，unknown=`[]`，`album_ids=[]`。此处 `category_code` 的语义是 `video_length_type`，`artist_ids` 不是作者或艺术家标识，不声称视频存在音乐元数据。</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a></span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>首期 NS 固定 C++ CPU，真实执行两个输出头，PaiRec 取首 logit 排序，不称 pCTR。若改 CUDA 则建立单独 profile，不能静默回退。NS 的后续 attention 依赖用户 KV，不能把整个候选表示当成 item-only 离线向量。</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a></span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>### 1.9 双侧 adapter 的边界</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a></span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>| 层 | 做什么 | 不做什么 |</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>|---|---|---|</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>| Go 业务接口 | 表达 Dense/Sparse/Gen/S/NS/Feature 调用；携带版本和 deadline | 不编码 PRPC 帧、socket、bRPC service 元数据 |</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>| CGO/C ABI | route 枚举、opaque handle、带长度 JSON buffer、剩余 timeout、状态和 trace | 不增加网络 hop；不让 C++ exception 穿过 ABI |</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>| C++ client adapter | typed conversion、生成 stub、native Channel、连接复用、协议配置与取消 | 不编排三路、不查本地画像、不缓存推荐结果、不发压力流量 |</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>| 四类 C++ server adapter | 原生 bRPC request → 本机既定 HTTP 后端；完整映射响应/错误/trace | 不把 HTTP 200 自动等同于业务执行完成；不引入 DeepFM 假契约 |</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>| Gen 原生 server | 直接运行现有 Recommend 模型路径 | 不额外套通用 HTTP 桥 |</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>| 模型内部依赖 | Dense→Milvus、Sparse→OS、S/NS→PS/DS、Gen→DS | 不因 client adapter 更换而自动换协议/设备 |</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a></span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>---</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a></span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>## 2. 开发视图：新应用、契约与原生库</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a></span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>### 2.1 干净应用接入官方 PaiRec</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a></span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>新工程建议名为 `pairec-loadmodel`，本次尚未创建。通过上游公开 `AddStartHook` 和 `HandleFunc(&quot;/api/recommend&quot;, controller.ServeHTTP)` 注册自有入口。上游 `Run` 先注册默认 route，再运行 start hooks；注册映射支持覆盖同一路径。因此无需修改 vendor 或复制旧 controller。</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a></span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>证据：[pairec.go](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/pairec.go:57)、[默认路由与 hooks 顺序](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/pairec.go:80)、[HandleFunc](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/route.go:56)。启动验收必须证明 `/api/recommend` 实际到达自有 controller，不能只看编译成功。</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a></span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>上游通用配置的 `SceneConfs/RecallConfs/FeatureConfs/SortConfs` 在此应用保持空；`LoadModel.application`、`orchestration`、`transport` 由自有严格 decoder 消费。业务不再使用旧 `LoadModelRecall`、Sort 插件或框架 `UserRecommend` 编排。</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a></span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>### 2.2 建议源码组织</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a></span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>以下为待创建的模块路径，不是现有文件链接；详细文件名可以在开发指导中固定，职责不可混放。</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a></span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>```text</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>pairec-loadmodel/</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>  cmd/pairec-loadmodel/                main、官方 hooks、依赖装配</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>  internal/controller/          /api/recommend、请求/错误映射</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>  internal/engine/              RecommendEngine、Future、请求生命周期</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>  internal/feature/            FeatureRepository、三视图解析/校验</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>  internal/clients/             五服务 Go 业务接口与适配</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>  internal/engine/{fusion,post_sort}.go  来源融合、排序与最终数量</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>  internal/transport/native/    唯一 CGO 入口、buffer 生命周期、取消</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>  native/contracts/             typed protobuf；业务配方位于data_contract</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>  native/include/               稳定C ABI头</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>  native/src/        C ABI、Channel、生成 stub、Redis MGET</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>  native/server/        四服务 adapter、role 配置、本机 HTTP</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>  native/common/                DTO 转换、错误、trace、版本校验</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>  scripts/                      数据生产/装载/验证/配置渲染</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>  conf/                         正式 profile 与发布绑定</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>```</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a></span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>```mermaid</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>flowchart TB</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>    UP[未修改官方 PaiRec v2.6.2] --&gt; MAIN[自有 main 与 controller]</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>    MAIN --&gt; ENG[RecommendEngine]</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>    ENG --&gt; INT[业务接口与 DTO]</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>    INT --&gt; GO[internal/transport/native]</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>    GO --&gt; ABI[稳定 C ABI]</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>    ABI --&gt; CPP[native/src 原生 Channel 和 stub]</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>    PB[native/contracts typed protobuf] --&gt; CPP</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>    PB --&gt; SA[native/server 按角色构建]</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>    SA --&gt; BACK[已有模型 HTTP 端点]</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>    CPP --&gt; GEN[现有 Gen protobuf]</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>    ETL[统一 ETL 与 loader] --&gt; REL[release manifest]</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>    REL --&gt; ENG</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>    REL --&gt; CPP</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>    REL --&gt; SA</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>```</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a></span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>### 2.3 逐组件的开发落点与复用证据</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a></span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>| 组件 | 新树职责 | 只读参考及必须调整处 |</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>|---|---|---|</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>| PaiRec | 自有 controller、Engine、业务错误模型、并行 Future、两次 Feature 查询、后排 | 官方公开 hooks；8506 仅提供行为参考，不迁旧 main、Sort/latch、vendor patch |</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>| FeatureRepository | Go 解码三视图；native FeaturesMGet 使用 RESP | [sh Redis C++ 客户端](/root/real_model/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp:6)：已有 native 协议；修 MGET 内数组/nil、全局 singleton、retry=1、硬编码 timeout |</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>| Dense | 新 Go client、typed protobuf、原生 client route、Dense server role | [旧 Dense HTTP](/root/half_latency/recommendation_design_assets/source_8506_530f773/inference/dssm_recall_server.py:130) 改 query_vector；[导出器](/root/half_latency/recommendation_design_assets/source_8506_530f773/training/dssm/export_embeddings.py:42) 补 user vectors |</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>| Sparse | 新 Go client、typed protobuf、Sparse server role 与真实查询薄后端 | [sh 查询实现](/root/real_model/pairec_sh/pairec-demo/src/recall/brpc_opensearch_sparse_recall.go) 复用语义，新增独立入口/loader/mapping |</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>| Gen | Go 业务接口调用 native route；C++ 用现有生成 stub | [recommend.proto](/root/half_latency/recommendation_design_assets/source_8506_530f773/proto/recommend.proto:11)、[TRT 后端](/root/half_latency/recommendation_design_assets/source_8506_530f773/cpp/brpc_gateway/brpc_inference_server.cpp)；保持 raw ID/SID/实际推理 |</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>| S | Engine 的 Future、typed Prepare proto、server role；模型端扩身份 | [/ingest](/root/real_model/OneTrans_HSE_project/cpp/tools/server_main.cpp:228)、[pipeline](/root/real_model/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp:98)；真实请求 key、持久化 envelope、ready/error |</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>| NS | Score proto/server role；Engine 直接调用与检查 logits | [/score](/root/real_model/OneTrans_HSE_project/cpp/tools/server_main.cpp:248)、[flow.cpp](/root/real_model/OneTrans_HSE_project/cpp/src/serving/flow.cpp:130)；禁止 miss 跳算成功，回显顺序/执行/设备 |</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>| 通信 client | 全新稳定 ABI 与 native 实现 | 既有 CLI 不是常驻库；Go [brpcwire](/root/half_latency/recommendation_design_assets/source_8506_530f773/services/brpcwire/client.go:18) 手写 PRPC 帧不导入 |</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>| 通信 server | 共用框架，四个角色独立部署 | [pipeline_service_adapter.cpp](/root/real_model/pairec4tigerllm/cpp/brpc_gateway/pipeline_service_adapter.cpp:220) 是 bRPC→HTTP；旧 uid-only/DeepFM protobuf 必须替换 |</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>| KV 生命周期 | 模型 envelope、请求身份、owner 与 release 接口 | [store](/root/real_model/OneTrans_HSE_project/cpp/src/kv/store.cpp)、[DataSystem adapter](/root/real_model/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp:46)；现有 TTL/Del 需要接线 |</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a></span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>### 2.4 ABI 与 protobuf 是两份不同边界</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a></span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>**稳定 C ABI**控制 Go 与本地 C++ 的调用：固定 `rec_adapter_v1`、opaque client/request handle、route、JSON buffer 指针与长度、剩余 timeout、返回 buffer/error/trace，以及配对释放函数。输入在提交时复制到 C++ 所有内存，不把 Go 内存指针保留到异步生命周期。关闭 client 前排空在途调用，取消不能使正在访问的 buffer 提前释放。</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a></span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>**typed protobuf**控制两台机器上 native client/server 的通信：Dense、Sparse、Prepare、Score 各有明确 request/response 类型，与五份既定 JSON 业务 payload 同义。Gen 复用现 proto。不能拿一个任意 URL＋任意 JSON 的通用代理替代服务契约，也不能借 payload padding 偷传版本字段。</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a></span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>raw ID 在业务 JSON 中按既定字符串/int64 规则处理。C++ JSON 库和转换函数不得经过 double 再还原大整数。新增 protobuf 的 int64 范围与 Gen 的既有 int32 限制分别检查；protobuf JSON 的整数字符串规则要在显式转换层处理，不能盲用自动 JSON 转换后假设旧后端一定接受。</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a></span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>| client route | 对外方法/协议 | 服务端处理 |</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>|---|---|---|</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>| `FeaturesMGet` | Redis RESP `MGET` | 直接 Redis，无新 Feature server |</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>| `DenseRecall` | `loadmodel.v1.DenseRecallService.Recall` | Dense role → 本机 `/recall` |</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>| `SparseRecall` | `loadmodel.v1.SparseRecallService.Recall` | Sparse role → 本机 `/recall` |</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>| `GenerativeRecall` | `pairec.inference.RecommendService.Recommend` | Gen 原生终结 |</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>| `PrepareHistory` | `loadmodel.v1.HistoryPrepareService.Prepare` | Prepare role → 本机 `/ingest` |</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>| `ScoreCandidates` | `loadmodel.v1.CandidateScoreService.Score` | Score role → 本机 `/score` |</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>| `ReleaseHistory` | `loadmodel.v1.HistoryPrepareService.Release` | Prepare role → 新增管理入口，幂等释放；不是模型阶段 |</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a></span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>### 2.5 哪些变化影响哪一层</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a></span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>| 变化 | 主要修改 | 需验证但不自动重写的层 |</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>|---|---|---|</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>| 召回预算、融合/后排规则、特征读取顺序 | Go Engine 与业务配置 | adapter 只透传合法参数；模型协议不变则不需改 server |</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>| 字段、shape、业务语义变化 | 业务 DTO/schema、protobuf、双侧转换、相关后端 | 必须跨层共同版本，不能靠 ABI 稳定掩盖业务契约变化 |</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>| bRPC 连接策略、实现升级、TCP/后续 UB profile | native client/server、构建与部署绑定 | Go Engine 不写传输实现；仍需端到端兼容和实际数据面验证 |</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>| backend 的纯 wire 兼容实现优化 | 对应模型服务或 server adapter | 不必然修改 Go；不能笼统说每次服务端升级都要改调用方 |</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>| 原生 ABI/链接依赖变化 | native binding、构建与发布 | 静态链接或 ABI 不兼容时可能重编应用，不能承诺总能只换 `.so` |</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>| 特征快照或模型版本更换 | ETL、manifest、模型/索引装载、就绪门禁 | DTO不变时可复用业务代码，但版本/覆盖必须重新验收 |</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a></span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>### 2.6 旧工程不导入什么</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a></span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>DeepFM、Go PRPC framing、burst/reverse burst、pressure hop、Health 扇出、旧 controller/sort/latch、vendor patch 不进入新应用树，因此无需先从 8506 大量删除文件才能建立新应用。已有真实模型端仍可能含实验后端、结果缓存或压力开关，必须在服务发布配置中关闭；应用干净不能替模型端保证执行真实性。</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a></span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>模型库、SID/向量导出、DataSystem SDK、PS、trace 中有用的测量语义可按职责复用。历史运行脚本不直接成为新部署清单，避免把实验拓扑一并启动。</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a></span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>---</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a></span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>## 3. 进程视图：并行计算与跨语言调用</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a></span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a>### 3.1 完整请求时序</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a></span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>图中的 `Native` 位于 PaiRec 进程内；`DA/BA/SA/NA` 为四个独立角色的远端 server adapter。为控制图宽，Milvus、OpenSearch 和 PS 内部调用在五服务说明中展开。</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a></span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>```mermaid</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>sequenceDiagram</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>    participant U as 请求客户端</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>    participant P as PaiRec Controller/Engine</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>    participant C as 同进程 Native client</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>    participant R as Redis</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>    participant DA as Dense adapter/backend</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>    participant BA as Sparse adapter/backend</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>    participant G as Gen 原生服务</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>    participant S as S adapter/backend</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>    participant K as DataSystem</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>    participant N as NS adapter/backend</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>    U-&gt;&gt;P: uid scene size</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>    P-&gt;&gt;P: 内部唯一 request_id 与 release deadline</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>    P-&gt;&gt;C: C ABI FeaturesMGet(USER,HISTORY)</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>    C-&gt;&gt;R: RESP MGET</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>    R--&gt;&gt;C: 两个值与缺失位置</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>    C--&gt;&gt;P: 业务特征结果</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>    par 候选准备</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>        par Dense</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>            P-&gt;&gt;C: DenseClient(query_vector)</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>            C-&gt;&gt;DA: native bRPC Dense</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>            DA-&gt;&gt;DA: 本机 HTTP 后端执行 Milvus search</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>            DA--&gt;&gt;C: 真实候选与状态</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a>            C--&gt;&gt;P: Dense result</span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>        and Sparse</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>            P-&gt;&gt;C: SparseClient(tokens)</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>            C-&gt;&gt;BA: native bRPC Sparse</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>            BA-&gt;&gt;BA: 本机 HTTP 后端执行 OpenSearch</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>            BA--&gt;&gt;C: 真实候选与状态</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>            C--&gt;&gt;P: Sparse result</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>        and Generative</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>            P-&gt;&gt;C: GenerativeClient(SID history)</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>            C-&gt;&gt;G: 原生 Recommend</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>            G-&gt;&gt;G: TRT 实际前向</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>            opt 原生生命周期需要换入换出</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>                G-&gt;&gt;K: 生成 KV Get/Set</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>                K--&gt;&gt;G: 对象与状态</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a>            end</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>            G--&gt;&gt;C: 合法候选与实际 token 数</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>            C--&gt;&gt;P: Generative result</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>        end</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>        P-&gt;&gt;P: 融合 去重 已看过滤 限量</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>        P-&gt;&gt;C: C ABI FeaturesMGet(ITEM_RANK IDs)</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a>        C-&gt;&gt;R: RESP MGET</span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>        R--&gt;&gt;C: 保持位置的值与 nil</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>        C--&gt;&gt;P: 候选业务特征</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a>    and 历史预计算</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>        P-&gt;&gt;C: PrepareClient(history,identity)</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a>        C-&gt;&gt;S: native bRPC Prepare</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>        S-&gt;&gt;S: 本机 HTTP /ingest与真实 PS lookup/S forward</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>        S-&gt;&gt;K: Set 真实 KV 与身份 envelope</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>        K--&gt;&gt;S: 写成功</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>        S--&gt;&gt;C: accepted ready executed key</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>        C--&gt;&gt;P: S Future 成功或错误</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>    end</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>    P-&gt;&gt;P: 确认候选特征及 S 同请求 ready</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>    P-&gt;&gt;C: ScoreClient(features,kv_key)</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>    C-&gt;&gt;N: native bRPC Score</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>    N-&gt;&gt;N: 本机 /score 前端与 PS lookup</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>    N-&gt;&gt;K: Get 对应 KV</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>    K--&gt;&gt;N: payload 与身份</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>    N-&gt;&gt;N: 校验后真实 NS forward</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>    N--&gt;&gt;C: 同序 item_ids logits executed</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>    C--&gt;&gt;P: 完整 Score result</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>    P-&gt;&gt;P: 后排 Top K 与终态登记</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>    P--&gt;&gt;U: 实际推荐列表与状态</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>    P-&gt;&gt;C: ReleaseHistory 管理调用</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>    C-&gt;&gt;S: native bRPC Release</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>    S-&gt;&gt;S: 本机管理入口核对owner与在途状态</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>    S-&gt;&gt;K: 安全时幂等删除 已取消在途项登记回收</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>```</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a></span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>最后的 `ReleaseHistory` 是生命周期管理动作，不是第六个模型阶段；Prepare server adapter 将它转到新增的本机 `/release`。请求总期限已经耗尽时，使用独立、有界的清理 context（模板初值 1 秒），不能沿用已取消的业务 context 而使删除永远无法发出。清理流量与时延单列记录，不能删除正在被 NS 消费的对象。</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a></span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>三召回和 S 各执行一次，adapter 不再增加调用次数。候选融合与第二次 Redis 不等待 S，只有 NS 入口汇合依赖。</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a></span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>### 3.2 一次 adapter 调用的详细边界</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a></span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>```mermaid</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>sequenceDiagram</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>    participant G as Go 业务 client</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>    participant A as CGO/C ABI</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>    participant C as C++ client adapter</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>    participant S as C++ server adapter</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>    participant B as 同机模型 HTTP 后端</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>    G-&gt;&gt;A: route、业务 JSON、剩余 timeout、request_id</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>    A-&gt;&gt;C: 同进程调用与受控数据复制</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>    C-&gt;&gt;C: 校验和 typed protobuf 转换</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>    C-&gt;&gt;S: native stub/Channel RPC</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>    S-&gt;&gt;S: schema/身份/期限校验</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>    S-&gt;&gt;B: 本机 HTTP 业务请求</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a>    B--&gt;&gt;S: 模型结果或业务错误</span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>    S--&gt;&gt;C: typed response + 原始执行trace</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>    C-&gt;&gt;C: 业务 JSON 与 ABI 状态转换</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>    C--&gt;&gt;A: 具有明确所有权的输出 buffer</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>    A--&gt;&gt;G: 结果、错误、实际trace</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>    G-&gt;&gt;A: 配对 Free/释放引用</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>```</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a></span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>Gen 省略 server adapter→HTTP 两步，直接落到已有 native service。Redis 改为同一 C++ 库的 `PROTOCOL_REDIS`，没有 protobuf 服务端。上述三类路径必须在 trace 中区分，不能全部标成同一个“bRPC 网络耗时”。</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a></span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>### 3.3 并发与资源责任</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a></span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>| 组件 | 状态与并发 | 必须保证 |</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>|---|---|---|</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a>| Controller/Engine | 每请求 immutable 特征、独立候选结果、S Future、deadline | 不让多个 goroutine 无锁改同一 map；有界扇出；无隐藏重试 |</span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>| Native client | 按 route/目标复用 Channel；每调用独立 Controller/response | 不因一个 singleton 或总锁串行化五服务；无全局多目标串用 |</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>| CGO binding | 调用可能阻塞 OS 线程，Go context 不自动取消 C++ | 传播剩余 timeout；可取消调用有明确 request handle；buffer 只在使用完毕后释放 |</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>| Server adapter | 对应角色的有界并发与本机 HTTP 连接池 | 不以单线程桥接制造额外串行瓶颈；保留后端错误 |</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>| Dense/Sparse | 索引连接及后端查询 | 真实外部查询，不替换为本地结果缓存 |</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>| Gen | GPU/Executor 调度与原生 KV | 正常批处理可保留；不额外发压力 lane |</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>| S | PS 查询、CPU 计算、KV 写入 | 成功后 ready；失败/拒绝/取消均有状态 |</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>| NS | PS 查询、KV 读取、前向；可批处理 | 每请求候选/身份/KV 对应；首期固定 cpp_cpu |</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a></span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a>native C++ 崩溃会影响同一 PaiRec 进程，CGO 只隔离代码和协议依赖。若未来需要故障进程隔离，才改用 sidecar；该变化增加进程和本地 RPC，必须成为独立测量配置。</span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a></span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>### 3.4 请求级 KV 与取消状态机</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a></span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>目标 key 为 `fine:&lt;release_id&gt;:&lt;model_version&gt;:&lt;request_id&gt;`。request_id 内部生成唯一，外部调用 ID 默认只用于关联。实际存储 envelope 包含 release/model/request/user/history 身份及层数、长度、dtype；只在 JSON 或内存 Record 添加字段，不能保证跨进程可验证。</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a></span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>```mermaid</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>stateDiagram-v2</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>    [*] --&gt; Pending: 已取得同源历史</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>    Pending --&gt; Running: S 实际开始</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>    Pending --&gt; Failed: 拒绝或输入错误</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a>    Running --&gt; Ready: S完成且KV写成功</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>    Running --&gt; Failed: PS计算存储失败</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>    Running --&gt; Cancelled: 请求取消或到期</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>    Ready --&gt; Scoring: NS校验同一身份</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>    Ready --&gt; Reclaim: 上游已取消</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>    Scoring --&gt; Completed: NS真实前向完成</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>    Scoring --&gt; Failed: KV失效或计算失败</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>    Completed --&gt; Reclaim</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a>    Failed --&gt; Reclaim</span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>    Cancelled --&gt; Reclaim: 在途任务结束后清理</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>    Reclaim --&gt; [*]: 删除或受控过期</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>```</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a></span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>OneTrans [DataSystem adapter](/root/real_model/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp:46) 已有 `SetParam.ttlSecond`、`Del`、`Expire`；默认 TTL 为 0。正式配置以 TTL=120 秒、`cleanup_owner=pairec_request` 为联调初值，需要验证覆盖最坏处理窗口。</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a></span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>Engine 在 S Future 明确成功后首次调用 NS。KV miss、损坏 payload、版本不符、存储不可用分别报错；不能跳算返回 0.5 成功。取消不代表下游已停止；完成回调处理迟到写入，独立有界管理调用删除已结束对象，TTL 兜底。native adapter 转发状态，不自行猜测对象是否无人使用；新 `/release` 校验本请求 owner，迟到写通过模型端状态与回收逻辑处理。</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a></span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>### 3.5 期限与失败</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a></span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a>请求总 deadline 为 **25 秒**，早于官方 HTTP server 的 30 秒读/写超时，留出错误返回和响应序列化时间。证据：[app.go](/root/half_latency/recommendation_design_assets/source_pairec_upstream_v2.6.2/app.go:82)。Redis 每逻辑阶段预算 1 秒，Dense/Sparse 各 5 秒，Gen/S/NS 各 10 秒；每次 ABI、native RPC、本机 HTTP 均取阶段预算和剩余总预算的较小值，不在每层重新获得完整超时。</span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a></span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>这些是接线初值，不是性能目标。首期自动 retry=0；连接失败、参数/版本错误和真实模型未执行均不能算完整成功。ITEM_RANK 整键 nil 采用 `drop_and_report` 且不补拉，坏 JSON、错版本或 transport 错误仍 strict 失败。实际候选不足只返回实际数和 shortfall，不造物品补满。</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a></span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>---</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a></span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a>## 4. 物理视图：同进程原生库与远端角色</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a></span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>### 4.1 默认部署角色</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a></span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>```mermaid</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>flowchart TB</span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>    subgraph Build[离线与发布环境]</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a>        E[ETL 向量导出 loader]</span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>        A[版本化模型与发布清单]</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>        L[外部请求回放器]</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>    end</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>    subgraph PHost[PaiRec 应用角色]</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>        subgraph PProc[同一个应用进程]</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>            P[官方框架与自有 Go Engine]</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>            ABI[CGO / C ABI]</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>            NC[C++ native client库]</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>            P --&gt; ABI --&gt; NC</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a>        end</span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>    end</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>    subgraph DenseRole[Dense 角色]</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a>        DA[C++ server adapter]</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a>        D[Dense HTTP 后端]</span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>        DA --&gt;|loopback HTTP| D</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>    end</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a>    subgraph SparseRole[Sparse 角色]</span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>        BA[C++ server adapter]</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a>        B[Sparse HTTP 后端]</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a>        BA --&gt;|loopback HTTP| B</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a>    end</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a>    subgraph SRole[历史精排角色]</span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>        SA[C++ server adapter]</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>        S[OneTrans S CPU 后端]</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a>        SA --&gt;|loopback HTTP| S</span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>    end</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>    subgraph NSRole[候选精排角色]</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a>        NA[C++ server adapter]</span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>        N[OneTrans NS CPU 后端]</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a>        NA --&gt;|loopback HTTP| N</span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a>    end</span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>    subgraph GenRole[生成模型角色]</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a>        G[原生 bRPC TRT Executor / GPU]</span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>    end</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a>    subgraph Store[数据与参数服务角色]</span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a>        R[(Redis)]</span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>        M[(Milvus 及依赖)]</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>        O[(OpenSearch)]</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a>        PS[(模型 PS)]</span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>        DS[(DataSystem)]</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>    end</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>    L --&gt; P</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>    E --&gt; R</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>    E --&gt; M</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>    E --&gt; O</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a>    E --&gt; PS</span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a>    A --&gt; P</span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>    A --&gt; G</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a>    A --&gt; S</span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>    A --&gt; N</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>    NC --&gt;|RESP TCP| R</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>    NC --&gt;|bRPC TCP| DA</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a>    NC --&gt;|bRPC TCP| BA</span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a>    NC --&gt;|bRPC TCP| SA</span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>    NC --&gt;|bRPC TCP| NA</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a>    NC --&gt;|bRPC TCP| G</span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a>    D --&gt;|Milvus SDK| M</span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>    B --&gt;|OpenSearch HTTP| O</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>    S --&gt; PS</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a>    N --&gt; PS</span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>    S --&gt; DS</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>    N --&gt; DS</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a>    G --&gt; DS</span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a>```</span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a></span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a>角色可以同机分进程或跨机；此图不声称已有这些机器/端口。四个 adapter 与各自后端本机相连，可部署为同 Pod 的两个容器或同机两个进程。S 与 NS 仍是不同后端进程，通过共享 DataSystem 传真实 KV。</span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a></span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a>### 4.2 各边实际协议</span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a></span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a>| 边 | 当前目标 | 不可误报 |</span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>|---|---|---|</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a>| 用户→PaiRec | HTTP | 不称全链无 HTTP |</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a>| Go→native client | CGO/C ABI，同进程 | 不计算为本地 RPC；也不称零开销 |</span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a>| native client→Dense/Sparse/S/NS adapter | 生成 protobuf + 原生 bRPC baidu_std/TCP | 不是 Go 手写 TCP wire |</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a>| server adapter→模型后端 | 本机 HTTP | 桥接成本真实存在，不算纯网络时延 |</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a>| native client→Gen | 现有原生 Recommend bRPC/TCP | 不再套冗余 HTTP 桥 |</span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a>| native client→Redis | bRPC 库 `PROTOCOL_REDIS`，RESP/TCP | Redis 不支持 baidu_std；使用 bRPC 库不等于支持 UB |</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a>| Dense→Milvus | 所选 Milvus SDK 的真实协议 | 不自动变成 bRPC |</span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a>| Sparse→OpenSearch | HTTP 查询 | 不自动变成 bRPC |</span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a>| S/NS→PS | 现有 native bRPC 参数查询 | 不等于业务特征 Redis |</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a>| 模型→DataSystem | 各自实际 C++ SDK 路径 | 生成与精排 KV 格式和生命周期不同 |</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a></span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a>先完成 TCP 基线，再另建 UB profile。切换传输需要客户端与服务端匹配构建、运行库和实际数据面验证；不允许静默 TCP 回退后仍记为 UB。旧 UB gateway 的转发经验可参考，但其压力分支、按前端连接建 lane 等实验行为不进入默认新应用。</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a></span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a>### 4.3 物料、资源和后端固定</span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a></span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>| 角色 | 必备物料/状态 | 就绪判据 |</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>|---|---|---|</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a>| PaiRec 新应用 | 官方锁定依赖、自有业务代码、ABI匹配的native库、渲染后配置 | route 确实进入新 controller；实际 native 库/协议和发布一致 |</span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a>| native client | brpc/protobuf/运行库、目标 route 与连接配置 | ABI版本与依赖完整；无额外 sidecar；正确连接各类后端 |</span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>| 四类 server adapter | 新 typed protobuf、role 与本机 backend URL | 匹配客户端 schema；能识别后端业务 readiness |</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a>| Dense | 已加载目标 Milvus collection；向量空间元数据 | 真 search；失败不退本地 NumPy |</span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>| Sparse | 已装载文档、固定 mapping/index | 实际 BM25 查询；不是仅进程可达 |</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a>| Gen | engine/tokenizer/SID/目录、兼容 TRT/DataSystem 运行库、GPU | 实际 runner；禁 semantic_map/结果缓存/压力 probe |</span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a>| S/NS | 相同 OneTrans 资产、PS 表、DataSystem | `cpp_cpu` 实际后端；模型、schema、raw ID覆盖一致 |</span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>| Redis | standalone、三视图、装载就绪清单 | `SET` 不带 EX/PX；无过期 key 的 TTL 查询为 -1；容量不能驱逐快照 |</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a>| DataSystem | 真实初始化、两类namespace、容量与生命周期 | S/NS跨进程读写；不能缺SDK退local；TTL/Del实际生效 |</span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a></span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a>S/NS shape 保留工程配置 D128、4 heads、4 layers、S_max=50、每候选5个 NS token、fp32；实际历史最多10项，不宣称50项真实行为。空 album 减少相关 PS 查询，reserved0 降低用户特征多样性，这些负载边界随结果一起记录。</span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a></span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a>### 4.4 启动与恢复</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a></span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a>```mermaid</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a>flowchart LR</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a>    A[锁定数据及模型发布] --&gt; B[构建新应用与双侧native适配]</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a>    B --&gt; C[启动数据库并装载校验]</span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a>    C --&gt; D[启动五服务和各server adapter]</span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a>    D --&gt; E[原生通信与单服务真实执行检查]</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a>    E --&gt; F[自有controller与Engine就绪]</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a>    F --&gt; G[一条真实用户请求]</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a>    G --&gt; H[有界多用户回放与回收检查]</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>```</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a></span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a>恢复按实际状态分别处理：Redis/Milvus/OpenSearch 使用持久化或版本化重装；PS 重启后重新装表；S KV 可以丢弃并按新请求重建。模型服务的 health、server adapter 的可达、native client 的连接成功三者都不能单独证明整个角色就绪。</span>
+<span class="line" id="L629"><a class="ln" href="#L629">629</a></span>
+<span class="line" id="L630"><a class="ln" href="#L630">630</a>原生库发布需要固定 ABI、编译器/运行库、brpc/protobuf 等兼容性。readiness 报告实际加载的 adapter、libbrpc、protobuf 和 transport 构建标识，并核对 runtime manifest，不能只打印配置里期待的版本。底层通信变化时，native client 与对应 server 双端匹配验证。</span>
+<span class="line" id="L631"><a class="ln" href="#L631">631</a></span>
+<span class="line" id="L632"><a class="ln" href="#L632">632</a>动态库替换只有在 ABI与依赖兼容时才可能不重编 Go；静态链接或 ABI 改动仍可能重编整个应用。新架构减少通信实现散落，不能消除所有构建与联调工作。</span>
+<span class="line" id="L633"><a class="ln" href="#L633">633</a></span>
+<span class="line" id="L634"><a class="ln" href="#L634">634</a>---</span>
+<span class="line" id="L635"><a class="ln" href="#L635">635</a></span>
+<span class="line" id="L636"><a class="ln" href="#L636">636</a>## 5. +1 场景视图：检验四个视图是否一致</span>
+<span class="line" id="L637"><a class="ln" href="#L637">637</a></span>
+<span class="line" id="L638"><a class="ln" href="#L638">638</a>### UC-01 干净启动与路径选择</span>
+<span class="line" id="L639"><a class="ln" href="#L639">639</a></span>
+<span class="line" id="L640"><a class="ln" href="#L640">640</a>**步骤**：从官方 v2.6.2 依赖构建新应用和 native 库；公开 hook 注册自有 controller；加载 design_revision=2 的正式配置；检查 route、ABI、schema、release、后端 readiness。</span>
+<span class="line" id="L641"><a class="ln" href="#L641">641</a></span>
+<span class="line" id="L642"><a class="ln" href="#L642">642</a>**证据**：业务 trace 明确来自新 Engine；构建清单不含8506的Go wire/DeepFM/压力对象；四个旧框架配置为空不会导致请求进入旧默认 UserRecommend。源码锁定证明来自官方，不把旧 vendor 副本标作干净基线。</span>
+<span class="line" id="L643"><a class="ln" href="#L643">643</a></span>
+<span class="line" id="L644"><a class="ln" href="#L644">644</a>### UC-02 离线加工与人工装载</span>
+<span class="line" id="L645"><a class="ln" href="#L645">645</a></span>
+<span class="line" id="L646"><a class="ln" href="#L646">646</a>**步骤**：统一真实用户/历史/catalog/物品统计 → DSSM两塔离线导出 → 视频长短类型词项文档 → SID/OneTrans/PS资产检查 → Redis/Milvus/OS/PS装载 → 数量、维度、版本、覆盖和样本读回 → 标记完整release可用。</span>
+<span class="line" id="L647"><a class="ln" href="#L647">647</a></span>
+<span class="line" id="L648"><a class="ln" href="#L648">648</a>**证据**：真实产物清单、装载计数和缺失比例。fixture不是全量release；不会静默裁成微小交集再称全规模。此步骤不依赖OneTrans训练。</span>
+<span class="line" id="L649"><a class="ln" href="#L649">649</a></span>
+<span class="line" id="L650"><a class="ln" href="#L650">650</a>### UC-03 一次完整推荐请求</span>
+<span class="line" id="L651"><a class="ln" href="#L651">651</a></span>
+<span class="line" id="L652"><a class="ln" href="#L652">652</a>**前提**：选择本release里真实、历史有效、向量和SID资产可用的用户。样例uid1只证明字段来源，不能代替模型资产就绪。</span>
+<span class="line" id="L653"><a class="ln" href="#L653">653</a></span>
+<span class="line" id="L654"><a class="ln" href="#L654">654</a>**步骤**：按3.1执行，首轮Redis→三召回与S→融合→候选Redis→等待S成功→NS→后排。</span>
+<span class="line" id="L655"><a class="ln" href="#L655">655</a></span>
+<span class="line" id="L656"><a class="ln" href="#L656">656</a>**证据**：同request/release对应两次特征读、三路实际后端、S PS/forward/Set、NS Get/forward和最终列表。native client/server trace与后端trace可关联。固定完整验收的候选特征nil数要求0；不要求准确分数或所有分数不同。</span>
+<span class="line" id="L657"><a class="ln" href="#L657">657</a></span>
+<span class="line" id="L658"><a class="ln" href="#L658">658</a>### UC-04 冷KV与跨进程消费</span>
+<span class="line" id="L659"><a class="ln" href="#L659">659</a></span>
+<span class="line" id="L660"><a class="ln" href="#L660">660</a>**步骤**：确保请求key不存在；S实际计算并写；ready经server/client adapter完整回传；NS读同key与envelope后真实前向。</span>
+<span class="line" id="L661"><a class="ln" href="#L661">661</a></span>
+<span class="line" id="L662"><a class="ln" href="#L662">662</a>**失败变体**：写成功后删除对象或注入错误版本；NS明确KV缺失/版本错误，不返回填充logits成功。验证adapter不会把业务错误转换为成功HTTP/成功bRPC。</span>
+<span class="line" id="L663"><a class="ln" href="#L663">663</a></span>
+<span class="line" id="L664"><a class="ln" href="#L664">664</a>### UC-05 同uid并发与资源所有权</span>
+<span class="line" id="L665"><a class="ln" href="#L665">665</a></span>
+<span class="line" id="L666"><a class="ln" href="#L666">666</a>**步骤**：同uid两个内部request_id并发，S故意乱序完成；各NS只读各自key；一个完成清理不影响另一个。</span>
+<span class="line" id="L667"><a class="ln" href="#L667">667</a></span>
+<span class="line" id="L668"><a class="ln" href="#L668">668</a>**证据**：没有旧`model/user`覆盖；native client可并行不同route；无全局串行锁；C ABI输出buffer各归本调用，无交叉释放。重复外部调用标识不造成KV键碰撞。</span>
+<span class="line" id="L669"><a class="ln" href="#L669">669</a></span>
+<span class="line" id="L670"><a class="ln" href="#L670">670</a>### UC-06 超时、取消与迟到写</span>
+<span class="line" id="L671"><a class="ln" href="#L671">671</a></span>
+<span class="line" id="L672"><a class="ln" href="#L672">672</a>**步骤**：延迟真实S/存储或中断连接；Engine按25秒总期限及阶段预算失败；native取消或超时向下传播；仍在途S结束后回调/TTL回收。</span>
+<span class="line" id="L673"><a class="ln" href="#L673">673</a></span>
+<span class="line" id="L674"><a class="ln" href="#L674">674</a>**证据**：每层使用剩余期限，不因桥接重新起算；无隐藏重试；取消不提前释放还在被C++使用的内存；迟到KV不会永久增长。S失败时NS不运行，不能被计为五阶段成功。</span>
+<span class="line" id="L675"><a class="ln" href="#L675">675</a></span>
+<span class="line" id="L676"><a class="ln" href="#L676">676</a>### UC-07 输入缺失与候选不足</span>
+<span class="line" id="L677"><a class="ln" href="#L677">677</a></span>
+<span class="line" id="L678"><a class="ln" href="#L678">678</a>| 情况 | 正式结果 | 检查重点 |</span>
+<span class="line" id="L679"><a class="ln" href="#L679">679</a>|---|---|---|</span>
+<span class="line" id="L680"><a class="ln" href="#L680">680</a>| USER/HISTORY键不存在 | 明确特征未就绪/未知用户 | 不用本地业务表回退 |</span>
+<span class="line" id="L681"><a class="ln" href="#L681">681</a>| 向量维度/空间错误 | 显式拒绝 | 不造64维向量替代 |</span>
+<span class="line" id="L682"><a class="ln" href="#L682">682</a>| 稀疏兴趣为空 | empty，说明未发生查询或返回零结果 | 不造词项；不作为五服务贯通样本 |</span>
+<span class="line" id="L683"><a class="ln" href="#L683">683</a>| 召回后端失败 | strict失败 | adapter保留原始错误，不返回空数组冒充成功 |</span>
+<span class="line" id="L684"><a class="ln" href="#L684">684</a>| Gen候选较少 | 实际数量与shortfall | 不造SID/候选；保留token数 |</span>
+<span class="line" id="L685"><a class="ln" href="#L685">685</a>| ITEM_RANK整键nil | drop_and_report，不补拉 | MGET位置不能错位 |</span>
+<span class="line" id="L686"><a class="ln" href="#L686">686</a>| ITEM_RANK坏JSON/错版本 | strict失败 | 不当作普通nil丢弃 |</span>
+<span class="line" id="L687"><a class="ln" href="#L687">687</a>| PS miss/OOV | 明确模型规则或失败 | 不把全零参数供给计为正常覆盖 |</span>
+<span class="line" id="L688"><a class="ln" href="#L688">688</a></span>
+<span class="line" id="L689"><a class="ln" href="#L689">689</a>### UC-08 版本或ABI不匹配</span>
+<span class="line" id="L690"><a class="ln" href="#L690">690</a></span>
+<span class="line" id="L691"><a class="ln" href="#L691">691</a>**步骤**：分别替换错误schema、模型/历史envelope、protobuf、native ABI版本或运行库。</span>
+<span class="line" id="L692"><a class="ln" href="#L692">692</a></span>
+<span class="line" id="L693"><a class="ln" href="#L693">693</a>**期望**：可在启动发现的拒绝ready；请求层版本不一致明确报错；未知路由不落到默认模型。大整数ID完成Go→C++→protobuf→后端→返回的无损对照，Gen int32越界明确拒绝。</span>
+<span class="line" id="L694"><a class="ln" href="#L694">694</a></span>
+<span class="line" id="L695"><a class="ln" href="#L695">695</a>### UC-09 服务重启与桥接失败</span>
+<span class="line" id="L696"><a class="ln" href="#L696">696</a></span>
+<span class="line" id="L697"><a class="ln" href="#L697">697</a>**步骤**：分别重启native库所属的PaiRec进程、某server adapter、模型后端或存储；检查旧连接与inflight状态；完成就绪和装载后重跑真实请求。</span>
+<span class="line" id="L698"><a class="ln" href="#L698">698</a></span>
+<span class="line" id="L699"><a class="ln" href="#L699">699</a>**证据**：server adapter活着但模型未ready时不能放流；PS重启明确重装；DataSystem丢失KV不读取旧用户对象。CGO下native崩溃使PaiRec一起退出是既定故障边界，不伪称进程隔离。</span>
+<span class="line" id="L700"><a class="ln" href="#L700">700</a></span>
+<span class="line" id="L701"><a class="ln" href="#L701">701</a>### UC-10 通信替换与持续负载</span>
+<span class="line" id="L702"><a class="ln" href="#L702">702</a></span>
+<span class="line" id="L703"><a class="ln" href="#L703">703</a>**TCP基线**：用同一业务数据、模型shape、候选预算和设备，外部回放产生用户请求；记录业务执行率、adapter转换、native RPC、模型计算、排队、Redis和KV生命周期。</span>
+<span class="line" id="L704"><a class="ln" href="#L704">704</a></span>
+<span class="line" id="L705"><a class="ln" href="#L705">705</a>**后续传输profile**：若采用UB或sidecar，各自改变对应层并单独验收；UB确认双端实际数据面且不静默fallback；sidecar记录新增本地RPC/进程成本。它们不是默认profile的无痕升级。</span>
+<span class="line" id="L706"><a class="ln" href="#L706">706</a></span>
+<span class="line" id="L707"><a class="ln" href="#L707">707</a>**完成证据**：长期对象数量、在途请求和内存可解释；没有内部burst/Health放大；每条RPC及实际backend可关联。不能用两个包络相减直接宣称纯网络延迟，也不能把并行阶段时间相加等同端到端时延。</span>
+<span class="line" id="L708"><a class="ln" href="#L708">708</a></span>
+<span class="line" id="L709"><a class="ln" href="#L709">709</a>---</span>
+<span class="line" id="L710"><a class="ln" href="#L710">710</a></span>
+<span class="line" id="L711"><a class="ln" href="#L711">711</a>## 6. 跨视图覆盖、计时与近期交付</span>
+<span class="line" id="L712"><a class="ln" href="#L712">712</a></span>
+<span class="line" id="L713"><a class="ln" href="#L713">713</a>### 6.1 各组件的五视图覆盖</span>
+<span class="line" id="L714"><a class="ln" href="#L714">714</a></span>
+<span class="line" id="L715"><a class="ln" href="#L715">715</a>| 组件 | 逻辑 | 开发 | 进程 | 物理 | 核心场景 |</span>
+<span class="line" id="L716"><a class="ln" href="#L716">716</a>|---|---|---|---|---|---|</span>
+<span class="line" id="L717"><a class="ln" href="#L717">717</a>| PaiRec controller/Engine | 1.2显式推荐DAG | 2.1/2.2干净上游、自有模块 | 3.1/3.3并行/Future | 4.1同进程Go与native库 | UC-01/03/05/06 |</span>
+<span class="line" id="L718"><a class="ln" href="#L718">718</a>| Dense | 1.4向量到真实检索 | 2.3导出/后端/new proto | 3.1并行检索 | 4.1/4.2双侧adapter与Milvus | UC-02/03/07/08 |</span>
+<span class="line" id="L719"><a class="ln" href="#L719">719</a>| Sparse | 1.5真实视频类型词项 | 2.3独立后端/loader/new proto | 3.1实际查询与空结果 | 4.1/4.2adapter与OS | UC-02/03/07/09 |</span>
+<span class="line" id="L720"><a class="ln" href="#L720">720</a>| Gen | 1.6SID到TRT | 2.3现proto与原生server | 3.1原生KV生命周期 | 4.1/4.2直接bRPC与GPU | UC-03/07/08/10 |</span>
+<span class="line" id="L721"><a class="ln" href="#L721">721</a>| OneTrans S | 1.7真实历史KV | 2.3模型身份与Prepare契约 | 3.4成功/失败/迟到状态 | 4.1独立CPU角色、PS/DS | UC-04/05/06/09 |</span>
+<span class="line" id="L722"><a class="ln" href="#L722">722</a>| OneTrans NS | 1.8完整字段与KV | 2.3Score契约与miss失败 | 3.1/3.4依赖与真实前向 | 4.1独立CPU角色、PS/DS | UC-03/04/05/07 |</span>
+<span class="line" id="L723"><a class="ln" href="#L723">723</a>| client/server adapter | 1.9双侧角色 | 2.4/2.5ABI/protobuf与变化范围 | 3.2/3.3并发、buffer、取消 | 4.1/4.2不同协议边 | UC-01/05/06/08/09/10 |</span>
+<span class="line" id="L724"><a class="ln" href="#L724">724</a></span>
+<span class="line" id="L725"><a class="ln" href="#L725">725</a>### 6.2 可归因而不夸大计时</span>
+<span class="line" id="L726"><a class="ln" href="#L726">726</a></span>
+<span class="line" id="L727"><a class="ln" href="#L727">727</a>每次调用至少关联 `request_id/stage/attempt`、release、真实backend/device、请求/候选/token/字节数量、执行状态和错误。S/NS增加history hash、key、owner与格式。高基数ID进入trace，不直接做无限基数指标标签。</span>
+<span class="line" id="L728"><a class="ln" href="#L728">728</a></span>
+<span class="line" id="L729"><a class="ln" href="#L729">729</a>分开记录：</span>
+<span class="line" id="L730"><a class="ln" href="#L730">730</a></span>
+<span class="line" id="L731"><a class="ln" href="#L731">731</a>1. Go业务组装、CGO进入/返回与JSON转换；</span>
+<span class="line" id="L732"><a class="ln" href="#L732">732</a>2. native客户端RPC总包络、排队/连接相关计时；</span>
+<span class="line" id="L733"><a class="ln" href="#L733">733</a>3. server adapter转换及本机HTTP调用包络；</span>
+<span class="line" id="L734"><a class="ln" href="#L734">734</a>4. 模型前处理、真实计算、数据库与KV访问；</span>
+<span class="line" id="L735"><a class="ln" href="#L735">735</a>5. Engine候选准备、S汇合等待、后排与响应。</span>
+<span class="line" id="L736"><a class="ln" href="#L736">736</a></span>
+<span class="line" id="L737"><a class="ln" href="#L737">737</a>这些范围有嵌套和并行。客户端RPC包络减服务端时间还含调度、编解码等，不能标成纯网络；未同步的跨机绝对时钟不直接相减。native bRPC库并不自动完成端到端执行证据，仍需同请求关联。</span>
+<span class="line" id="L738"><a class="ln" href="#L738">738</a></span>
+<span class="line" id="L739"><a class="ln" href="#L739">739</a>### 6.3 下一步里程碑</span>
+<span class="line" id="L740"><a class="ln" href="#L740">740</a></span>
+<span class="line" id="L741"><a class="ln" href="#L741">741</a>| 阶段 | 交付 | 本阶段不要求 |</span>
+<span class="line" id="L742"><a class="ln" href="#L742">742</a>|---|---|---|</span>
+<span class="line" id="L743"><a class="ln" href="#L743">743</a>| A 干净骨架与native边界 | 官方依赖锁定、自有controller/Engine、C ABI、四typed服务schema、Gen/Redis native路径、严格配置 | 复制/清理8506全部工程 |</span>
+<span class="line" id="L744"><a class="ln" href="#L744">744</a>| B 数据与独立服务 | 同release的三视图、用户向量、各索引/PS装载；五服务真实独立调用 | OneTrans训练与效果达标 |</span>
+<span class="line" id="L745"><a class="ln" href="#L745">745</a>| C 最高优先级：单请求贯通 | 两次Feature、三召回+S、对应KV NS、后排；双侧adapter全链可追溯 | UB/sidecar、GPU S改造、通用平台 |</span>
+<span class="line" id="L746"><a class="ln" href="#L746">746</a>| D 有界持续运行 | 并发、期限、取消、buffer/KV回收、恢复与实际工作量核算 | 先做推荐质量优化 |</span>
+<span class="line" id="L747"><a class="ln" href="#L747">747</a>| E 后续研究 | 目标规模/设备/传输/缓存profile与训练优化分别推进 | 将不同profile混作同一性能基线 |</span>
+<span class="line" id="L748"><a class="ln" href="#L748">748</a></span>
+<span class="line" id="L749"><a class="ln" href="#L749">749</a>本轮交付的重点是一个清楚可实现的应用边界：**Go承载推荐业务，native C++承载通信，已有模型后端承载计算；真实数据与请求身份贯穿这些边界。**</span></pre></html>

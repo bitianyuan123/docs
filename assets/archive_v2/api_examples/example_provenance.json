@@ -1,0 +1,20 @@
+{
+  "bound": false,
+  "note": "Templates are NOT wire-valid until actual artifacts are bound; no RPC was made.",
+  "release_id": "qkv_doc200k_6f148b4adf81",
+  "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
+  "input_evidence": "../tenrec_sample_evidence.json",
+  "candidate_note": "actual exposure items for interface illustration, not claimed recall outputs",
+  "design_revision": 2,
+  "data_semantics_revision": 1,
+  "category_semantics": "video_length_type",
+  "code_label_mapping": "undisclosed",
+  "sparse_recipe": "video_type_binary_v1",
+  "transport": {
+    "01_dense": "native adapter DenseRecall -> new loadmodel.v1.DenseRecallService.Recall -> local HTTP POST /recall",
+    "02_sparse": "native adapter SparseRecall -> new loadmodel.v1.SparseRecallService.Recall -> local HTTP POST /recall",
+    "03_generative": "native adapter GenerativeRecall -> existing pairec.inference.RecommendService.Recommend; business JSON is not a REST endpoint",
+    "04_prepare": "native adapter PrepareHistory -> new loadmodel.v1.HistoryPrepareService.Prepare -> local HTTP POST /ingest",
+    "05_rank": "native adapter ScoreCandidates -> new loadmodel.v1.CandidateScoreService.Score -> local HTTP POST /score"
+  }
+}

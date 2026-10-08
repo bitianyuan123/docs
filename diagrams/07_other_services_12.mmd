@@ -1,0 +1,5 @@
+flowchart LR
+    A[Nginx路由配置] --> B[PaiRec upstream配置]
+    A --> C[请求头与超时配置]
+    A --> D[访问日志配置]
+    E[PaiRec自有控制器] --> F[请求校验与内部ID生成]

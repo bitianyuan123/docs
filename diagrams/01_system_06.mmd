@@ -1,0 +1,33 @@
+flowchart LR
+    subgraph Access[入口节点：CPU]
+        N[Nginx进程]
+    end
+    subgraph App[编排节点：CPU]
+        P[PaiRec进程与客户端库]
+    end
+    subgraph Feature[特征节点：CPU]
+        F[特征服务进程]
+    end
+    subgraph Retrieval[检索节点：CPU]
+        V[向量召回进程]
+        S[稀疏召回进程]
+    end
+    subgraph GPU[生成节点：GPU与模型文件卷]
+        G[TensorRT-LLM生成进程]
+    end
+    subgraph Data[数据节点：内存与持久存储]
+        R[(Redis与恢复快照)]
+        M[(Milvus与索引持久卷)]
+        O[(OpenSearch与索引持久卷)]
+        K[(DataSystem共享数据域)]
+    end
+    N -->|HTTP| P
+    P -->|原生bRPC目标接口| F
+    P -->|原生bRPC目标接口| V
+    P -->|原生bRPC目标接口| S
+    P -->|原生bRPC| G
+    G -->|特征RPC| F
+    F -->|Redis RESP| R
+    V -->|Milvus SDK| M
+    S -->|OpenSearch HTTP| O
+    G -->|DataSystem SDK| K

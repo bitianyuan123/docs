@@ -1,0 +1,95 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/proto/recommend.proto</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/proto/recommend.proto</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>ae9dd5d6004b7457580bf1e19d56609e8a735d958a7eac44b28ac903bf30d633</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>syntax = &quot;proto2&quot;;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>package pairec.inference;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>option cc_generic_services = true;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>message SemanticId {</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>  repeated int32 value = 1;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>}</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>message RecommendRequest {</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>  optional string user_id = 1;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>  repeated SemanticId history = 2;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>  optional int32 topk = 3 [default = 10];</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>  optional double temperature = 4 [default = 1.0];</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>  optional int32 beam_width = 5 [default = 1];</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>  optional string request_id = 6;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>  optional bytes payload_padding = 101;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>}</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a></span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>message TraceInfo {</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>  optional double total_ms = 1;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>  optional double prepare_input_ms = 2;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>  optional double infer_ms = 3;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>  optional double model_forward_ms = 4;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>  optional double generate_ms = 5;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>  optional double prompt_ms = 6;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>  optional double runner_generate_ms = 7;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>  optional int32 runner_calls = 8;</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>  optional double runner_avg_ms = 9;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>  optional double runner_max_ms = 10;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>  optional double parse_combo_ms = 11;</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>  optional double output_pad_ms = 12;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>  optional double backend_total_ms = 13;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>  optional double map_item_ms = 14;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>  optional double kv_lookup_ms = 15;</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>  optional double kv_write_ms = 16;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>  optional string kv_source = 17;</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>  optional string result_cache_source = 18;</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>  optional double result_cache_lookup_ms = 19;</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>  optional double result_cache_ds_lookup_ms = 20;</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>  optional double result_cache_write_submit_ms = 21;</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>  optional string backend = 22;</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>  optional double wrapper_total_ms = 23;</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>  optional double wrapper_backend_rpc_ms = 24;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>  optional double wrapper_overhead_ms = 25;</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>  optional int64 wrapper_active_health_at_start = 26;</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>  optional int64 wrapper_max_active_health = 27;</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>  optional int64 wrapper_max_active_total = 28;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>  optional double wrapper_backend_brpc_ms = 29;</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>  optional string request_id = 30;</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>  optional bool datasystem_expected = 31 [default = false];</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>  optional bool datasystem_attribution_complete = 32 [default = false];</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>  optional int32 datasystem_sync_get_count = 33;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>  optional int32 datasystem_sync_set_count = 34;</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>  optional int64 datasystem_sync_get_us = 35;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>  optional int64 datasystem_sync_set_us = 36;</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>  optional int32 datasystem_async_count = 37;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>  optional int64 datasystem_async_us = 38;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>  optional string datasystem_attribution_reason = 39;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>  optional int32 output_token_count = 40;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>  optional double runner_ms_per_output_token = 41;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>}</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a></span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>message Recommendation {</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>  optional int32 item_id = 1;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>  repeated int32 semantic_id = 2;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>  optional double score = 3;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>}</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a></span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>message RecommendResponse {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>  optional int32 code = 1;</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>  optional string user_id = 2;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>  repeated Recommendation recommendations = 3;</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>  optional double inference_time_ms = 4;</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>  optional string error = 5;</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>  optional TraceInfo trace = 6;</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>  optional string raw_json = 100;</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>message HealthRequest {</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>  optional bytes payload_padding = 101;</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>}</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a></span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>message HealthResponse {</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>  optional int32 code = 1;</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>  optional string status = 2;</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>  optional string backend = 3;</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>  optional string raw_json = 100;</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>}</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a></span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>service RecommendService {</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>  rpc Recommend(RecommendRequest) returns (RecommendResponse);</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>  rpc Health(HealthRequest) returns (HealthResponse);</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>}</span></pre></html>

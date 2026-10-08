@@ -1,0 +1,36 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/kv/serialize.h</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/kv/serialize.h</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>1d6fce99a1642a3ea681b76788b15665c30630cce158b70ace8466ba2a259d3c</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// UserKV payload 序列化（与 onetrans/serving/serialize.py 二进制兼容）。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 布局：&lt;magic:12B&gt; &lt;header_len:4B LE&gt; &lt;header_json&gt; &lt;raw_bytes&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// raw = concat(K_s^0, V_s^0, ..., K_s^{L-1}, V_s^{L-1})，均 bshd fp32 连续。</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>// 有效长度元数据（s_len / per_layer_len）固化在 header（G1 契约）。</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#pragma once</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#include &lt;optional&gt;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#include &lt;string&gt;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>#include &lt;vector&gt;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a></span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>#include &quot;engine/two_stage.h&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>namespace onetrans {</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>struct KvPayload {</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>    std::vector&lt;int64_t&gt; per_layer_len;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    int64_t s_len = 0;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    int n_layers = 0;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>    std::string dtype = &quot;float32&quot;;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>};</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>// 序列化（写侧）</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>std::string kv_serialize(const UserKV&amp; kv);</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>// 解析 header（不反序列化张量；魔数/布局错误抛异常）</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>KvPayload kv_read_header(const std::string&amp; payload);</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>// 反序列化为 UserKV（读侧；per_layer_len/s_len 来自 header）</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>UserKV kv_deserialize(const std::string&amp; payload);</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>// append 的数值拼接：base 与 delta 逐层 concat（K、V 各自），返回新 payload。</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>// 要求两者层数一致且 dtype 一致，否则抛异常。</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>std::string kv_concat_payload(const std::string&amp; base, const std::string&amp; delta);</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>}  // namespace onetrans</span></pre></html>

@@ -1,0 +1,102 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm/training/dssm/export_embeddings.py</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm/training/dssm/export_embeddings.py</h1><p>只读审阅快照；不是构建依赖。原文内容经 HTML 转义，不执行脚本。</p><p>提交：<code>cadc1855404b29eba40ab42b0278ebed9f91817a</code><br>原文件 SHA256：<code>4eefd932fca83962b302f81c79d434553e4530154d26d95860d188807fd9ccf6</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a># training/dssm/export_embeddings.py</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>#</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a># 导出 DSSM item 向量 + user 画像, 供 Milvus 灌库和 user tower 服务使用.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a># 用法:</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#   python -m training.dssm.export_embeddings \</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#     --checkpoint checkpoints/dssm/dssm_model.pt \</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#     --vocab_path checkpoints/dssm/vocab.json \</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#     --csv_path /home/vivwimp/Tenrec/ctr_data_1M.csv \</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>#     --out_dir checkpoints/dssm/export \</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#     --profile_rows 5000000</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>#</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a># 产物:</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>#   item_vectors.npy    (N, out_dim) float32, 已 L2 归一化</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>#   item_ids.json       与 item_vectors 行序一致的 item_id 列表 (int)</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>#   user_profiles.json  {user_id: {gender, age, hist: [...]}}</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a></span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>import argparse</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>import json</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>import os</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>import numpy as np</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>import torch</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a></span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>from training.dssm.dataset import (export_item_categories,</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>                                   export_user_profiles)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>from training.dssm.model import DSSM</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a></span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>def parse_args():</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>    p = argparse.ArgumentParser()</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    p.add_argument(&quot;--checkpoint&quot;, default=&quot;checkpoints/dssm/dssm_model.pt&quot;)</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    p.add_argument(&quot;--vocab_path&quot;, default=&quot;checkpoints/dssm/vocab.json&quot;)</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    p.add_argument(&quot;--csv_path&quot;, default=&quot;/home/vivwimp/Tenrec/ctr_data_1M.csv&quot;)</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    p.add_argument(&quot;--out_dir&quot;, default=&quot;checkpoints/dssm/export&quot;)</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    p.add_argument(&quot;--profile_rows&quot;, type=int, default=5_000_000)</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    p.add_argument(&quot;--batch_size&quot;, type=int, default=8192)</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>    p.add_argument(&quot;--device&quot;, default=&quot;cuda&quot; if torch.cuda.is_available() else &quot;cpu&quot;)</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    return p.parse_args()</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a></span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>def main():</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    args = parse_args()</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    os.makedirs(args.out_dir, exist_ok=True)</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    with open(args.vocab_path) as f:</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>        vocab = json.load(f)</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    state = torch.load(args.checkpoint, map_location=args.device)</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    sizes = state[&quot;config&quot;][&quot;vocab_sizes&quot;]</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    model = DSSM(sizes,</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>                 embed_dim=state[&quot;config&quot;][&quot;embed_dim&quot;],</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>                 out_dim=state[&quot;config&quot;][&quot;out_dim&quot;])</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    model.load_state_dict(state[&quot;model&quot;])</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    model.to(args.device).eval()</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    # item idx -&gt; 原始 item_id (idx 0 为 padding, 跳过)</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    idx2item = {idx: int(item_id) for item_id, idx in vocab[&quot;item2idx&quot;].items()}</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    idxs = sorted(idx2item.keys())</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    print(f&quot;[export] {len(idxs)} items to export&quot;)</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    vectors = np.zeros((len(idxs), state[&quot;config&quot;][&quot;out_dim&quot;]), dtype=np.float32)</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a></span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    # item -&gt; category 映射 (与训练时的 category 输入一致)</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    cat_map_path = os.path.join(args.out_dir, &quot;item_categories.json&quot;)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    if os.path.exists(cat_map_path):</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        with open(cat_map_path) as f:</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>            item_cat = json.load(f)</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    else:</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>        n = export_item_categories(args.csv_path, args.profile_rows, cat_map_path)</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        print(f&quot;[export] wrote item_categories.json ({n} items)&quot;)</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        with open(cat_map_path) as f:</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>            item_cat = json.load(f)</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    cat_lookup = vocab[&quot;cat2idx&quot;]</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a></span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    with torch.no_grad():</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>        for start in range(0, len(idxs), args.batch_size):</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>            part = idxs[start:start + args.batch_size]</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>            item_t = torch.tensor(part, dtype=torch.long, device=args.device)</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>            cat_t = torch.tensor(</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>                [cat_lookup.get(str(item_cat.get(str(idx2item[i]), &quot;&quot;)), 0)</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>                 for i in part],</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>                dtype=torch.long, device=args.device)</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>            vec = model.item_tower(item_t, cat_t)</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>            vectors[start:start + len(part)] = vec.cpu().numpy()</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a></span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    # L2 归一化 (IP 距离等价 cosine)</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    norm = np.linalg.norm(vectors, axis=1, keepdims=True)</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    vectors = vectors / np.clip(norm, 1e-12, None)</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a></span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    np.save(os.path.join(args.out_dir, &quot;item_vectors.npy&quot;), vectors)</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    with open(os.path.join(args.out_dir, &quot;item_ids.json&quot;), &quot;w&quot;) as f:</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>        json.dump([idx2item[i] for i in idxs], f)</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    print(f&quot;[export] wrote item_vectors.npy ({vectors.shape}) and item_ids.json&quot;)</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a></span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    n = export_user_profiles(</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>        args.csv_path, vocab, args.profile_rows,</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>        os.path.join(args.out_dir, &quot;user_profiles.json&quot;))</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    print(f&quot;[export] wrote user_profiles.json ({n} users)&quot;)</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a></span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a></span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>if __name__ == &quot;__main__&quot;:</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    main()</span></pre></html>

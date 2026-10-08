@@ -1,0 +1,21 @@
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "sparse_recipe_id": "video_type_binary_v1",
+  "score_semantics": "bm25",
+  "items": [
+    {
+      "item_id": "4",
+      "score": 3.2
+    },
+    {
+      "item_id": "9002",
+      "score": 2.7
+    },
+    {
+      "item_id": "9003",
+      "score": 2.1
+    }
+  ]
+}
