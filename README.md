@@ -7,7 +7,7 @@
 ## 克隆后如何阅读
 
 ```bash
-git clone git@gitcode.com:m0_55516326/docs.git
+git clone git@github.com:bitianyuan123/docs.git
 cd docs
 ```
 
