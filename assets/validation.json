@@ -4,14 +4,14 @@
   "real_data_reverification_requested": false,
   "ok": true,
   "checks": {
-    "documents": 18,
-    "local_links": 245,
-    "mermaid_blocks": 55,
+    "documents": 19,
+    "local_links": 355,
+    "mermaid_blocks": 56,
     "five_views_present_in_all_module_documents": true,
-    "json_files": 52,
+    "json_files": 53,
     "copied_assets_verified": 15,
     "vendor_assets_verified": 4,
-    "source_snapshot_files_verified": 40,
+    "source_snapshot_files_verified": 67,
     "stored_history_evidence": {
       "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
       "compared_with_archived_request": true
@@ -25,6 +25,21 @@
       "values_match_stored_evidence": true,
       "onetrans_id_only_contract": true,
       "no_model_outputs_or_deployment_claim": true
+    },
+    "redis_workload_accounting": {
+      "matches_current_sample": true,
+      "scope": "RESP2教学样例；候选仅字段投影；未执行Redis",
+      "totals": {
+        "key_count": 21,
+        "found_count": 20,
+        "missing_count": 1,
+        "json_value_bytes": 4721,
+        "key_bytes": 918,
+        "resp2_request_bytes": 1122,
+        "resp2_reply_bytes": 4903,
+        "mget_commands_single_instance_without_splitting": 4,
+        "resp2_both_directions_bytes": 6025
+      }
     },
     "illustrative_walkthrough": {
       "kind": "illustrative_data_consistency_only",

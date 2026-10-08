@@ -1,0 +1,110 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/common/tensor.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/common/tensor.cpp</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>2a26a5d9e890d267a6efba710e230f87c84c49c85a2f17062c8dd4e382e189ee</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;common/tensor.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;cmath&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#include &lt;sstream&gt;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a></span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#include &quot;common/json.h&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#include &quot;common/sha256.h&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>namespace onetrans {</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>void matmul_nt(const float* x, const float* w, float* y, int64_t n, int64_t in, int64_t out) {</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>    for (int64_t r = 0; r &lt; n; ++r) {</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>        const float* xr = x + r * in;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>        float* yr = y + r * out;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>        for (int64_t o = 0; o &lt; out; ++o) {</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>            const float* wo = w + o * in;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>            float acc = 0.0f;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>            for (int64_t i = 0; i &lt; in; ++i) acc += xr[i] * wo[i];</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>            yr[o] = acc;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>        }</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>    }</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>}</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>void rms_norm(const float* x, const float* g, float* out, int64_t rows, int64_t dim, float eps) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    for (int64_t r = 0; r &lt; rows; ++r) {</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>        const float* xr = x + r * dim;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>        float* orow = out + r * dim;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>        float ms = 0.0f;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>        for (int64_t i = 0; i &lt; dim; ++i) ms += xr[i] * xr[i];</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>        ms /= static_cast&lt;float&gt;(dim);</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>        float inv = 1.0f / std::sqrt(ms + eps);</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>        for (int64_t i = 0; i &lt; dim; ++i) orow[i] = xr[i] * inv * g[i];</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    }</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>}</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>// ArtifactStore</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a></span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>static int64_t json_as_int(const JsonValue&amp; v) { return static_cast&lt;int64_t&gt;(v.as_number()); }</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>void ArtifactStore::load(const std::string&amp; dir, const std::string&amp; bin_file) {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    std::ifstream mf(dir + &quot;/&quot; + &quot;manifest.json&quot;);</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    if (!mf) throw std::runtime_error(&quot;manifest.json 打开失败: &quot; + dir);</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>    std::stringstream ss;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    ss &lt;&lt; mf.rdbuf();</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    JsonValue root = json_parse(ss.str());</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    const JsonValue&amp; c = root.at(&quot;config&quot;);</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    cfg_.d_model = static_cast&lt;int&gt;(json_as_int(c.at(&quot;d_model&quot;)));</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    cfg_.num_heads = static_cast&lt;int&gt;(json_as_int(c.at(&quot;num_heads&quot;)));</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    cfg_.num_blocks = static_cast&lt;int&gt;(json_as_int(c.at(&quot;num_blocks&quot;)));</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    cfg_.max_seq_len = static_cast&lt;int&gt;(json_as_int(c.at(&quot;max_seq_len&quot;)));</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    cfg_.min_seq_len = static_cast&lt;int&gt;(json_as_int(c.at(&quot;min_seq_len&quot;)));</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    cfg_.ns_tokens_num = static_cast&lt;int&gt;(json_as_int(c.at(&quot;ns_tokens_num&quot;)));</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    cfg_.use_cls_token = c.at(&quot;use_cls_token&quot;).as_bool();</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    for (const auto&amp; v : c.at(&quot;dims&quot;).as_array()) cfg_.dims.push_back(json_as_int(v));</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    cfg_.rms_eps = c.at(&quot;rms_eps&quot;).as_number();</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    cfg_.seq_in_dim = static_cast&lt;int&gt;(json_as_int(c.at(&quot;seq_in_dim&quot;)));</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>    for (const auto&amp; v : c.at(&quot;ns_group_dims&quot;).as_array()) cfg_.ns_group_dims.push_back(json_as_int(v));</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    cfg_.num_items = static_cast&lt;int&gt;(json_as_int(c.at(&quot;num_items&quot;)));</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    cfg_.num_users = static_cast&lt;int&gt;(json_as_int(c.at(&quot;num_users&quot;)));</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    cfg_.num_artists = static_cast&lt;int&gt;(json_as_int(c.at(&quot;num_artists&quot;)));</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    cfg_.num_albums = static_cast&lt;int&gt;(json_as_int(c.at(&quot;num_albums&quot;)));</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    cfg_.n_user_dense = static_cast&lt;int&gt;(json_as_int(c.at(&quot;n_user_dense&quot;)));</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    cfg_.n_cand_dense = static_cast&lt;int&gt;(json_as_int(c.at(&quot;n_cand_dense&quot;)));</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    const JsonValue&amp; pw = c.at(&quot;piecewise&quot;);</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    cfg_.piecewise_n_features = static_cast&lt;int&gt;(json_as_int(pw.at(&quot;n_features&quot;)));</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    cfg_.piecewise_max_n_bins = static_cast&lt;int&gt;(json_as_int(pw.at(&quot;max_n_bins&quot;)));</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    for (const auto&amp; v : pw.at(&quot;n_bins&quot;).as_array()) cfg_.piecewise_n_bins.push_back(json_as_int(v));</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    const JsonValue&amp; tensors = root.at(&quot;tensors&quot;);</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    for (const auto&amp; [name, meta] : tensors.as_object()) {</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>        TensorMeta m;</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>        m.name = name;</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>        for (const auto&amp; v : meta.at(&quot;shape&quot;).as_array()) m.shape.push_back(json_as_int(v));</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>        m.offset = json_as_int(meta.at(&quot;offset&quot;));</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>        metas_.push_back(std::move(m));</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    }</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    std::ifstream bf(dir + &quot;/&quot; + bin_file, std::ios::binary);</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    if (!bf) throw std::runtime_error(bin_file + &quot; 打开失败: &quot; + dir);</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    bf.seekg(0, std::ios::end);</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    auto size = static_cast&lt;std::streamoff&gt;(bf.tellg());</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    bf.seekg(0, std::ios::beg);</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    blob_.resize(static_cast&lt;size_t&gt;(size) / sizeof(float));</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    bf.read(reinterpret_cast&lt;char*&gt;(blob_.data()), size);</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>}</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a></span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>bool ArtifactStore::has(const std::string&amp; name) const {</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    for (const auto&amp; m : metas_)</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>        if (m.name == name) return true;</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    return false;</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>}</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a></span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>const TensorMeta&amp; ArtifactStore::meta(const std::string&amp; name) const {</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    for (const auto&amp; m : metas_)</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>        if (m.name == name) return m;</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    throw std::runtime_error(&quot;未知张量: &quot; + name);</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>}</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>Tensor ArtifactStore::get(const std::string&amp; name) const {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    const TensorMeta&amp; m = meta(name);</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>    Tensor t(m.shape);</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    int64_t n = t.numel();</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    std::copy(blob_.begin() + m.offset, blob_.begin() + m.offset + n, t.data.begin());</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    return t;</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>}</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a></span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>}  // namespace onetrans</span></pre></html>

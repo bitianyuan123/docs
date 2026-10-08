@@ -1,379 +1,291 @@
 # 特征服务与数据发布：4+1 视图
 
-图中符号与连线遵循[图法与 UML 约定](DIAGRAM_NOTATION.md)，每张图前注明使用的图法。
+**FeatureService 是目标中的独立特征查询服务，目前尚未完成实现和整体验收。** PaiRec 查询公共输入后传给召回服务；生成服务只在生成新编码后直接反查物品 ID。只有特征服务和离线装载工具连接在线特征库，计算服务不自行读取该库。
 
-**目标是独立的特征服务 `FeatureService`：PaiRec 和计算服务通过业务接口取特征，只有特征服务访问在线特征库。** 用户画像、物品画像、用户历史，以及由它们产生的用户向量、兴趣词项、物品语义编码，统一由该服务查询。模型权重、参数表和一次推理产生的注意力状态分别归模型服务、参数服务和 DataSystem 管理。
+本轮保留 OneTrans 的现有路径：`/ingest` 接收现有历史提供器的数据，`/rank` 从已装载的本地 TSV 取用户和物品特征，模型向量从参数服务取。它不因此成为 FeatureService 的调用方，详见 [OneTrans](02_onetrans.md)。模型参数和 DataSystem 的注意力状态也不属于本章的业务特征。
 
-本轮保留一个明确例外：**OneTrans 的数据路径按现有代码描述，不以接入特征服务为前提。** 它接收 `/ingest` 传入的历史，`/rank` 从本地已装载的 TSV 数据装配用户和候选特征，参数向量从参数服务查询。具体字段、顺序和缺失行为见 [OneTrans 文档](02_onetrans.md)。理想状态下其他排序模型也应使用特征服务，但不能把这个原则写成 OneTrans 已实现的事实。
+本文按[系统五视图的划分](01_system.md)描述职责、代码、执行、部署和用例。字段与 key/value 的完整定义见[数据字典](10_feature_catalog.md)；一批查询怎样产生 Redis 与操作系统负载，见[Redis 执行与负载分析](11_redis_workload.md)。图法遵循[统一约定](DIAGRAM_NOTATION.md)。
 
 ```yaml
-design_status: 目标设计，独立FeatureService及完整数据发布链仍需开发
-feature_service: 独立进程，可部署多个副本
-public_protocol: 原生bRPC业务接口
-database_protocol: FeatureService到Redis使用RESP
-pairec_database_access: 通过FeatureServiceClient，不直接连接Redis
-feature_schema: feature_v1
-request_version: 整个请求固定release_id
-onetrans_this_round: 按实际代码使用本地特征文件、外部传入历史、模型参数服务
+status: 目标设计
+service_protocol: 原生bRPC
+storage_protocol: Redis RESP
+record_format: Redis String内保存UTF-8 JSON
+consistency: 每个推荐请求固定release_id；发布记录不可变
+online_storage: 一类在线特征库；单实例或集群尚未确定
+physical_placement: Pod和容器边界为目标；副本、主机和资源配额待定
 ```
 
-每种键和值、字段类型、生产者、更新与缺失规则见 [特征数据库与接口字典](10_feature_catalog.md)。本文说明服务职责及运行方式。
+## 1. 逻辑视图：查询能力、记录和一致性规则
 
-## 1. 逻辑视图：统一查询业务数据，计算仍归各模型
+### 1.1 服务内部的职责依赖
 
-### 1.1 在线职责
-
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：逻辑结构示意图（非 UML）。箭头从需要能力的职责指向提供方，**不表示读取顺序、网络调用或源码导入**。图中各节点均是特征服务内部的业务职责。
 
 ```mermaid
 flowchart LR
-    A[读取用户画像与行为历史] --> D[检查版本与字段]
-    B[读取用户向量与兴趣词项] --> D
-    C[按物品ID读取画像与派生表示] --> D
-    D --> E[按请求字段返回结果]
-    D --> F[明确报告缺失或错误]
+    U[用户上下文查询] --> R[版本化记录查找]
+    I[候选属性查询] --> R
+    S[物品编码正反查] --> R
+    U --> V[发布与字段规则]
+    I --> V
+    S --> V
+    U --> A[结果身份与缺失对齐]
+    I --> A
+    S --> A
 ```
 
-| 业务数据集合 | 存什么 | 首期是否需要 | 使用方式 |
+| 查询职责 | 业务接口 | 输入与输出 | 不承担的职责 |
 |---|---|---|---|
-| 用户画像 | 用户 ID、性别编码、年龄分组编码、字段缺失标志 | 是 | PaiRec 按用户查询；需要这些字段的模型由 PaiRec 转交 |
-| 物品画像及统计 | 原始物品 ID、视频长短类型、曝光和交互统计、来源与缺失标志 | 是 | 候选产生后批查，供可用性检查、人工规则和重排 |
-| 用户行为历史 | 有序物品 ID、有效长度、序列位置、历史内容校验值 | 是 | 同一份历史供召回；需要时转交计算服务 |
-| 派生表示与兴趣 | DSSM 用户向量、稀疏兴趣词项、物品 SID 及反向关联 | 是 | 在线查询已经算好的结果；离线重新计算后发布 |
-| 上下文、交叉特征、实时统计 | 设备/场景、用户与物品交互计数、窗口统计 | 有真实数据与业务需求后扩展 | 请求自带的上下文直接传递；只有需要查询的部分入库 |
+| 用户上下文查询 | `GetUserContext` | 用户 ID、所需数据类别和表示版本 → 用户属性、原历史、预计算向量、兴趣词项 | 不在线重跑 DSSM，不替调用方选择另一份历史 |
+| 候选属性查询 | `BatchGetItemFeatures` | 物品 ID 列表、字段名 → 按原位置返回属性、统计或缺失 | 不决定候选是否可推荐，不给模型打分 |
+| 物品编码正反查 | `BatchGetItemRepresentations` | 原始 ID → SID，或 SID → 原始 ID 列表 | 不执行生成模型，不把一对多关系覆盖成一个物品 |
+| 版本化记录查找 | 内部能力 | 发布版本、业务身份 → 对应记录 | 不向调用方暴露任意 Redis 键查询 |
+| 发布与字段规则 | 内部能力 | 清单、请求和记录 → 可用性与一致性判断 | 不把格式错误或版本错误归为数据不存在 |
+| 结果身份与缺失对齐 | 内部能力 | 输入次序、读回结果 → 等长、同序的业务结果 | 不删掉缺失位置而导致 ID 错位 |
 
-这里是 **4 类核心业务数据集合**，不表示需要 4 个数据库。为适应按 ID 查询与按语义编码反查，在线分成 `user`、`history`、`item`、`user_rep`、`item_rep`、`sid_map` 六组业务键；发布清单另属管理数据。
+`SID` 是生成模型使用的物品语义编码。正查为 `item_id → semantic_id`，反查为 `semantic_id → item_ids[]`。用户表示是已经计算好的业务值；模型 embedding 参数表则属于参数服务，两者不能因为都是向量就合并管理。
 
-```text
-在线特征库：Redis，保存可按用户、物品或SID查询的业务值。
-离线持久数据：源文件、清洗结果、特征快照、发布清单，保存在文件卷或对象存储。
+### 1.2 服务所管理的业务记录
 
-Milvus / OpenSearch：检索索引，由离线产物装载，在线执行召回查询。
-模型参数服务：保存模型embedding参数和其他权重。
-DataSystem：保存一次模型计算产生的注意力状态。
-```
+| 逻辑数据集合 | 保存的信息 | 生产与使用责任 |
+|---|---|---|
+| 用户属性 | 原始用户 ID、性别和年龄分组编码、字段缺失标志 | 离线清洗生产；PaiRec 按需转交模型 |
+| 用户历史 | 有序物品 ID、有效长度、序位与历史摘要 | 离线固定同源历史；召回使用，不虚构事件时间 |
+| 物品属性与统计 | 类型、曝光和交互统计、来源及缺失标志 | 离线聚合；PaiRec 用于候选资格与重排 |
+| 派生表示与关联 | 用户向量、兴趣词项、物品 SID、SID 反向关联 | 固定模型或配方离线生产；在线按业务身份查询 |
 
-向量索引中保存物品向量，是为了近邻检索；它不取代物品画像查询。索引需要的全量表示由离线流程批量装载，不在每次推荐时经过 PaiRec 搬运。离线算出的 **用户向量属于特征**；按训练 ID 查询的 **模型 embedding 表属于参数**。同样，`item_id → SID` 是模型版本绑定的物品派生表，通过特征服务查询；生成模型的码本、分词器和引擎仍是模型资产。
+这是四类业务数据，不是四套数据库。在线键组为 `user/history/item/user_rep/item_rep/sid_map`，发布清单为管理数据。设备信息等请求上下文直接传递；源数据没有的地域、库存或实时窗口统计不补造。
 
-### 1.2 离线职责
+离线生产负责生成这些记录与索引装载文件；发布管理负责核对资产是否齐全、何时允许新请求使用。特征服务只读取已批准的发布版本。Milvus 和 OpenSearch 的全量索引由离线装载，不能逐请求经特征服务搬运整张物品表。
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+## 2. 开发视图：静态依赖与交付产物
 
-```mermaid
-flowchart LR
-    A[校验原始记录] --> B[生成画像与固定历史]
-    B --> C[计算统计与派生表示]
-    C --> D[装载特征与检索索引]
-    D --> E[读回校验与发布]
-```
-
-离线生产与在线特征查询共用同一字段定义和发布清单。Tenrec 是离线数据来源，不是在线推荐阶段逐请求扫描的数据库。
-
-## 2. 开发视图：业务客户端、服务实现和存储适配分开
-
-图法：模块关系示意图（非 UML，连线含义见本节）。
+图法：源码依赖示意图（非 UML）。箭头表示导入或编译依赖；图中没有网络调用。模块名是目标代码职责，不声称仓库已有同名目录。
 
 ```mermaid
 flowchart LR
-    subgraph Caller[调用方代码]
-        P[PaiRec特征客户端]
-        C[确有专属查询的子服务客户端]
-    end
-    subgraph Server[特征服务代码]
-        H[业务接口处理器]
-        V[字段与版本检查]
-        Q[批量读取与结果对齐]
-        R[Redis访问适配]
-        H -->|进程内调用| V
-        V -->|进程内调用| Q
-        Q -->|进程内调用| R
-    end
-    P -->|原生bRPC| H
-    C -->|原生bRPC| H
-    S[共享接口定义] -.->|提供类型定义| P
-    S -.->|提供类型定义| C
-    S -.->|提供类型定义| H
+    C[调用方特征客户端源码] --> P[公共接口与记录定义]
+    C --> B[原生bRPC运行库]
+    H[特征服务处理器源码] --> P
+    H --> Q[查询与一致性检查源码]
+    H --> B
+    Q --> P
+    Q --> R[Redis访问适配源码]
+    R --> D[Redis协议客户端库]
+    L[离线生产与装载源码] --> P
+    L --> D
 ```
+
+原生 bRPC 运行库提供服务端接入和客户端调用能力。调用方客户端只依赖业务类型和 RPC 库，不导入 Redis 适配或键名拼装代码。
+
+| 可开发的代码范围 | 交付物 | 需要保持的契约 |
+|---|---|---|
+| 公共接口与记录定义 | protobuf、生成代码、记录与发布清单规范 | 三个接口、版本头、缺失状态、两种编码查询方向 |
+| 特征客户端 | PaiRec 与生成服务各自使用的客户端封装 | 传递同一版本及剩余时间；不暗中直连 Redis |
+| 服务处理器及查询逻辑 | 独立 FeatureService 程序 | 限流、有界批查、字段检查、同序结果与错误传播 |
+| Redis 访问适配 | 链接到服务的库或代码模块 | String/JSON 解码、连接复用、批次限制；需要集群时增加路由 |
+| 离线生产与装载 | 可重放工具、特征快照、模型表示产物、清单 | 同一源范围、字段配方及表示版本；完整读回验证后发布 |
+| 运维与场景配置 | 可审阅的配置文件 | 地址、时间预算、批次上限、发布绑定、恢复策略 |
+
+接口骨架如下，完整字段不在本章重复，见[接口字典](10_feature_catalog.md)。
 
 ```typescript
-// 目标接口草案，不代表当前工程已有这些服务方法。
-type RequestMeta = {
-  request_id: string;
-  release_id: string;             // 绑定源数据、特征与依赖资产
-  schema_version: "feature_v1";
-  remaining_timeout_ms: number;   // 每一跳继续扣除，不能重置
-};
-type ResponseMeta = {
-  request_id: string;
-  release_id: string;
-  schema_version: "feature_v1";
-};
-type UserViewName = "USER" | "HISTORY" | "DENSE_QUERY" | "SPARSE_QUERY";
-type ViewStatus = "FOUND" | "NOT_FOUND" | "NOT_REQUESTED";
+interface FeatureService {
+  GetUserContext(request: UserContextRequest): UserContextResult;
+  BatchGetItemFeatures(request: ItemFeatureRequest): ItemFeatureBatch;
+  BatchGetItemRepresentations(request: RepresentationRequest): ItemRepresentationBatch;
+}
+
+// 两种查询字段只能选一组；两种响应都保持原输入次序。
 type RepresentationLookup =
   | { lookup_by: "raw_item_id"; item_ids: string[] }
   | { lookup_by: "semantic_id"; semantic_ids: number[][] };
 
-interface FeatureService {
-  GetUserContext(request: RequestMeta & {
-    user_id: string;
-    required_views: UserViewName[];
-    representation_versions: {
-      embedding_space_id?: string;
-      sparse_recipe_id?: string;
-    };
-  }): UserContextResult;
-
-  BatchGetItemRepresentations(request: RequestMeta & RepresentationLookup & {
-    sid_version: string;
-  }): ItemRepresentationBatch;
-
-  BatchGetItemFeatures(request: RequestMeta & {
-    item_ids: string[];
-    fields: string[];             // 来自发布字段清单，不接受任意Redis键
-  }): ItemFeatureBatch;
-}
-
-// UserProfile等业务记录的完整字段见第10篇数据字典。
-type UserContextResult = ResponseMeta & {
-  view_status: Record<UserViewName, ViewStatus>; // 四个状态始终返回
-  user: UserProfile | null;
-  history: UserHistory | null;
-  dense_query: DenseUserRepresentation | null;
-  sparse_query: SparseUserRepresentation | null;
-};
 type ItemResult<T> = {
   item_id: string;
   status: "FOUND" | "NOT_FOUND";
-  value: T | null;                // FOUND有值，NOT_FOUND为null
+  value: T | null;
 };
-type SemanticIdResult = {
-  semantic_id: number[];
-  status: "FOUND" | "NOT_FOUND";
-  item_ids: string[];             // 一个SID可能关联多个原始物品，不能覆盖丢失
-};
-type ItemFeatureBatch = ResponseMeta & {
-  results: ItemResult<Partial<ItemFeatures>>[];  // value只含请求的业务字段
-};
-type ItemRepresentationBatch = ResponseMeta & { sid_version: string } & (
-  | { lookup_by: "raw_item_id"; results: ItemResult<ItemSemanticRepresentation>[] }
-  | { lookup_by: "semantic_id"; results: SemanticIdResult[] }
-);
-// Batch结果与输入同顺序、同长度，保留重复ID的原位置。
-// 超时、解析失败、版本不符是调用错误，不能伪装成NOT_FOUND。
 ```
 
-`GetUserContext` 把用户画像、历史及所需用户表示组成一次业务响应。底层可读取多个键；客户端不需要知道 Redis 的键名。`user_rep.history_hash` 必须等于本次返回历史的 `history_hash`，避免“新历史配旧向量”。
+现有代码只能作为能力与缺口证据：已有[用户前置加载注册](assets/source_snapshots/pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go.html#L243)；现有 [Redis 客户端](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L5)使用连接池，但其 [MGET 回复解析](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L136)把一个数组回复误按多条顶层回复读取。独立服务、装载发布和集群适配仍需开发，不能直接把旧客户端包装成“已完成的特征服务”。
 
-响应的四个 `view_status` 与四个数据字段一一对应：找到记录为 `FOUND` 并返回记录；请求了但不存在为 `NOT_FOUND`、数据为 `null`；没有请求为 `NOT_REQUESTED`、数据同样为 `null`。PaiRec 检查 `required_views` 中每项都为 `FOUND` 后，才读取 `user_context.history.item_ids` 等业务字段。记录内某个属性未知仍属于 `FOUND`，由该记录的 `missing_fields` 表达；版本或解析错误则整次调用失败。
+## 3. 进程视图：请求并发、等待与发布切换
 
-`BatchGetItemRepresentations` 有两种明确查询方向：PaiRec 在生成召回前用历史物品 ID 查 SID；生成服务推理后用 SID 反查原始 ID。两者都绑定 `release_id/sid_version`，访问不同数据，不属于重复查询。首期历史正查任一项缺失即报告原始 ID 并使生成分支失败；生成输出反查缺失则记录该 SID，不产生候选，全部缺失时返回真实空候选。`BatchGetItemFeatures` 则在候选融合后查询物品画像与统计。
+### 3.1 在线请求怎样执行
 
-业务客户端可以复用公共代码，但它只是 RPC 客户端，不在 PaiRec 进程内替换成 Redis 读取模块。
+下表是**目标执行方案**，不是从现有 FeatureService 源码测得的线程结构。首期采用独立 C++ bRPC 服务；处理任务由运行库调度，Redis 连接长期复用并限制在途请求。具体操作系统线程数、连接数和字节上限在部署与测量后确定。
 
-## 3. 进程视图：两个取数阶段，正常样例有四次特征 RPC
+| 执行者或状态 | 工作 | 并发与等待 |
+|---|---|---|
+| bRPC 接入与处理任务 | 解码接口、固定请求期限、调用查询逻辑 | 多请求并行；不得为每个 Redis 键创建一个线程 |
+| Redis 客户端与连接池 | 路由、发送批量命令、匹配回复 | 等连接或回复时挂起相应任务；不把任务等待等同于占满一个 CPU 核 |
+| 请求私有结果 | 保存输入顺序、唯一 ID 与读回映射 | 请求间不共享可变结果数组；一请求内可以合并重复 ID |
+| 发布清单快照 | 提供版本、字段和表示规则 | 请求绑定一份只读快照；切换不改写已进入请求的版本 |
+| Redis 服务进程 | 处理实际读命令并返回值 | 与特征服务独立执行；内部线程机制和版本差异见第 11 篇 |
 
-### 3.1 一次推荐请求的在线取数
-
-图法：UML 时序图。 PaiRec 代表含并行子任务的编排进程，各分支内同步等待，分支之间可以交错。
+图法：UML 时序图。甲、乙是特征服务中的两个独立请求任务，连接池是同进程组件。`par` 表示客户端任务可交错，**不表示一个 Redis 实例同时执行两条 MGET 的键查找**。
 
 ```mermaid
 sequenceDiagram
-    participant P as PaiRec编排
-    participant F as 特征服务
-    participant R as Redis
-    participant D as 向量召回
-    participant S as 稀疏召回
-    participant G as 生成式召回
-    P->>F: GetUserContext：用户1、release、所需表示版本
-    F->>R: 批读用户、历史、用户表示
-    R-->>F: 对应键值或缺失槽位
-    F->>F: 校验版本、字段、history_hash
-    F-->>P: 用户画像、历史、用户向量、兴趣词项
-    par 向量召回
-        P->>D: 用户向量、向量空间版本、候选数
-        D-->>P: 原始物品ID和向量相似度
-    and 稀疏召回
-        P->>S: 兴趣词项及权重、候选数
-        S-->>P: 原始物品ID和文本匹配分数
-    and 生成召回
-        P->>F: BatchGetItemRepresentations：历史ID查SID
-        F->>R: 批读物品语义编码
-        R-->>F: 按输入位置返回编码或缺失
-        F-->>P: 历史SID、逐物品覆盖结果
-        P->>G: 历史SID、生成参数、release与SID版本
-        G->>G: 模型推理产生SID序列
-        G->>F: BatchGetItemRepresentations：生成SID反查原始ID
-        F->>R: 批读SID反向关联
-        R-->>F: 每个SID对应的原始ID列表
-        F-->>G: 同版本合法原始ID与缺失结果
-        G-->>P: 确定性去重和限量后的原始物品ID
+    participant A as 特征任务甲
+    participant B as 特征任务乙
+    participant C as 同进程连接池
+    participant R as Redis服务
+    par 请求甲
+        A->>C: acquire(remaining_timeout_ms)
+        C-->>A: 可用连接
+        A->>R: MGET user/history/user_rep对应4键
+        R-->>A: 单个数组回复，含4个位置
+        A->>C: release(connection)，本批RESP读取完成
+        A->>A: 解码；核对版本与history_hash
+    and 请求乙
+        B->>C: acquire(remaining_timeout_ms)
+        C-->>B: 可用连接
+        B->>R: MGET 本请求候选物品键
+        R-->>B: 同序值与缺失位置
+        B->>C: release(connection)，本批RESP读取完成
+        B->>B: 恢复原ID次序，投影所需字段
     end
-    P->>P: 召回合并、去重与已看过滤
-    P->>F: BatchGetItemFeatures：候选ID、所需物品字段
-    F->>R: 有界批读物品画像与统计
-    R-->>F: 与键对应的值或缺失
-    F-->>P: 同序逐ID特征、缺失ID
-    P->>P: 检查候选可用性，执行精排和重排
 ```
 
-“两个阶段”指 **召回准备与执行** 和 **候选产生后**。这个正常样例中，PaiRec 有三次特征 RPC，生成服务有一次反向查询，共四次；每次内部还可能按条数、字节上限或 Redis 分片拆成多批读取。不能用“两阶段取数”推导固定的两次网络调用。
-
-图中最后的精排仍走当前 OneTrans 数据路径：PaiRec 给 `/rank` 用户 ID 和候选 ID，OneTrans 自行使用已装载的本地特征。新取得的候选特征用于 PaiRec 的可用性检查和重排，不能声称已进入 OneTrans。历史预计算与精排时序见 [完整请求流程](08_request_walkthrough.md)。
-
-### 3.2 特征服务内部的批量处理
+图展示两个请求都取得连接的成功分支。连接池耗尽时在剩余期限内等待；超时则终止本批，不能仍然继续发送。连接是否支持多个批次同时在途取决于选定客户端；必须保证回复对应正确，不把连接数当成线程数或 Redis 执行并行度。
 
 ```python
 def batch_get_items(request):
     manifest = require_ready_release(request.release_id)
     require_known_fields(manifest, request.fields)
-    check_request_limits(request.item_ids, request.remaining_timeout_ms)
+    check_deadline_and_limits(request)
     unique_ids = stable_unique(request.item_ids)
     keys = [item_key(request.release_id, item_id) for item_id in unique_ids]
-
-    # 单实例可MGET；集群按分片/哈希槽分组读取，再合并。
-    # 拆批依据字节数、条数、剩余时间；缺失仍占原位置。
-    values_by_id = read_and_validate_batches(keys, unique_ids, manifest)
-    return [result_for(item_id, values_by_id) for item_id in request.item_ids]
+    # 内部按条数、字节量及Redis路由拆批；每批继续扣除同一期限。
+    records_by_id = read_validate_and_decode(keys, unique_ids, manifest)
+    return [project_result(item_id, records_by_id, request.fields)
+            for item_id in request.item_ids]
 ```
 
-缺用户整键、缺历史整键与“存在用户，但真实历史为空”是三种不同情况。首期完整数据场景缺少必需视图就明确失败；冷启动必须单独声明规则。物品整键缺失可按场景丢弃该候选并报告；物品存在但视频类型未知时保留 `null`，不能擅自变成类型 `0`。
+`FOUND` 表示整条记录存在，记录内属性未知由 `null/missing_fields` 表达；`NOT_FOUND` 保留原位置。网络、超时、版本或 JSON 解析错误均是调用失败。用户上下文四项数据和四项状态始终返回，未请求项为 `NOT_REQUESTED`。Redis 的批命令及 `nil` 的具体解释见[执行分析](11_redis_workload.md)。
 
-### 3.3 离线装载与发布
+### 3.2 离线作业与在线版本怎样同步
 
-图法：UML 时序图。
+图法：UML 时序图。装载与查询是不同执行者；发布验收完成前，新版本不能被在线请求选中。
 
 ```mermaid
 sequenceDiagram
-    participant B as 离线构建进程
-    participant M as 模型表示生产进程
-    participant L as 装载进程
-    participant V as 发布校验进程
-    participant F as 特征服务
-    B->>B: 校验源文件，固定用户与历史，聚合物品统计
-    B->>M: 同一快照的用户、历史、物品
-    M-->>B: 真实用户向量、物品SID、索引资产
-    B->>L: 装载上述模型产物及用户、历史、物品、来源记录
-    L->>L: 装载新release的Redis键及检索索引
-    L->>V: 清单、实际数量、错误与校验值
-    V->>V: 读回、版本、ID覆盖与索引关联检查
-    V-->>L: 校验通过
-    L-->>B: 本次装载完成
-    B->>F: 发布READY清单
-    F->>F: 允许绑定此release的新请求
-    F-->>B: 发布结果
+    participant B as 离线构建作业
+    participant L as 装载作业
+    participant R as Redis与检索存储
+    participant V as 发布验收作业
+    participant F as 在线特征服务
+    B->>B: 清洗、聚合；导出真实向量与物品编码
+    B->>L: 新release的特征、索引文件与清单
+    L->>R: 按新版本装载，不覆盖旧版本
+    R-->>L: 装载结果
+    L->>V: 数量、校验值、错误与资产清单
+    V->>R: 读回与覆盖检查
+    R-->>V: 记录、数量与关联结果
+    V->>F: 经批准的READY发布清单
+    F->>F: 新请求可选新版本；旧请求保持原版本
+    F-->>V: 清单启用结果
 ```
 
-```python
-release = create_release(source_hash, declared_row_scope, recipe_hash)
-stream_validate_and_aggregate_tenrec(release)
-export_real_user_vectors_and_item_semantic_ids(release)
-load_feature_keys_without_expiry(release)
-load_versioned_retrieval_indexes(release)
-validate_counts_readback_history_hash_and_id_coverage(release)
-mark_ready_if_all_required_assets_pass(release)
-# 数据与模型产物未齐全：保持BUILDING或FAILED，不发布伪造向量/SID。
-```
+用户属性、历史和派生表示必须出自同一发布；用户表示的 `history_hash` 与历史摘要一致。各存储没有共同事务，采用“完整装载 → 读回验收 → READY → 切换新请求”的发布流程。旧请求结束并满足保留策略后，才分批回收旧键。数据或模型资产不齐全时保留 `BUILDING/FAILED`，不填随机向量或 SID。
 
-采用不可变快照；修改特征配方或模型表示后发布新 `release_id`。切换只影响新请求，旧请求继续使用旧版本；旧请求结束后再回收旧键。未来实时更新需要增加事件来源与版本规则，本轮不将 Tenrec 的序列位置解释成事件时间。
+## 4. 物理视图：Pod、容器、进程与持久数据
 
-## 4. 物理视图：一个在线数据库类别，不是一种特征一套库
-
-图法：部署映射示意图（非 UML，连线含义见本节）。
+图法：部署映射示意图（非 UML）。外框是目标 Pod，内部节点明确容器与进程；双向实线表示网络连通要求。**不同 Pod 不代表位于不同主机**；同一 Pod 内的容器属于同一节点，实际主机映射与副本数未定。
 
 ```mermaid
 flowchart LR
-    subgraph Online[在线应用部署]
-        P[PaiRec进程]
-        C[有专属查询的子服务进程]
-        F[FeatureService进程，可多副本]
+    subgraph PPod[Pod：推荐编排 / 系统图引用]
+        P[容器：PaiRec<br/>进程：推荐程序]
     end
-    subgraph Store[在线特征存储]
-        R[(Redis实例或集群)]
-        V[(持久化卷或可重载快照)]
-        R --- V
+    subgraph GPod[Pod：生成召回 / 系统图引用]
+        G[容器：生成召回<br/>进程：生成服务]
     end
-    subgraph Offline[离线数据环境]
-        A[构建与装载进程]
-        O[(源数据和版本化产物)]
-        O --> A
+    subgraph FPod[Pod：特征服务]
+        F[容器：特征服务<br/>进程：FeatureService]
     end
-    P -->|原生bRPC| F
-    C -->|原生bRPC，按需| F
-    F -->|Redis RESP| R
-    A -->|装载新版本| R
+    subgraph RPod[Pod：Redis / 每实例一种部署单元]
+        R[容器：Redis<br/>进程：redis-server]
+    end
+    subgraph LPod[作业Pod：离线装载 / 目标安排]
+        L[容器：装载工具<br/>进程：特征装载程序]
+    end
+    P <-->|业务bRPC| F
+    G <-->|编码反查bRPC| F
+    F <-->|Redis RESP| R
+    L <-->|装载与读回| R
 ```
 
-| 物理存储类别 | 首期配置 | 保存内容 |
+| 使用方 | 所需资源 | 尚待确定 |
 |---|---|---|
-| 在线键值数据库 | 一套 Redis；按容量选择单实例或集群 | 六组业务键、发布元数据；命名空间隔离 |
-| 离线持久存储 | 一套文件卷或对象存储 | Tenrec 源文件、清洗产物、特征快照、模型和索引装载文件、发布清单 |
-| 可选离线分析数据库 | 首期不必引入 | 数据规模或日常分析需求增加后，用于生产聚合与追溯 |
+| FeatureService 容器 | 程序、服务配置、接口/记录版本、发布清单 | CPU/内存配额、任务并发、连接与批次上限、副本数 |
+| Redis 容器 | 内存数据集；按恢复方案提供持久目录或重载入口 | 版本、单实例/集群、主从关系、持久化模式、存储后端、资源配额 |
+| 离线构建与装载作业 | Tenrec 源文件、特征快照、模型产物、装载清单 | 作业容器配置、文件卷或对象存储、运行窗口 |
+| 调用方容器 | 特征服务地址、场景与表示版本 | 连接参数和整体请求期限 |
 
-因此首期是 **两类存储，其中只有一类在线特征数据库**。无需为画像、历史、统计分别部署数据库，也无需单独引入关系库管理少量发布清单。检索索引、模型参数服务和 DataSystem 是系统的其他存储职责，不能算成三种用户特征库。
+首期仍是**两类存储**：Redis 在线特征库，加文件卷或对象存储中的离线持久产物。六组业务键不要求六个数据库；发布清单也无需另建关系库。若采用 Redis Cluster，上图 Redis Pod 按实例展开，不能把多个节点藏成一个进程，细节待选定部署后补齐。
 
 ```yaml
-redis_storage:
-  type: String
-  value_encoding: UTF-8 JSON
-  namespaces: user / history / item / user_rep / item_rep / sid_map / release
-  ttl_for_snapshot_keys: 不设置过期；按release整体回收
-  recovery: 持久化恢复或从同版本快照重新装载
-release_manifest:
-  identity: release_id、schema_version、源文件hash、行范围、字段配方hash
-  coverage: 用户/历史/物品数量、仅历史物品、缺失分布、派生表示覆盖
-  representations: checkpoint、embedding_space_id、sid_version、sparse_recipe_id
-  indexes: 对应Milvus collection、OpenSearch index、实际装载数量
-  publication: BUILDING / READY / FAILED，回滚目标，读回校验结果
+snapshot_records:
+  redis_type: String
+  encoding: UTF-8 JSON
+  expiry: 不设逐键TTL；停用release后分批回收
+recovery_options_to_choose:
+  - Redis持久化恢复，再核对READY资产
+  - 同版本离线快照重载，再核对READY资产
+not_decided:
+  - RDB与AOF是否启用及其策略
+  - Redis版本与网络IO线程配置
+  - 主从、集群分片、存储介质及Pod到主机的映射
 ```
 
-## 5. 场景视图：用户 1、历史缺少一种属性、候选按 ID 对齐
+这些是待落地的配置选择，不是已启用的部署事实。只读推荐请求仍可能受到离线装载、持久化或内存回收影响，具体机制见[Redis 负载分析](11_redis_workload.md)。
 
-以下来自已保存的 [前 20 万行数据证据](assets/tenrec_sample_evidence.json)，只演示真实输入与确定性派生，未执行召回模型。
+## 5. 场景视图（+1）：用户 1 的四次查询与缺失候选
 
-```json
-{
-  "user_id": "1",
-  "gender_code": 1,
-  "age_code": 4,
-  "history_item_ids": ["2","3","80936","781","111774","1230","26403","991","2362","1202"],
-  "history_positions": [1,2,3,4,5,6,7,8,9,10],
-  "time_semantics": "ordinal",
-  "sparse_tokens": [
-    {"token":"video_type_0","weight":0.2222222222222222},
-    {"token":"video_type_1","weight":0.7777777777777778}
-  ],
-  "known_history_type_count": 9,
-  "missing_history_type_count": 1
-}
-```
+本用例沿用[请求文档](08_request_walkthrough.md)的教学数据，不把示例向量、SID 或模型分数当成已装载资产。它检验：调用责任是否清楚、两个查询方向是否正确、缺失是否保留位置、版本能否贯穿。
 
-历史物品 `111774` 在这个样本中没有可关联的视频类型，仍然保留在原历史第 5 位；类型词项只按已知的 9 项归一化。类型缺失不等于该物品 SID 或模型参数一定缺失，各自按对应资产检查覆盖。真实 DSSM 向量、SID 尚未在这个样例中提供，所以它不是可发布的完整用户上下文。
-
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：UML 时序图。只展开特征相关交互；三路召回与 OneTrans 的完整并行关系见请求文档。数据库回复标注关键业务字段，完整记录仍含版本头。
 
 ```mermaid
-flowchart TD
-    A[请求用户1的指定特征] --> B{用户和历史整键存在}
-    B -->|否| C[报告必需视图缺失]
-    B -->|是| D{派生表示版本与历史一致}
-    D -->|否| E[报告版本或资产缺失]
-    D -->|是| F[返回真实特征并执行召回]
-    F --> G[按候选ID批量查询物品]
-    G --> H{物品整键存在}
-    H -->|否| I[记录缺失并丢弃该候选]
-    H -->|是| J[保留缺失属性标志，继续资格检查和排序]
+sequenceDiagram
+    participant P as PaiRec
+    participant G as 生成服务
+    participant F as 特征服务
+    participant R as Redis
+    P->>F: GetUserContext(user_id="1",release_id)
+    F->>R: MGET 用户、历史、向量、词项4键
+    R-->>F: 4条记录
+    F-->>P: user/history/dense_query/sparse_query
+    P->>F: BatchGetItemRepresentations(item_ids=10项历史)
+    F->>R: MGET 10个item_rep键
+    R-->>F: 10项编码记录
+    F-->>P: 原顺序的10项SID
+    P->>G: Recommend(history=[{value:SID}],同一版本)
+    G->>G: 本例生成2个SID
+    G->>F: BatchGetItemRepresentations(semantic_ids=2项)
+    F->>R: MGET 2个sid_map键
+    R-->>F: 2条记录，item_ids为["4","1201"]、["9002"]
+    F-->>G: 2个结果位置，共关联3个物品
+    G-->>P: 生成候选4、1201、9002
+    P->>P: 汇合其他召回，得到4、1201、9002、9001、9003
+    P->>F: BatchGetItemFeatures(item_ids=5项)
+    F->>R: MGET 5个item键
+    R-->>F: 4条记录与9003的nil位置
+    F-->>P: 4项FOUND；9003为NOT_FOUND
+    P->>P: 剔除9003；保留4项进入精排
 ```
 
-```yaml
-acceptance:
-  service_boundary: PaiRec与目标召回服务不直接读取Redis或逐请求扫描CSV
-  batch_alignment: 存在、缺失、存在三个位置保持ID对应，重复ID也不串位
-  consistency: user/history/user_rep属于同release，派生表示history_hash相同
-  real_data: 不把未知类型变成0，不伪造用户向量或SID
-  observation: 记录特征RPC次数、Redis批次数、实际字节、缺失与失败原因
-  onetrans_boundary: 当前本地TSV与参数查询如实保留，不报告为FeatureService使用方
-  publication: 必需资产未齐全不可READY；可回滚、可重载、按版本回收
-```
+| 验收点 | 本例应看到的结果 | 对应的设计选择 |
+|---|---|---|
+| 查询责任 | PaiRec 三次，生成服务一次特征 RPC | 业务接口分工；客户端只查询自己负责的数据 |
+| 数据库负载 | 单实例、不拆批时为四次 MGET，分别 4、10、2、5 个键 | 批量访问适配；实际拆批与重试另计 |
+| 关联身份 | 全程固定 `demo_tenrec_v1` 与表示版本 | 请求持有发布快照，解码后复核记录 |
+| 缺失位置 | 候选五个位置完整返回，第五项 `9003` 缺失 | 结果对齐；候选是否剔除由 PaiRec 决定 |
+| 属性缺失 | 原历史中类型未知的 `111774` 仍在第 5 位 | 属性未知不等于整条历史或 SID 缺失 |
+| 源码例外 | OneTrans 仍读现有 Provider、TSV 与参数服务 | 不把候选特征查询误称为已接入精排模型 |
 
-当前源码中已有用户特征前置加载注册和 Redis 客户端能力，但尚不足以证明独立特征服务、完整装载与发布已实现；原有 MGET 回复解析也需要修复。参见 [前置注册](assets/source_snapshots/pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go.html#L243)、[Redis 回复解析](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L136)与 [本轮缺口清单](09_evidence_and_gaps.md)。
+业务取数有“召回前及召回内”“候选产生后”两个阶段，但这里有三个方法、四次 RPC；Redis 的命令数、网络批次数和连接等待必须另外记录。版本错误、数据损坏或超时应失败；只有真实缺记录才返回缺失状态。首期必需资产不齐全不能发布 READY。

@@ -253,6 +253,16 @@ def main():
     # 教学样例可使用示意值，但正文、附件与逐阶段字段必须自洽。
     namespace = runpy.run_path(str(ASSETS / "walkthrough_sample.py"))
     walkthrough = json.loads((ASSETS / "walkthrough_sample.json").read_text())
+    workload_tools = runpy.run_path(str(ASSETS / "redis_workload_example.py"))
+    workload = workload_tools["calculate"](walkthrough)
+    saved_workload = json.loads((ASSETS / "redis_workload_example.json").read_text())
+    require(workload == saved_workload, "Redis字节测算与当前教学样例不一致")
+    require(workload["service_executed"] is False, "Redis测算不能标为实际服务执行")
+    checks["redis_workload_accounting"] = {
+        "matches_current_sample": workload == saved_workload,
+        "scope": "RESP2教学样例；候选仅字段投影；未执行Redis",
+        "totals": workload["totals"],
+    }
     require(walkthrough == namespace["build_sample"](), "教学JSON未与构造文件同步")
     sample_report = namespace["validate"](walkthrough)
     require(sample_report["passed"], "教学样例关系检查失败")

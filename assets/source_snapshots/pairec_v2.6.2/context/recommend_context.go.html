@@ -1,0 +1,103 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/context/recommend_context.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/context/recommend_context.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Go 模块归档；许可见同目录 LICENSE.html。</p><p>来源版本：<code>官方模块版本 v2.6.2</code><br>原文件 SHA256：<code>54d22f6d4d6a5655ad70812a46b794f21c54df74200217442742b8f2b81477ce</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package context</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;encoding/json&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;fmt&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;strings&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;sync&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;github.com/alibaba/pairec/v2/log&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;github.com/alibaba/pairec/v2/recconf&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;github.com/aliyun/aliyun-pairec-config-go-sdk/v2/model&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;github.com/tidwall/gjson&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>)</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a></span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>type IParam interface {</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	GetParameter(name string) interface{}</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>}</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>type RecommendContext struct {</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	Debug            bool</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	Size             int</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	Param            IParam</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	Config           *recconf.RecommendConfig</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	ExperimentResult *model.ExperimentResult</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	RecommendId      string</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	ExpId            string</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	Log              []string</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>	mu               sync.RWMutex</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	contexParams     map[string]interface{}</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>}</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>func NewRecommendContext() *RecommendContext {</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>	context := RecommendContext{Size: -1, Debug: false, Log: make([]string, 0, 16), contexParams: make(map[string]interface{})}</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	return &amp;context</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>}</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>func (r *RecommendContext) GetParameter(name string) interface{} {</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	return r.Param.GetParameter(name)</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>}</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>func (r *RecommendContext) GetParameterByPath(path string) interface{} {</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	if strings.Contains(path, &quot;.&quot;) {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>		pos := strings.Index(path, &quot;.&quot;)</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>		root := path[:pos]</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>		features := r.Param.GetParameter(root)</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>		if features == nil {</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>			return nil</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>		}</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>		newPath := path[pos+1:]</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>		if newPath == &quot;&quot; {</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>			return features</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>		}</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>		if dict, ok := features.(map[string]interface{}); ok {</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>			b, err := json.Marshal(dict)</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>			if err != nil {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>				r.LogError(fmt.Sprintf(&quot;GetParameterByPath Marshal fail: %v&quot;, err))</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>				return nil</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>			}</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>			value := gjson.Get(string(b), newPath)</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>			return value.String()</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>		} else if feature, okay := features.(string); okay {</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>			value := gjson.Get(feature, newPath)</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>			return value.String()</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>		} else {</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>			r.LogError(&quot;GetParameterByPath fail: &quot; + path)</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>			return nil</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		}</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	}</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>	return r.Param.GetParameter(path)</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>}</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>func (r *RecommendContext) LogDebug(msg string) {</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	if r.Debug {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>		r.Log = append(r.Log, fmt.Sprintf(&quot;[DEBUG] %s&quot;, strings.Replace(msg, &quot;\t&quot;, &quot;  &quot;, -1)))</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	}</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>}</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>func (r *RecommendContext) LogInfo(msg string) {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>	r.Log = append(r.Log, fmt.Sprintf(&quot;[INFO] %s&quot;, strings.Replace(msg, &quot;\t&quot;, &quot;  &quot;, -1)))</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	log.Info(fmt.Sprintf(&quot;requestId=%s\t%s&quot;, r.RecommendId, msg))</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>}</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>func (r *RecommendContext) LogWarning(msg string) {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>	r.Log = append(r.Log, fmt.Sprintf(&quot;[WARN] %s&quot;, strings.Replace(msg, &quot;\t&quot;, &quot;  &quot;, -1)))</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	log.Warning(fmt.Sprintf(&quot;requestId=%s\t%s&quot;, r.RecommendId, msg))</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>}</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>func (r *RecommendContext) LogError(msg string) {</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	r.Log = append(r.Log, fmt.Sprintf(&quot;[ERROR] %s&quot;, strings.Replace(msg, &quot;\t&quot;, &quot;  &quot;, -1)))</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>	log.Error(fmt.Sprintf(&quot;requestId=%s\t%s&quot;, r.RecommendId, msg))</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>}</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a></span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>func (r *RecommendContext) AddContextParam(name string, value interface{}) {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	r.mu.Lock()</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	defer r.mu.Unlock()</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	r.contexParams[name] = value</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>}</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a></span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>func (r *RecommendContext) GetContextParam(name string) interface{} {</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	r.mu.RLock()</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>	defer r.mu.RUnlock()</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	return r.contexParams[name]</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>}</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>func (r *RecommendContext) DeleteContextParam(name string) {</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	r.mu.Lock()</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	defer r.mu.Unlock()</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	delete(r.contexParams, name)</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>}</span></pre></html>

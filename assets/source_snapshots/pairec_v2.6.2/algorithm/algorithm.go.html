@@ -1,0 +1,174 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/algorithm/algorithm.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/algorithm/algorithm.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Go 模块归档；许可见同目录 LICENSE.html。</p><p>来源版本：<code>官方模块版本 v2.6.2</code><br>原文件 SHA256：<code>fde66902492c5c69abe898cfa98df8f82d96526a5d304d523fe245df546485c0</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package algorithm</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;encoding/json&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;errors&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;fmt&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;sync&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;github.com/alibaba/pairec/v2/algorithm/eas&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;github.com/alibaba/pairec/v2/algorithm/faiss&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;github.com/alibaba/pairec/v2/algorithm/seldon&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;github.com/alibaba/pairec/v2/algorithm/tfserving&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	&quot;github.com/alibaba/pairec/v2/log&quot;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	&quot;github.com/alibaba/pairec/v2/recconf&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;github.com/alibaba/pairec/v2/utils&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>)</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a></span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>var algoFactory *AlgorithmFactory</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>func init() {</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	algoFactory = NewAlgorithmFactory()</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>}</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>// type AlgoData struct {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>// Data interface{}</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>// }</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>type IAlgorithm interface {</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	Init(conf *recconf.AlgoConfig) error</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	Run(algoData interface{}) (interface{}, error)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>}</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>type AlgorithmFactory struct {</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	algorithms       map[string]IAlgorithm</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	requestDataFuncs map[string]RequestDataFunc</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	mutex            sync.RWMutex</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	algorithmSigns   map[string]string</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>}</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a></span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>func NewAlgorithmFactory() *AlgorithmFactory {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>	factory := AlgorithmFactory{</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>		algorithmSigns: make(map[string]string, 2),</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	}</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	factory.algorithms = make(map[string]IAlgorithm)</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	factory.requestDataFuncs = make(map[string]RequestDataFunc)</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a></span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>	return &amp;factory</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>}</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>func (a *AlgorithmFactory) Init(algoConfs []recconf.AlgoConfig) {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	a.mutex.Lock()</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>	defer a.mutex.Unlock()</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	for _, conf := range algoConfs {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>		sign, _ := json.Marshal(conf)</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>		if _, ok := a.algorithms[conf.Name]; ok {</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>			if utils.Md5(string(sign)) == a.algorithmSigns[conf.Name] {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>				continue</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>			}</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>		}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>		algo, err := a.initAlgo(conf)</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>		if err != nil {</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>			log.Error(err.Error())</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>			continue</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		}</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		a.algorithms[conf.Name] = algo</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		a.algorithmSigns[conf.Name] = utils.Md5(string(sign))</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>	}</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>}</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>func (a *AlgorithmFactory) initAlgo(conf recconf.AlgoConfig) (IAlgorithm, error) {</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	var algo IAlgorithm</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	if conf.Type == &quot;EAS&quot; {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>		algo = eas.NewEasModel(conf.Name)</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>		err := algo.Init(&amp;conf)</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>		if err != nil {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>			return nil, fmt.Errorf(&quot;init algorithm error, name:%s, err:%v&quot;, conf.Name, err)</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		}</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	} else if conf.Type == &quot;FAISS&quot; {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>		algo = faiss.NewFaissModel(conf.Name)</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>		err := algo.Init(&amp;conf)</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>		if err != nil {</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>			return nil, fmt.Errorf(&quot;init algorithm error, name:%s, err:%v&quot;, conf.Name, err)</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>		}</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	} else if conf.Type == &quot;LOOKUP&quot; {</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>		algo = NewLookupPolicy()</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>		err := algo.Init(&amp;conf)</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>		if err != nil {</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>			return nil, fmt.Errorf(&quot;init algorithm error, name:%s, err:%v&quot;, conf.Name, err)</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>		}</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	} else if conf.Type == &quot;SELDON&quot; {</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>		algo = new(seldon.Model)</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>		err := algo.Init(&amp;conf)</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>		if err != nil {</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>			return nil, fmt.Errorf(&quot;init algorithm error, name:%s, err:%v&quot;, conf.Name, err)</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>		}</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	} else if conf.Type == &quot;TFSERVING&quot; {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		algo = tfserving.NewTFservingModel(conf.Name)</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>		err := algo.Init(&amp;conf)</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>		if err != nil {</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>			return nil, fmt.Errorf(&quot;init algorithm error, name:%s, err:%v&quot;, conf.Name, err)</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>		}</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	} else {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>		return nil, fmt.Errorf(&quot;algorithm type not support , type:%s&quot;, conf.Type)</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	}</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>	return algo, nil</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>}</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>func (a *AlgorithmFactory) Run(name string, algoData interface{}) (interface{}, error) {</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	a.mutex.RLock()</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>	algo, found := a.algorithms[name]</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>	f, funcFound := a.requestDataFuncs[name]</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	a.mutex.RUnlock()</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>	if !found {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>		return nil, errors.New(&quot;not found algorithm, name:&quot; + name)</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>	}</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>	// if find request data func</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>	if funcFound {</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>		return algo.Run(f(name, algoData))</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>	}</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	return algo.Run(algoData)</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>}</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a></span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>// init algorithm from the config, and add to the algoFactory</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>func Load(config *recconf.RecommendConfig) {</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	algoFactory.Init(config.AlgoConfs)</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>func Run(name string, algoData interface{}) (interface{}, error) {</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>	return algoFactory.Run(name, algoData)</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>}</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>func AddAlgo(conf recconf.AlgoConfig) {</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	algoFactory.mutex.Lock()</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>	defer algoFactory.mutex.Unlock()</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	_, found := algoFactory.algorithms[conf.Name]</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	if found {</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>		return</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>	}</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>	algo, err := algoFactory.initAlgo(conf)</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>	if err != nil {</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>		log.Error(err.Error())</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>		return</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>	}</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>	algoFactory.algorithms[conf.Name] = algo</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>}</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>func AddAlgoWithSign(conf recconf.AlgoConfig) {</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>	algoFactory.mutex.Lock()</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>	defer algoFactory.mutex.Unlock()</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>	var signStr string</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>	sign, _ := json.Marshal(conf)</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>	signStr = utils.Md5(string(sign))</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>	_, found := algoFactory.algorithms[conf.Name]</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>	if found {</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>		if signStr == algoFactory.algorithmSigns[conf.Name] {</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>			return</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>		}</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>	}</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>	algo, err := algoFactory.initAlgo(conf)</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>	if err != nil {</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>		log.Error(err.Error())</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>		return</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>	}</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>	algoFactory.algorithms[conf.Name] = algo</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>	algoFactory.algorithmSigns[conf.Name] = signStr</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>}</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a></span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>func RegisterAlgorithm(name string, algo IAlgorithm) {</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>	algoFactory.mutex.Lock()</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	defer algoFactory.mutex.Unlock()</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	algoFactory.algorithms[name] = algo</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>}</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>type RequestDataFunc func(string, interface{}) interface{}</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a></span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>func RegistRequestDataFunc(name string, f RequestDataFunc) {</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>	algoFactory.requestDataFuncs[name] = f</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>}</span></pre></html>

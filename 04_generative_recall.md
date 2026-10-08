@@ -16,39 +16,26 @@
 
 ## 1. 逻辑视图
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：逻辑结构示意图（非 UML）。箭头表示需要对方提供的能力，不表示执行顺序；历史 ID 正查由编排负责，输入本模块时已经是历史 SID。
 
 ```mermaid
 flowchart LR
-    A[历史物品编码查询] --> B[模型输入构造]
-    B --> C[自回归生成]
-    C --> D[编码还原为物品]
-    D --> E[合法候选整理]
+    G[生成式召回] --> I[模型输入适配]
+    G --> M[候选编码生成]
+    G --> C[候选集合整理]
+    G --> F[特征服务的编码反查能力]
+    I --> T[模型分词规则]
 ```
 
-| 职责 | 输入 → 输出 | 执行位置 |
+| 职责 | 输入 → 输出 | 责任边界 |
 |---|---|---|
 | 历史物品编码查询 | 历史原始 ID → 有效 SID 列表、缺失位置 | PaiRec 调用特征服务 |
-| 模型输入构造 | SID 列表 → 模型 tokens | 生成服务使用固定 tokenizer |
-| 自回归生成 | tokens、生成参数 → 输出 tokens | TensorRT-LLM |
-| 编码还原 | 有效输出 SID → 每个 SID 对应的 `item_ids[]` | 生成服务调用特征服务 |
-| 候选整理 | 映射结果 → 去重后的原始 ID 与来源次序 | 生成服务 |
+| 模型输入适配 | SID 列表 → 模型 tokens | 使用与引擎匹配的 tokenizer，不在线训练编码模型 |
+| 候选编码生成 | tokens、生成参数 → 输出 tokens | 模型计算；不把输出编码直接当作原始物品 ID |
+| 编码反查 | 有效输出 SID → 每个 SID 对应的 `item_ids[]` | 特征服务拥有业务映射，生成服务查询它 |
+| 候选整理 | 映射结果 → 去重后的原始 ID 与来源次序 | 保存来源次序及缺失状态，不决定全局展示顺序 |
 
-```python
-# 目标伪代码。每次批量查询，而非逐物品RPC。
-history_repr = feature.BatchGetItemRepresentations(
-    lookup_by="raw_item_id", item_ids=history.item_ids,
-    release_id=release_id, sid_version=sid_version)
-require_all_history_codes_found(history_repr)  # 缺失即报告ID并使生成分支失败
-history_sids = values_in_history_order(history_repr)
-# 请求构造还须符合引擎输入容量；仅保留末尾完整物品，不能切断四层编码。
-output_tokens = engine.generate(tokenizer.encode(history_sids), generation_options)
-generated_sids = decode_complete_valid_sids(output_tokens)
-raw_items = feature.BatchGetItemRepresentations(
-    lookup_by="semantic_id", semantic_ids=stable_unique(generated_sids),
-    release_id=release_id, sid_version=sid_version)
-return expand_in_generated_order_then_deduplicate(raw_items, limit=topk)
-```
+
 
 历史正查与生成反查的缺失处理不同：首期历史输入要求编码完整；生成输出中没有目录关联的 SID 则记录并丢弃，全部无法还原时返回真实空候选。
 
@@ -56,7 +43,7 @@ return expand_in_generated_order_then_deduplicate(raw_items, limit=topk)
 
 ## 2. 开发视图
 
-图法：模块关系示意图（非 UML，连线含义见本节）。
+图法：源码依赖示意图（非 UML）。节点是源码模块；箭头表示导入、链接或编译依赖，客户端模块不代表远端服务进程。
 
 ```mermaid
 flowchart LR
@@ -67,6 +54,12 @@ flowchart LR
     H --> B[编码反查客户端]
     E --> K[模型缓存存储适配]
 ```
+
+| 源码范围 | 交付产物 |
+|---|---|
+| PaiRec 生成客户端与字段适配 | 编入推荐程序的客户端代码 |
+| 生成处理器、token 转换、Executor 封装及特征客户端 | 原生生成服务程序，配套引擎、tokenizer 与版本配置 |
+| 模型缓存适配与依赖库 | 链接到生成程序或其运行库的代码；DataSystem worker 另行部署 |
 
 ```yaml
 目标接口元数据:
@@ -92,7 +85,7 @@ PaiRec 首期按来源配额和来源次序融合，不把生成的常量分数�
 
 ## 3. 进程视图
 
-图法：UML 时序图。
+图法：UML 时序图。生成服务处理器与 TRT 模型运行时是同一进程内的两个执行角色，二者间的消息不是额外网络调用；PaiRec、特征服务与 DataSystem 是外部角色。
 
 ```mermaid
 sequenceDiagram
@@ -121,21 +114,55 @@ sequenceDiagram
     G-->>P: 原始候选ID、来源次序、当前解码分数
 ```
 
+```python
+# 目标数据流伪代码；前一段在PaiRec，后一段在生成服务执行。
+# PaiRec：批量查询历史SID，再作为生成请求输入。
+history_repr = feature.BatchGetItemRepresentations(
+    lookup_by="raw_item_id", item_ids=history.item_ids,
+    release_id=release_id, sid_version=sid_version)
+require_all_history_codes_found(history_repr)  # 缺失即报告ID并使生成分支失败
+history_sids = values_in_history_order(history_repr)
+# 请求构造还须符合引擎输入容量；仅保留末尾完整物品，不能切断四层编码。
+# 生成服务：使用收到的history_sids推理，再批量反查输出编码。
+output_tokens = engine.generate(tokenizer.encode(history_sids), generation_options)
+generated_sids = decode_complete_valid_sids(output_tokens)
+raw_items = feature.BatchGetItemRepresentations(
+    lookup_by="semantic_id", semantic_ids=stable_unique(generated_sids),
+    release_id=release_id, sid_version=sid_version)
+return expand_in_generated_order_then_deduplicate(raw_items, limit=topk)
+```
+
 模型缓存读写由真实块生命周期触发，不能要求每请求固定若干次 Set/Get。特征服务反查是业务数据查询，与模型缓存访问是两种不同操作。模型执行成功但反查数据库失败，应返回阶段失败；反查成功但无合法物品，可以返回真实空候选。
+
+当前原生实现的请求处理器同步调用后端；后端对 `trt_num_samples` 次采样逐次提交 Executor、等待最终结果，再进入下一次采样。等待循环每次向 `awaitResponses` 传入 10 ms 上限，这不是“每 10 ms 忙等一次”，也不是每个请求只执行一次模型。[当前提交与等待](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1074)、[Executor 响应循环](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1358)。
+
+因此容量评估须记录采样次数、输入和输出 token 数、Executor 排队及执行时间、实际缓存传输字节。当前进程内等待是否占住 bRPC 工作线程，还取决于所链接 Executor 的等待实现，不能仅凭入口使用 bthread 就宣称等待不占 OS 线程。GPU 计算、CPU 编解码、外部缓存传输与特征反查应分别观测；本轮没有测得它们的占比或吞吐上限。
 
 ## 4. 物理视图
 
-图法：部署映射示意图（非 UML，连线含义见本节）。
+图法：部署映射示意图（非 UML）。目标 Pod 包含容器，容器列出进程；双向连线表示网络连通。主机与副本数未定，DataSystem 内部部署见系统文档。
 
 ```mermaid
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC目标接口| G[生成进程与GPU]
-    P -->|特征RPC| F[特征服务进程]
-    G -->|特征RPC| F
-    F -->|Redis协议| R[(在线特征Redis)]
-    A[(模型引擎与tokenizer文件)] --> G
-    G <-->|DataSystem SDK| K[(模型缓存存储)]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph GP[Pod：生成式召回]
+        G[容器：生成服务<br/>进程：brpc_inference_server<br/>内含 TRT Executor]
+    end
+    subgraph FP[Pod：特征服务]
+        F[容器：特征服务<br/>进程：特征查询程序]
+    end
+    subgraph WP[Pod 类型：模型缓存]
+        K[容器：DataSystem worker<br/>进程：worker]
+    end
+    P <-->|bRPC| G
+    P <-->|特征RPC| F
+    G <-->|编码反查RPC| F
+    G <-->|SDK连接| K
 ```
+
+生成容器挂载匹配的模型引擎与 tokenizer，并获得所需 GPU；两者不是独立进程。原生生成容器已有[部署配置](assets/source_snapshots/pairec4tigerllm/k8s/deployment-inference-brpc-trtllm.yaml.html#L35)，特征客户端及完整联调仍待补。特征服务所用 Redis、worker 所用 etcd 的容器边界见[系统物理视图](01_system.md)，此图不重复展开。
 
 ```yaml
 启动检查:

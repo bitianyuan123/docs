@@ -1,18 +1,20 @@
-sequenceDiagram
-    participant B as 离线构建进程
-    participant M as 模型表示生产进程
-    participant L as 装载进程
-    participant V as 发布校验进程
-    participant F as 特征服务
-    B->>B: 校验源文件，固定用户与历史，聚合物品统计
-    B->>M: 同一快照的用户、历史、物品
-    M-->>B: 真实用户向量、物品SID、索引资产
-    B->>L: 装载上述模型产物及用户、历史、物品、来源记录
-    L->>L: 装载新release的Redis键及检索索引
-    L->>V: 清单、实际数量、错误与校验值
-    V->>V: 读回、版本、ID覆盖与索引关联检查
-    V-->>L: 校验通过
-    L-->>B: 本次装载完成
-    B->>F: 发布READY清单
-    F->>F: 允许绑定此release的新请求
-    F-->>B: 发布结果
+flowchart LR
+    subgraph PPod[Pod：推荐编排 / 系统图引用]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph GPod[Pod：生成召回 / 系统图引用]
+        G[容器：生成召回<br/>进程：生成服务]
+    end
+    subgraph FPod[Pod：特征服务]
+        F[容器：特征服务<br/>进程：FeatureService]
+    end
+    subgraph RPod[Pod：Redis / 每实例一种部署单元]
+        R[容器：Redis<br/>进程：redis-server]
+    end
+    subgraph LPod[作业Pod：离线装载 / 目标安排]
+        L[容器：装载工具<br/>进程：特征装载程序]
+    end
+    P <-->|业务bRPC| F
+    G <-->|编码反查bRPC| F
+    F <-->|Redis RESP| R
+    L <-->|装载与读回| R

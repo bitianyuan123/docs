@@ -14,30 +14,28 @@ business_features: 本地 TSV 文件     # TSV 是以制表符分列的文本表
 history_source: 调用方发送的有序物品 ID
 model_parameters: PS 或进程内权重    # PS：Parameter Server，模型参数服务
 intermediate_result: DataSystem 或进程内存储
-final_ordering: PaiRec               # 精排服务逐候选打分，PaiRec 排序和执行后排规则
+final_ordering: PaiRec               # 精排服务逐候选打分，PaiRec 执行重排规则
 ```
 
 源码中的 S 是历史序列阶段，NS 是用户与候选特征阶段；部署文档的 P/D 分别对应这两个计算进程。本文统一称“历史计算”和“候选打分”。注意力 K/V 是模型的键张量、值张量；数据库 key/value 则表示存储键和值，两者不要混用。本文只审阅源码与文档，没有重新运行模型、PS 或 DataSystem。
 
 ## 1. 逻辑视图：两个计算阶段，各自使用什么数据
 
-本图只展示 OneTrans 内部业务职责；数据库和线程分别在后续视图展开。
+本图表示能力之间的依赖：箭头从使用方指向所需能力，不表示一次请求的执行顺序。数据来源见 1.1，线程与处理顺序见第 3 节。
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：逻辑结构示意图（非 UML，箭头表示能力依赖）。
 
 ```mermaid
 flowchart LR
-    A[接收用户有序历史] --> B[历史特征编码]
-    B --> C[历史 Transformer 计算]
-    C --> D[保存历史计算结果]
-    E[接收用户与候选 ID] --> F[装配用户与候选特征]
-    F --> G[候选特征编码]
-    D --> H[候选 Transformer 计算]
-    G --> H
-    H --> I[逐候选返回分数]
+    H[历史表示维护] -->|使用| E[模型输入构造]
+    H -->|发布| K[按用户和模型保存历史表示]
+    R[候选打分] -->|使用| A[用户与候选特征装配]
+    R -->|使用| E
+    R -->|读取| K
+    E -->|依赖| P[模型向量参数查询]
 ```
 
-历史计算不产生候选，只为精排准备计算结果；配套代码虽然借用 PaiRec 的召回节点触发它，也不能把它画成一路召回。[触发器职责](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L212)。
+历史表示维护负责将有序历史变成可复用的注意力状态；候选打分负责结合该状态和候选特征产生分数。它不决定推荐列表顺序，也不产生召回候选。配套代码虽然借用 PaiRec 的召回节点触发历史计算，也不能把它画成一路召回。[触发器职责](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L212)。
 
 ### 1.1 数据来源与 key/value
 
@@ -111,23 +109,17 @@ candidate_dense_columns = [
 
 独立的 [Tenrec 回放适配器](assets/source_snapshots/OneTrans_HSE_project/onetrans/tools/tenrec_adapter.py.html#L155)调用 `/score`，采用另一套配方：用户性别、年龄标准化后加 13 个历史统计均值；候选 15 个统计量标准化并裁至 ±5；`album_ids=[]`。它不是当前 PaiRec `/rank` 主路径，不能把两套配方合并描述。
 
-### 1.3 业务数据如何变成模型输入
+### 1.3 模型输入与历史状态的结构
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
-
-```mermaid
-flowchart TD
-    H[有序历史物品 ID] --> HE[保留最近 50 个并左侧补空位]
-    HE --> HV[查询物品向量并编码历史]
-    HV --> HK[四层历史注意力 K/V]
-    U[用户数值 15 维] --> N[与每个候选数值拼接为 30 维]
-    I[候选数值 15 维] --> N
-    N --> P[分段线性编码为 240 维]
-    P --> T[每个候选编码成五个 128 维 token]
-    E[用户、物品、两个类别槽的向量] --> T
-    HK --> C[候选与历史交互计算]
-    T --> C
-    C --> O[每个候选两个原始输出值]
+```python
+# 当前随库模型的形状；M 是本请求候选数，H 是注意力头数。
+history_input_shape = [1, 50, 128]
+history_layer_lengths = [50, 38, 27, 16]
+history_kv_shape = [[1, length, 4, 32] for length in history_layer_lengths]  # K、V 各一组
+candidate_numeric_shape = [M, 15 + 15]  # 用户数值 + 候选数值
+candidate_piecewise_shape = [M, 240]   # 30个数值特征，每项8个分段编码值
+candidate_token_shape = [M, 5, 128]
+candidate_output_shape = [M, 2]
 ```
 
 token 在这里是一组模型输入向量；logit 是模型输出头的原始数值。当前配置：模型宽度 128、4 个注意力头、4 层、历史上限 50、候选 5 个 token。历史 K/V 的序列维度依次为 50、38、27、16；补空位由有效长度掩码排除。[权重配置](assets/source_snapshots/OneTrans_HSE_project/cpp/artifacts/weights/manifest.json.html#L2)；[历史编码](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/frontend.cpp.html#L78)。
@@ -145,24 +137,20 @@ rank_score = sigmoid(logits[:, 0])              # 首个原始输出转换到 0~
 
 ## 2. 开发视图：代码模块和现有接口
 
-本图每个节点是一项代码职责，不包含服务器部署节点。
+本图表示源文件的静态使用关系，不表示请求经过它们的先后顺序。`server_main.cpp` 负责装配，公共实现编入 `onetrans_core` 静态库，再链接成 `onetrans_server`。
 
-图法：模块关系示意图（非 UML，连线含义见本节）。
+图法：源码依赖示意图（非 UML，箭头表示静态使用关系）。
 
 ```mermaid
 flowchart TD
-    A[HTTP 路由与 JSON 解析] --> B[历史处理 NearlineWorker]
-    A --> C[候选装配 RankAssembler]
-    A --> D[候选流水线 ScoreFlow]
-    C --> D
-    B --> E[特征编码 EmbeddingFrontend]
-    D --> E
-    E --> F[参数查询 PsLookupClient 或本地表]
-    B --> G[模型计算 TwoStageRunner]
-    D --> G
-    D --> H[PyTorch 计算桥]
-    B --> I[历史结果存储 KVStore]
-    D --> I
+    A[tools/server_main.cpp<br/>入口装配] --> B[net/http_server<br/>HTTP接入]
+    A --> C[serving/json_io 与 rank_assembler<br/>解析和特征装配]
+    A --> D[serving/flow 与 pipeline<br/>候选编排和历史处理]
+    D --> E[engine/frontend 与 two_stage<br/>输入编码和模型计算]
+    D --> F[common/executor<br/>线程池封装]
+    D --> G[kv/store 与 datasystem_store<br/>存储接口及实现]
+    D --> H[serving/compute_bridge<br/>嵌入式Python调用]
+    A --> I[serving/ps_client 与 embed_lookup<br/>参数查询实现]
 ```
 
 | 文件/模块 | 当前职责 |
@@ -174,6 +162,16 @@ flowchart TD
 | [flow.cpp](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L78) | 查询参数、编码、读历史结果、攒批、计算与拆分返回 |
 | [ps_client.cpp](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/ps_client.cpp.html#L41) | 使用原生 bRPC 查询模型向量参数；bRPC 是这里采用的远程调用框架 |
 | [datasystem_store.cpp](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp.html#L46) | 用 DataSystem 客户端读写序列化历史结果 |
+
+| 构建或发布产物 | 来源与条件 |
+|---|---|
+| `onetrans_core`、`onetrans_server` | C++20、Folly；入口与核心库分别构建、链接 |
+| PS 客户端及生成的 protobuf 代码 | `ONETRANS_WITH_PS=ON` 且找到 bRPC；参数服务本身是另一个程序 |
+| DataSystem 存储实现 | `ONETRANS_WITH_DATASYSTEM=ON` 且找到 SDK；`ONETRANS_DATASYSTEM_MOCK` 只用于模拟接入，不能作为真实存储证据 |
+| Python 计算桥 | `ONETRANS_PYTHON_BRIDGE=ON` 且找到 Python Development；运行还需匹配的 Python、PyTorch 和可导入的 `bridge_score.py`、`onetrans` 包 |
+| 模型与业务数据 | `manifest.json`、`weights.bin`、用户 TSV、物品 TSV 独立发布；运行参数不能替代这些文件 |
+
+以上开关控制的是可用代码，不证明实际请求使用了该后端。构建没有找到 PS 或 DataSystem 依赖时可退回本地实现；运行前应记录构建选项、SDK/worker、Folly、bRPC、Python/PyTorch 和 CUDA 版本。仓库 CMake 没有统一锁定这些运行时的版本，不能从机器上的最新安装反推已验证组合。[构建定义](assets/source_snapshots/OneTrans_HSE_project/cpp/CMakeLists.txt.html#L49)。
 
 ```typescript
 // 已有 HTTP 接口类型；省略计时字段，不添加尚未实现的 ready 或请求唯一 key。
@@ -196,72 +194,192 @@ type ScoreResponse = { user_id: string; shard: number; kv_hit: boolean; logits: 
 
 `/ingest` 在计算与写入返回后才响应，写入成功时 `accepted=true`；不是仅入队就成功。`/score` 接收完整字段，绕过 TSV 装配，但**进程启动仍无条件加载两份 TSV**。`/rank` 按输入候选顺序返回分数；`/score` 按候选顺序返回原始输出值，没有逐行物品 ID。[三个路由](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/server_main.cpp.html#L234)。
 
-## 3. 进程视图：异步历史计算与候选流水线
+## 3. 进程视图：请求、线程与同步
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+### 3.1 HTTP 接入与历史计算
+
+当前 HTTP 服务由一个 `accept` 循环和固定接入线程池组成。接入线程阻塞读取请求头、请求体，解析 JSON；`/rank` 还在该线程中查询已加载的 TSV 内存表。成功提交异步任务后，接入线程便可处理下一连接，不等待模型计算完成。请求体的 `Content-Length` 上限为 16 MiB，尚无单独的候选条数限制。[接入实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/net/http_server.cpp.html#L127)。
+
+图法：UML 时序图。接入与响应代码、历史任务位于同一进程，PS 和 DataSystem 是外部服务；代码角色不等于固定线程。
 
 ```mermaid
-flowchart LR
-    H[历史请求接入] --> Q[历史计算线程池]
-    Q --> W[计算完成后写历史结果]
-    W --> R[返回 accepted]
-    A[候选请求接入] --> L[参数查询线程池]
-    L --> E[特征编码线程池]
-    E --> K[历史结果读取线程池]
-    K --> B[请求攒批与候选拼接]
-    B --> C[候选计算线程或 PyTorch 计算桥]
-    C --> O[按原请求拆分结果]
+sequenceDiagram
+    participant P as PaiRec
+    participant A as HTTP接入与响应代码
+    participant H as 历史计算线程池
+    participant PS as 参数服务
+    participant DS as DataSystem
+    P->>A: POST /ingest {user_id,item_ids,timestamps}
+    A->>A: 读取与解析；检查两个数组等长
+    A-)H: 异步提交历史任务，保存响应回调
+    Note over A: 接入线程提交后可处理下一连接
+    H->>H: 截取末尾50项、左补0、构造掩码
+    H->>PS: Lookup(model_version + "/item", padded_ids)
+    PS-->>H: 50 × 128 个浮点参数
+    H->>H: 历史编码、C++前向、序列化、计算checksum
+    H->>DS: Set(user_model_key, payload)
+    DS-->>H: 写入状态
+    H->>A: 调用done回调：accepted及计时
+    Note over A,H: 响应代码在历史任务线程执行<br/>不唤醒原接入线程
+    A-->>P: 发送原HTTP响应并关闭连接
+    A-->>H: 回调结束
 ```
 
-源码分阶段使用独立线程池，攒批把多个请求的候选行合成计算批，再按请求切回。`max_batch` 限制攒入的请求数，不是每个请求的候选上限。历史计算走 C++ CPU；候选计算可用 PyTorch，或 C++ CPU。[批处理与后端选择](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L174)。
+历史任务中的参数查询、CPU 计算和存储写入**串行占用同一个历史线程**；未另投递到候选的参数查询池或 KV 池。每次 `/ingest` 重算完整的截断历史，不是增量追加。`timestamps` 是调用方生成的等长序号；只把末项记到临时记录中，不参与截断、掩码或位置编码，也不随 DataSystem payload 保存。[历史实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp.html#L98)。
 
-```python
-# 配套 PaiRec 当前控制流的等价描述；gate 是一次历史投递的完成闸门。
-enqueue_ingest(history, gate)          # 有界异步队列；不阻塞召回
-response = post_rank(user_id, items)   # 先尝试打分
-if not response.trace.kv_hit and gate is not None:
-    gate.wait(timeout)                # 无论历史请求成功、失败，当前代码都会打开闸门
-    response = post_rank(user_id, items)  # 再查一次；等待超时也会再查
-```
+响应回调在哪个线程完成，就由哪个线程直接序列化并 `send` 响应；没有独立响应发送池。每个响应都使用 `Connection: close`。因此慢请求体可能占用接入线程，慢响应接收方可能占用历史线程、候选计算线程或 Python 桥线程。[响应写回](assets/source_snapshots/OneTrans_HSE_project/cpp/src/net/http_server.cpp.html#L251)。
 
-因此，闸门打开只表示投递结束，不能等同历史写入成功；若旧历史结果已存在，首查命中便不等待新历史。队列满时按配置同步投递或放弃，均会打开闸门。[历史投递](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L230)；[候选重查](assets/source_snapshots/pairec4tigerllm_8506/services/sort/onetrans_rank_sort.go.html#L159)。
+### 3.2 候选请求的分阶段处理
 
-## 4. 物理视图：外部入口、两个计算进程与共享存储
-
-下图列出两个计算进程所需的资源与连接；目标 Pod、容器边界与文件要求见[系统物理视图](01_system.md)，主机分配尚未确定。图中共享 DataSystem 是服务整体，不表示只有一个远端 worker；不代表本轮已启动这些服务。相同服务程序同时注册三个接口，历史进程和候选进程的职责由调用地址分工。
-
-图法：部署映射示意图（非 UML，连线含义见本节）。
+图法：进程内任务流示意图（非 UML）。箭头表示提交到下一个执行者；数据库访问发生在相应任务内部。
 
 ```mermaid
 flowchart TD
-    N[Nginx 网关] --> P[PaiRec 进程]
-    P -->|HTTP /ingest| H[OneTrans 历史计算进程]
-    P -->|HTTP /rank| R[OneTrans 候选打分进程]
-    J[历史 JSON 或 Kafka 消费缓存] --> P
-    F[本地用户与物品 TSV 文件] --> H
-    F --> R
-    H -->|原生 bRPC| PS[模型参数服务 PS]
-    R -->|原生 bRPC| PS
-    H -->|写历史 K/V| D[共享 DataSystem]
-    R -->|读历史 K/V| D
+    A[HTTP接入线程<br/>解析ID并装配TSV特征] --> L[参数查询线程池<br/>同步Lookup与类别均值]
+    L --> E[编码线程池<br/>数值编码与五组token]
+    E --> K[KV读取线程池<br/>每请求一次Get]
+    K --> Q[攒批队列与单个攒批线程]
+    Q --> M[历史未命中<br/>零logits并直接回调]
+    Q --> B[命中请求拼接候选行<br/>按payload内容去重历史]
+    B -->|桥未启用、不可用<br/>或未接收任务| C[C++计算线程池]
+    B -->|桥可用且接收| Y[Python桥批队列<br/>单个桥线程]
+    C --> R[拆分结果并执行HTTP回调]
+    Y --> R
 ```
 
-历史进程也会加载 TSV，是目前启动程序的依赖，并不表示历史模型使用画像或候选数值。若要分进程共享历史计算结果，两侧必须连到同一个 DataSystem 数据域，使用一致的 `model_version` 和 `user_id`。两个进程各用本地存储时不能共享结果。
+候选参数查询按 `user → item → artist → album` 顺序同步执行，通常是每请求四次 PS `Lookup`；空类别组不发对应请求。不同请求可由查询池并发处理，同一请求内没有并行四表查询。查表发生在攒批之前，批内相同用户也不会合并这些 RPC。[参数前端](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/frontend.cpp.html#L123)、[同步客户端与超时](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/ps_client.cpp.html#L24)。
+
+KV 池也是每请求一次 `Get`；注释中的“mget”不能理解成跨请求批量读取。批内历史去重发生在读取之后，并以完整 payload 字节为键，减少后续反序列化次数，不减少已发出的存储查询。[实际读取](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L130)、[去重与拼接](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L230)。
+
+```python
+# 攒批单位是请求；计算单位是候选行。
+request_count = len(jobs)                     # 至多 max_batch
+candidate_rows = sum(len(job.items) for job in hit_jobs)
+# KV未命中的请求不进入前向，/rank将其零logits转换为0.5。
+```
+
+攒批线程等到首个请求后，最多再等待 `max_wait_ms`，或收够 `max_batch` 个请求便取批。该时间是一次取批的等待窗口，不是排队时延上限；队列已有积压、拼接耗时或响应写回阻塞时，请求可等待更久。候选行数、字节数没有对应的独立批上限。[取批实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L174)。
+
+### 3.3 线程池、队列与锁的边界
+
+| 执行者 | 等待与唤醒 | 当前容量或同步机制 |
+|---|---|---|
+| 接入线程 | 等待已接收的连接；随后阻塞 `recv` | 连接队列使用 mutex 和条件变量；无显式队列容量。监听 backlog 为 512，不能代替应用队列上限 |
+| 历史、编码、C++ 计算池 | Folly CPU 线程池调度任务 | `Executor::add` 先读 pending 数，再入队；检查与入队不是同一个原子操作 |
+| 参数查询、KV 读取池 | Folly IO 线程池执行同步外部调用 | 虽名为 IO 池，任务仍等待 PS/SDK 返回；不能按纯非阻塞事件处理估算容量 |
+| 攒批线程 | `batch_cv` 等待首项、满批或超时 | `batch_mu` 保护 deque；该 deque 无显式容量限制 |
+| Python 桥线程 | `cv` 等待批次；取出后执行 Python | mutex 保护队列；最多等待 16 个批次，正在执行的批次不计入队列容量 |
+| HTTP 完成回调 | 在任务完成或失败线程中执行 | atomic 标记防止同一响应重复写回；不保证所有异常路径都能完成 |
+
+[线程池封装](assets/source_snapshots/OneTrans_HSE_project/cpp/src/common/executor.cpp.html#L7)使用普通线程工厂，未设置绑核。其 `queue_cap` 是 pending 快照的软限制，不能称为整个服务的严格在途上限。其他共享锁包括指标汇总 mutex、进程内 KV 表 mutex，以及 PS 的表注册锁和分片锁；TSV 在启动后只读，没有逐请求文件锁。[指标锁](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp.html#L23)、[本地 KV 锁](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/store.cpp.html#L49)、[PS 分片锁](assets/source_snapshots/OneTrans_HSE_project/deploy/ps/embedding_server.cc.html#L60)。
+
+以下是 `server_main.cpp` 的默认值，不是部署建议，也不是已部署配置。入口会覆盖 `ScoreFlow::Config` 自身的默认值，例如后者的 `max_batch=16`，入口实际默认传入 32。
+
+```yaml
+server_defaults:
+  http_threads: 8
+  nearline_threads: 2
+  lookup_threads: 4
+  encode_threads: 2
+  kv_threads: 4
+  compute_threads: 0       # 由hardware_concurrency取值；不可用时取4
+  queue_cap: 1024         # 各Executor的pending软限制
+  max_batch: 32           # 请求数，不是候选行数
+  max_wait_ms: 5
+  compute_backend: auto
+  embedding_source: local
+  kv_backend: local
+  kv_ttl_seconds: 0
+bridge_waiting_batches: 16  # 类成员固定值，不受queue_cap控制
+```
+
+同一二进制总会构造候选流水线和历史池；按入口地址分工，不会自动裁掉另一角色的线程池。`nearline_threads=0` 也不是关闭历史池：通用 Executor 将非正线程数转换为 1。启用 Python 后仍构造 C++ 计算池，供回退使用。具体活跃线程数、SDK 内部线程和算子线程要在运行中观测。[入口默认值](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/server_main.cpp.html#L52)、[计算池创建](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L19)。
+
+### 3.4 过载、后端回退与异常
+
+| 条件 | 当前实际处理 | 需要注意的边界 |
+|---|---|---|
+| 历史池拒绝入队 | 路由捕获异常并返回 HTTP 400 | 当前未将过载单独分类为 429/503 |
+| 候选参数、编码或 KV 池拒绝入队 | `fail_ctx` 经 HTTP 回调返回 503 | 无服务级总截止时间；已开始的同步调用仍按各自超时完成 |
+| KV 不存在、读取错误或 payload 损坏 | 统一为 miss，候选返回零 logits | `/rank` 可返回 HTTP 200 和 0.5，不能当作正常模型结果 |
+| Python 不可用，或桥队列拒绝提交 | 进入 C++ 计算池 | 队列回退也可能发生在显式 `python` 模式；桥内执行异常则报错，不自动重算 |
+| C++ 计算池拒绝入队 | `dispatch_cpp` 的 `add` 在当前批线程调用链中无异常捕获 | 异常可能逃出线程并终止进程；不能承诺过载一定返回 503 |
+
+另外两处需要专项验证：Python 初始化超时后，分离的初始化线程仍可能继续并置 `ready=true`，但 `start` 已返回、计算线程未创建；Python 调用抛异常时，也可能跳过末尾的 GIL 释放。它们是根据控制流发现的缺口，本轮未通过故障注入复现。GIL 是解释器访问锁，不是 GPU 锁。[桥初始化](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L106)、[桥执行与异常](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L185)、[未保护的计算提交](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L285)。
+
+### 3.5 与 PaiRec 的同步关系
+
+```python
+# gate 是一次历史投递的完成闸门；以下是配套PaiRec当前行为。
+enqueue_ingest(history, gate)
+response = post_rank(user_id, items)       # 先尝试打分
+if not response.trace.kv_hit and gate is not None:
+    gate.wait(timeout)
+    response = post_rank(user_id, items)  # 等待超时也会再查
+```
+
+历史投递成功、失败或被丢弃都可能打开闸门，因此闸门打开不等于写入成功。旧历史已存在时，首查命中便不等新历史；首次 miss 后重查则增加一次真实 `/rank` 的查表与取数负载。客户端停止等待也不会取消已提交的 OneTrans 任务或删除用户级 KV。[历史投递](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L230)、[候选重查](assets/source_snapshots/pairec4tigerllm_8506/services/sort/onetrans_rank_sort.go.html#L159)。
+
+## 4. 物理视图：容器、进程与共享数据域
+
+下图沿用[系统物理视图](01_system.md)的目标 Pod 分组；每个外框表示一种部署单元，内框表示容器及其主要进程，不表示实例数量或主机位置。OneTrans 当前资料是多进程启动示例，历史与候选的镜像及 Pod 配置仍需补齐。未规定主机分配、调度、worker 数量，或把 worker 与模型放在同一 Pod。
+
+图法：部署映射示意图（非 UML）。双向连线表示网络连通要求，不表示请求顺序。
+
+```mermaid
+flowchart TB
+    subgraph Gateway[Pod：网关]
+        N[容器：Nginx<br/>进程：master与worker]
+    end
+    subgraph Orchestrator[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序<br/>内含历史提供器]
+    end
+    subgraph History[Pod：历史计算]
+        H[容器：OneTrans<br/>进程：onetrans_server]
+    end
+    subgraph Candidate[Pod：候选打分]
+        R[容器：OneTrans<br/>进程：onetrans_server]
+    end
+    subgraph Parameter[Pod：模型参数服务]
+        PS[容器：参数服务<br/>进程：embedding_server]
+    end
+    subgraph Worker[Pod：DataSystem worker]
+        W[容器：DataSystem<br/>进程：datasystem_worker]
+    end
+    subgraph Metadata[Pod：DataSystem元数据]
+        E[容器：etcd<br/>进程：etcd]
+    end
+    N <-->|HTTP| P
+    P <-->|HTTP ingest| H
+    P <-->|HTTP rank| R
+    H <-->|参数连接| PS
+    R <-->|参数连接| PS
+    H <-->|历史状态连接| W
+    R <-->|历史状态连接| W
+    W <-->|集群元数据连接| E
+```
+
+历史和候选容器运行同一程序，均注册三个 HTTP 接口，通过调用地址区分职责。Python 后端把解释器及 PyTorch 嵌入 `onetrans_server`，不另启动 Python 服务进程；C++ 后端使用 CPU，Python 后端按 CUDA 是否可用选择 GPU 或 CPU，设备分配由部署确定。[嵌入调用](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L28)、[设备选择](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/bridge_score.py.html#L26)。
+
+| 使用方 | 必要资源与一致性要求 |
+|---|---|
+| PaiRec | 现有历史提供器的 JSON 文件或 Kafka 连接；这不是统一特征服务取数 |
+| 两个 OneTrans 容器 | 匹配的 `manifest.json`、`weights.bin`、用户 TSV、物品 TSV；两个程序启动均读取两份 TSV。挂载或分发方式待定 |
+| 参数服务 | 按模型版本装载 user/item/artist/album 参数表；维度与模型一致 |
+| DataSystem | 两个模型进程访问同一数据域，键中的模型版本与用户 ID 一致；不要求连接同一个 worker。独立本地 KVStore 不满足共享 |
+| 可选 Python 环境 | 包、解释器 ABI、PyTorch 和设备运行时匹配；C++ 计算代码仍保留用于回退 |
 
 ```yaml
 split_process_requirements:
-  binary: 编译时包含 PS 与 DataSystem 支持
-  history_process: 调用 /ingest；历史计算使用 C++ CPU
-  candidate_process: 调用 /rank；明确选择 cpp 或 python 计算后端
+  binary: 编入真实PS与DataSystem支持，检查构建日志与加载的动态库
   embedding_source: ps
   kv_backend: datasystem
-  model_version: 两进程一致，同时决定 PS 表名前缀与历史结果键
-  user_features_file: 两进程启动可读取
-  item_lookup_file: 两进程启动可读取
-  model_files: 两进程使用匹配的模型权重与输入维度
+  model_version: 两端一致，同时用于参数表前缀和历史结果键
+  candidate_compute_backend: 显式选择cpp或python，核对实际执行路径
+  shared_state_check: 历史端写入，候选端取回匹配payload并完成前向
 ```
 
-当前默认是本地参数表和本地历史存储；未编入相关支持时，指定 PS/DataSystem 选项也可能仍用本地路径。`auto` 计算后端在 Python 桥启动失败时回退 C++；桥队列满也可回退 C++。`/healthz` 只返回状态、模型版本、计算后端和对象数，不足以证明正在使用真实共享存储。[启动后端选择](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/server_main.cpp.html#L146)。
+`/healthz` 只能辅助检查，不能替代上述共享读写验证：DataSystem 实现的 `size()` 固定返回 0；`compute_backend=python` 表示桥可用，不说明设备，也不排除某批因桥队列拒绝而走 C++。本轮没有启动这些服务或验证资源容量。[存储计数实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/datasystem_store.h.html#L40)、[后端标记](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L48)。
 
 ## 5. 场景视图：一次候选打分的输入输出
 
@@ -304,7 +422,7 @@ sequenceDiagram
     R->>DS: Get：与历史阶段相同的用户和模型 key
     DS-->>R: 序列化历史 K/V（本图为命中成功路径）
     R->>R: 执行候选 Transformer 并取首头 sigmoid
-    R-->>P: items=[item_id,score]，trace.kv_hit，model_version
+    R-->>P: items=[{item_id,score}]，trace.kv_hit，model_version
     P->>P: 将分数回填原候选，按分数稳定降序
 ```
 
@@ -342,3 +460,98 @@ assert all_scores_are_finite
 ```
 
 未来若统一 OneTrans 的业务特征来源，可让调用方从特征服务取历史、用户和候选字段后使用已有 `/ingest`、`/score`；这需要先冻结与模型匹配的输入配方。本轮保留上述实际路径，不要求同步改 OneTrans。请求唯一历史键、历史版本校验、显式完成回执和释放接口仍是可单独推进的工程改造，均不是已实现能力。
+
+## 6. 负载分析：计算、拷贝和操作系统资源
+
+本节把源码可确认的工作量与待测瓶颈分开。它用于设计观测和选择测试变量，不提供未经实测的 QPS、延迟或硬件配置。先记录实际模型形状、请求候选数、历史长度、KV 命中率、后端和并发度；只有这些条件一致，结果才可比较。
+
+### 6.1 两种后端实际执行什么
+
+| 路径 | 计算与数据移动 | 负载含义 |
+|---|---|---|
+| 历史 C++ 路径 | 50 个槽位的查表、输入编码、四层历史前向；生成各层 K/V，序列化并计算 SHA256，然后写存储 | 每请求一个历史任务。短历史仍按固定张量宽度投影、分配和存储；掩码不等于把张量压成有效项长度 |
+| 候选 C++ 路径 | 请求特征张量先拼成 `BridgeBatch`；随后仍进入 C++ 分支，反序列化去重历史，再复制并拼成计算批；各层为每个候选复制历史 K/V 与候选 K/V | 当前 C++ 分支也支付了先构造桥输入的开销；复用历史指针不等于所有计算都零复制 |
+| 候选 Python 路径 | C++ blob → Python `bytes`；候选再经 `bytearray` 构造张量；历史逐个反序列化；按设备执行 `.to(device)`；逐候选 stack/cat 后前向；结果 `.to("cpu")` 并转 bytes 返回 C++ | 有 CUDA 时包含 CPU→GPU 输入与 GPU→CPU 输出传输；批内去重不跨批保存设备历史缓存。Python 后端使用 CPU 时不发生这些 GPU 传输 |
+| 启动及常驻内存 | C++ 读取整份权重 blob，并复制出模型、前端和参数表；选择 PS 前已经加载本地参数表。Python 启用后还会加载其模型；TSV 全量装入内存 | 不能认为使用 PS 就自动省掉本地参数表内存，也不能只用模型文件大小估算进程 RSS |
+
+C++ 数值原语直接用循环实现矩阵乘、归一化、注意力和前馈网络，源码没有显式调用 BLAS 或把单个前向拆到多个算子线程。任务间并行来自计算池；编译器向量化与实际 CPU 效率需测量。Python 则调用 PyTorch 算子，实际线程数和注意力内核选择依赖 PyTorch、设备与输入形状，不由 `compute_threads` 控制。[C++ 原语](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/model.cpp.html#L14)、[矩阵循环及权重复制](assets/source_snapshots/OneTrans_HSE_project/cpp/src/common/tensor.cpp.html#L11)。
+
+Python 只有一个桥消费线程按批调用 Python；底层算子的并行度另由运行时决定，不能从桥线程数推断。C++ 通过 GIL 进入解释器；本实现要等这一批返回并完成回调后，桥线程才取下一批。回调在 `call_score` 正常释放 GIL 后执行。[桥字节边界](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L206)、[Python 输入与输出](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/bridge_score.py.html#L111)、[按候选复制历史](assets/source_snapshots/OneTrans_HSE_project/onetrans/serving/two_stage.py.html#L191)。
+
+### 6.2 可由形状计算的负载基数
+
+下面的数字只适用于随库的 128 维、4 层、float32 模型。`M` 是单请求候选数，`C` 是一次命中计算批的候选总行数，`U` 是批内不同历史 payload 数；`S_l` 是第 l 层保存的历史宽度。
+
+```python
+D = 128
+Ns = 5
+S = [50, 38, 27, 16]
+float_bytes = 4
+history_tensor_bytes = 2 * sum(S) * D * float_bytes  # 134144 B = 131 KiB
+# 实际payload还包含魔数、长度字段和JSON格式头，不含原始历史ID、请求ID或timestamps。
+candidate_input_bytes = C * Ns * D * float_bytes   # 2560 × C B
+candidate_output_bytes = C * 2 * float_bytes       # 8 × C B
+unique_history_input_bytes = U * history_tensor_bytes
+
+# PS响应浮点值的大小，不含protobuf和传输开销。
+ingest_parameter_bytes = 50 * D * float_bytes      # 25600 B
+rank_parameter_bytes = (1 + M + artist_id_count + album_id_count) * D * float_bytes
+# 例如4个候选、每项两个类别槽各1个ID：13行参数，共6656 B。
+```
+
+用户 1 的十项历史会左补 40 项，仍产生上述固定宽度的历史张量；四个候选编码输入是 10,240 B，模型原始输出仅 32 B。小输出不代表请求轻：参数回包、约 131 KiB 历史读取、重复张量复制和计算都发生在输出之前。[历史张量产生](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/two_stage.cpp.html#L53)、[序列化格式](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/serialize.cpp.html#L41)。
+
+按张量形状看，历史注意力的乘加规模随 `sum(S_l² × D)` 增长；候选注意力随 `C × sum(Ns × (S_l + Ns) × D)` 增长。它们只描述注意力部分，未包含投影、前馈网络、编码及复制；C++ 掩码还会跳过部分点积，不能把公式当成精确 FLOPs 或延迟。候选 K/V 拼接会为每行复制历史，即使 `U=1`，临时张量规模仍随 `C` 增长。[候选前向](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/two_stage.cpp.html#L129)。
+
+```python
+# 用实际OneTrans调用率估算应用边界的数据量；不等于网卡实际流量。
+kv_write_bytes_per_second = ingest_calls_per_second * average_payload_bytes
+kv_read_bytes_per_second = rank_calls_per_second * kv_hit_rate * average_payload_bytes
+# rank_calls应包含PaiRec重查；实际网络还受同机访问、worker转发、协议与缓存行为影响。
+```
+
+存储 SDK 内部是否用共享内存、网络复制或其他传输，须按部署版本和连接方式验证。OneTrans 当前只设置 DataSystem host/port，没有提供足以断言“远端零复制”或“每次一定走网卡”的证据。[SDK 接入边界](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp.html#L31)。
+
+### 6.3 操作系统资源与待测瓶颈
+
+| 子系统 | 源码已确认的负载 | 如何验证是否成为瓶颈；尚未实测 |
+|---|---|---|
+| CPU 调度 | 多个 Folly 池、攒批线程、HTTP 线程、可选桥线程同时存在；同步 I/O 占用任务执行者，CPU 回退会突然增加计算工作 | 分线程 CPU、运行队列、上下文切换、CPU 配额节流；核对慢的是执行还是等候，不先把线程数设成核数倍数 |
+| 锁与同步 | 连接队列、攒批队列、桥队列使用 mutex/条件变量；指标使用共享 mutex；PS 热门 ID 可能落在同一分片锁 | 采样等待栈、锁等待时间、各队列深度；“锁存在”不能直接推导“锁已成为瓶颈” |
+| 内存与分配器 | 特征、payload、批拼接、反序列化、逐层中间张量均分配或复制；无界连接和攒批队列可持有大量请求数据 | RSS、分配热点、页错误、内存带宽、队列驻留字节；区分常驻模型与积压请求 |
+| 网络与 socket | HTTP 每响应关闭连接；PS 每请求多次同步查表；DataSystem 逐请求读写；回调直接发送 HTTP | 连接建立次数、打开的 fd、TCP 队列、重传、PS/SDK耗时与发送阻塞；HTTP短连接负载需单独计入 |
+| 文件与页缓存 | 模型和 TSV 在启动时读入；`/rank` 的 TSV 查询是内存访问 | 分开记录启动文件 I/O 与稳态请求；不能把每次 TSV 查表计为一次磁盘读。DataSystem/etcd的磁盘行为另看其配置 |
+| GPU及设备传输 | 仅启用 CUDA 的 Python 候选路径涉及；桥进行输入搬运、算子提交及结果回传 | GPU利用率、算子时间、传输量、同步等待与显存峰值；小批可能受提交和复制开销影响，需用剖析结果确认 |
+
+对一个稳定阶段，可用 `到达率 × 平均占用时间 / 并行执行数` 粗看饱和趋势。同步 RPC 占用时间包含外部等待；接近饱和后排队会放大尾延迟。该估算不包含批处理、回退、共享锁及多阶段竞争，不能当作容量承诺。`max_batch` 变大可能提高 Python 算子批量，也会增加临时内存和等待；C++ 分支的候选循环不保证同样收益。
+
+当前 HTTP 还缺少 socket 读写超时、完整短写重试和总在途限制；关闭阶段也需要单独验证：HTTP 等待异步请求最多约 10 秒，但 Flow 先停攒批线程再等待池排空，没有明确逐项拒绝所有遗留批任务。不要据此宣称已实现完整的优雅退出。[HTTP 生命周期](assets/source_snapshots/OneTrans_HSE_project/cpp/src/net/http_server.cpp.html#L172)、[流水线停止顺序](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L37)。
+
+### 6.4 哪些指标现在能用，哪些仍需补
+
+| 现有输出 | 实际含义与限制 |
+|---|---|
+| `ingest_us` | 历史任务开始后的编码、查表、前向、序列化和写入总时间；不含 HTTP 接收、历史池排队和响应发送 |
+| `lookup_us`、`encode_us`、`kv_us` | 相应任务内部耗时；不含此前线程池排队。`feature_us=lookup_us+encode_us`，不含接入线程上的 TSV 装配 |
+| `backend_rpc_us` | 命中路径当前累加 KV 读取耗时，不是所有后端 RPC 总和，PS 查询在 `lookup_us` 内 |
+| `batch_wait_us`、`batch_size` | 从进入攒批队列到取批后的等待；大小是请求数，包含本批 miss 请求 |
+| `compute_us`、`batch_compute_us` | C++ 路径记录前向时间，前者按命中请求数均摊；反序列化、拼接和计算池排队不在内。Python 路径当前未写这些字段，零值不能解释成未计算 |
+| `flow.backend.python/cpp`、`flow.bridge_overflow` | 后端提交或回退计数；不是实际设备与成功完成证明。`online.batch_size` 则记录命中候选行数，与响应的 `batch_size` 单位不同 |
+| `/metrics` 中的直方图 | 当前桶只增加命中桶，输出未转成累计桶；不能直接按标准 Prometheus 累计直方图求分位数。`online.qps` 也是累加计数且全 miss 批不增加，不能当作总入口 QPS |
+
+依据：[批次计数和回填](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L192)、[C++计时](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L316)、[指标桶实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp.html#L39)。
+
+首轮观测应补齐每阶段的入队、开始、结束时间，候选行数与字节数，桥排队及设备执行时间，DataSystem 错误类型，以及 HTTP 接收至发送完成的总时长。测量由外部回放产生负载，不往模型服务加入压力模拟模块。按以下少量变量逐项改变即可定位主要限制：
+
+```yaml
+measurement_cases:
+  calculation: C++ / Python-CPU / Python-CUDA；记录实际后端与设备
+  request_size: 固定并分别增加候选数；历史分别取短序列与50项
+  reuse: KV命中 / 缺失；相同payload / 不同用户payload
+  concurrency: 从无积压开始增加；同时记录各队列和内存
+  failures: PS超时、DataSystem错误、桥拒绝、计算池过载、客户端断开、退出时在途请求
+success_evidence:
+  - 真实参数与历史覆盖；模型前向完成，不能以HTTP200或分数不同替代
+  - 延迟、拒绝率、内存、队列增长同时可解释
+  - 固定历史串行回放不代表已解决用户级KV并发覆盖
+```

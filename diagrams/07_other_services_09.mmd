@@ -1,6 +1,12 @@
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC| B[稀疏服务桥进程：可选]
-    B -->|HTTP| S[稀疏服务进程]
-    S -->|OpenSearch HTTP| O[(OpenSearch服务)]
-    L[离线文档装载进程] -->|mapping与bulk| O
-    O --- D[(索引持久化卷)]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph SP[Pod：稀疏召回]
+        S[容器：稀疏召回<br/>进程：召回程序]
+    end
+    subgraph OP[Pod：文档检索数据库]
+        O[容器：OpenSearch<br/>进程：OpenSearch JVM]
+    end
+    P <-->|bRPC| S
+    S <-->|HTTP| O

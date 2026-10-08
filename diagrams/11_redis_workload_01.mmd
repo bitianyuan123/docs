@@ -1,0 +1,10 @@
+flowchart TB
+    subgraph RedisProcess[进程：redis-server]
+        Main[主线程<br/>事件循环与普通命令执行]
+        IO[可选IO线程<br/>socket读写和协议处理]
+        Bio[后台工作线程<br/>fsync、关闭文件、延迟释放]
+        Main <-->|依版本交付IO工作与结果| IO
+        Main -->|投递后台任务| Bio
+    end
+    Main -->|BGSAVE触发fork| RDB[子进程：生成RDB]
+    Main -->|重写触发fork| AOF[子进程：重写AOF]

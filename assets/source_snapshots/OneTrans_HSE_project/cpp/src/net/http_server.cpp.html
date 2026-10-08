@@ -1,0 +1,319 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/net/http_server.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/net/http_server.cpp</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>4d64d1d8b8f21b89b6e33b792e38dfd0c5148b72aca65ae3617ee0b3296b0953</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;net/http_server.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;arpa/inet.h&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>#include &lt;netinet/in.h&gt;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>#include &lt;netinet/tcp.h&gt;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#include &lt;sys/socket.h&gt;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>#include &lt;unistd.h&gt;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#include &lt;cstring&gt;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>#include &lt;chrono&gt;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#include &lt;condition_variable&gt;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>#include &lt;mutex&gt;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>#include &lt;queue&gt;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>#include &lt;stdexcept&gt;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>namespace onetrans {</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a></span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>namespace {</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>constexpr size_t kMaxHead = 64 * 1024;   // 请求头上限</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>constexpr size_t kMaxBody = 16 * 1024 * 1024;  // body 上限 16MB</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>const char* status_text(int code) {</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    switch (code) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>        case 200: return &quot;OK&quot;;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>        case 400: return &quot;Bad Request&quot;;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>        case 404: return &quot;Not Found&quot;;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>        case 405: return &quot;Method Not Allowed&quot;;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>        case 413: return &quot;Payload Too Large&quot;;</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>        case 500: return &quot;Internal Server Error&quot;;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>        default: return &quot;Unknown&quot;;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    }</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>}</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a></span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>// 简单fd队列：accept 线程投递，worker 线程消费</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>class FdQueue {</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>public:</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>    void push(int fd) {</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>        {</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>            std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>            q_.push(fd);</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>        }</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>        cv_.notify_one();</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    }</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    int pop() {  // 阻塞；stop 后返回 -1</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>        std::unique_lock&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>        cv_.wait(lk, [&amp;] { return !q_.empty() || stopped_; });</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>        if (q_.empty()) return -1;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>        int fd = q_.front();</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>        q_.pop();</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>        return fd;</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    }</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a></span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    void stop() {</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>        {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>            std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>            stopped_ = true;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>        }</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>        cv_.notify_all();</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    }</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a></span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>private:</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    std::mutex mu_;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    std::condition_variable cv_;</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    std::queue&lt;int&gt; q_;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    bool stopped_ = false;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>};</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>}  // namespace</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>// HttpRequest</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>std::map&lt;std::string, std::string&gt; HttpRequest::query_params() const {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    std::map&lt;std::string, std::string&gt; out;</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    size_t pos = 0;</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    while (pos &lt; query.size()) {</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>        size_t amp = query.find(&#x27;&amp;&#x27;, pos);</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>        if (amp == std::string::npos) amp = query.size();</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>        if (amp &gt; pos) {</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>            std::string kv = query.substr(pos, amp - pos);</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>            size_t eq = kv.find(&#x27;=&#x27;);</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>            if (eq == std::string::npos)</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>                out[kv] = &quot;&quot;;</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>            else</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>                out[kv.substr(0, eq)] = kv.substr(eq + 1);</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>        }</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>        pos = amp + 1;</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    }</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    return out;</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>}</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a></span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>HttpResponse HttpResponse::json(int status, std::string body) {</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    HttpResponse r;</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    r.status = status;</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    r.content_type = &quot;application/json&quot;;</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    r.body = std::move(body);</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    return r;</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>}</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>HttpResponse HttpResponse::text(int status, std::string body) {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    HttpResponse r;</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>    r.status = status;</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    r.content_type = &quot;text/plain; charset=utf-8&quot;;</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    r.body = std::move(body);</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    return r;</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>}</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a></span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>// HttpServer</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>HttpServer::HttpServer(const std::string&amp; host, int port, int num_threads)</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>    : host_(host), port_(port), num_threads_(num_threads &gt; 0 ? num_threads : 4) {}</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>HttpServer::~HttpServer() { stop(); }</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a></span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>void HttpServer::route(const std::string&amp; method, const std::string&amp; path, HttpHandler handler) {</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>    routes_[method + &quot; &quot; + path] = std::move(handler);</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>}</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a></span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>void HttpServer::route_async(const std::string&amp; method, const std::string&amp; path,</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>                             AsyncHandler handler) {</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>    async_routes_[method + &quot; &quot; + path] = std::move(handler);</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a></span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>void HttpServer::run() {</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>    if (listen_fd_ &lt; 0) throw std::runtime_error(&quot;socket() 失败&quot;);</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a></span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>    int opt = 1;</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &amp;opt, sizeof(opt));</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a></span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>    sockaddr_in addr{};</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>    addr.sin_family = AF_INET;</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>    addr.sin_port = htons(static_cast&lt;uint16_t&gt;(port_));</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>    if (::inet_pton(AF_INET, host_.c_str(), &amp;addr.sin_addr) != 1)</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>        throw std::runtime_error(&quot;非法监听地址: &quot; + host_);</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>    if (::bind(listen_fd_, reinterpret_cast&lt;sockaddr*&gt;(&amp;addr), sizeof(addr)) &lt; 0)</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>        throw std::runtime_error(&quot;bind 失败: &quot; + host_ + &quot;:&quot; + std::to_string(port_));</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>    if (::listen(listen_fd_, 512) &lt; 0) throw std::runtime_error(&quot;listen 失败&quot;);</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a></span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>    // 本进程单 server 实例：accept 线程 → worker 池（static 存储期，无需捕获）</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>    static FdQueue queue;</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>    running_ = true;</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>    for (int i = 0; i &lt; num_threads_; ++i) {</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>        threads_.emplace_back([this] {</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>            while (running_) {</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>                int fd = queue.pop();</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>                if (fd &lt; 0) break;  // stop</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>                handle_connection(fd);</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>            }</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>        });</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>    }</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a></span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>    // accept 循环（run 调用线程执行；返回即停止）</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>    while (running_) {</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>        sockaddr_in peer{};</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>        socklen_t plen = sizeof(peer);</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>        int fd = ::accept(listen_fd_, reinterpret_cast&lt;sockaddr*&gt;(&amp;peer), &amp;plen);</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>        if (fd &lt; 0) {</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>            if (errno == EINTR) continue;</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>            break;</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>        }</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>        int one = 1;</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &amp;one, sizeof(one));</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>        queue.push(fd);</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>    }</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>    queue.stop();</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>}</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a></span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>void HttpServer::stop() {</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>    if (!running_.exchange(false)) return;</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    if (listen_fd_ &gt;= 0) {</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>        ::shutdown(listen_fd_, SHUT_RDWR);</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>        ::close(listen_fd_);</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>        listen_fd_ = -1;</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>    }</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>    for (auto&amp; t : threads_) {</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>        if (t.joinable()) t.join();</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>    }</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>    threads_.clear();</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>    // drain 在途异步请求（完成线程会写回并关闭 fd；上限 10s 防御性退出）</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>    for (int i = 0; i &lt; 10000 &amp;&amp; pending_async_.load() &gt; 0; ++i)</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>        std::this_thread::sleep_for(std::chrono::milliseconds(1));</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>}</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a></span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>// 读到 &quot;\r\n\r\n&quot; 为止（请求头），继续读 Content-Length 字节 body</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>bool HttpServer::read_request(int fd, HttpRequest&amp; req, std::string&amp; raw_head) {</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>    std::string buf;</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>    buf.reserve(2048);</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>    char chunk[4096];</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>    size_t head_end = std::string::npos;</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>    while (buf.size() &lt; kMaxHead) {</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>        ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>        if (n &lt;= 0) return false;</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>        buf.append(chunk, static_cast&lt;size_t&gt;(n));</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>        head_end = buf.find(&quot;\r\n\r\n&quot;);</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>        if (head_end != std::string::npos) break;</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>    }</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>    if (head_end == std::string::npos) return false;</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>    raw_head = buf.substr(0, head_end);</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>    std::string rest = buf.substr(head_end + 4);</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a></span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>    // request line: METHOD /path?query HTTP/1.1</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>    size_t line_end = raw_head.find(&quot;\r\n&quot;);</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>    std::string reqline = raw_head.substr(0, line_end);</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>    size_t sp1 = reqline.find(&#x27; &#x27;);</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>    size_t sp2 = reqline.rfind(&#x27; &#x27;);</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>    if (sp1 == std::string::npos || sp2 == sp1) return false;</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>    req.method = reqline.substr(0, sp1);</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>    std::string target = reqline.substr(sp1 + 1, sp2 - sp1 - 1);</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>    size_t q = target.find(&#x27;?&#x27;);</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>    if (q == std::string::npos) {</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>        req.path = target;</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>    } else {</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>        req.path = target.substr(0, q);</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>        req.query = target.substr(q + 1);</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>    }</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a></span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>    // headers：Content-Length</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>    size_t content_len = 0;</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>    size_t pos = line_end + 2;</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>    while (pos &lt; raw_head.size()) {</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>        size_t he = raw_head.find(&quot;\r\n&quot;, pos);</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>        if (he == std::string::npos) he = raw_head.size();</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>        std::string line = raw_head.substr(pos, he - pos);</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>        pos = he + 2;</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>        size_t colon = line.find(&#x27;:&#x27;);</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>        if (colon == std::string::npos) continue;</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>        std::string key = line.substr(0, colon);</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>        std::string val = line.substr(colon + 1);</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>        while (!val.empty() &amp;&amp; (val.front() == &#x27; &#x27; || val.front() == &#x27;\t&#x27;)) val.erase(0, 1);</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>        for (auto&amp; c : key) c = static_cast&lt;char&gt;(::tolower(static_cast&lt;unsigned char&gt;(c)));</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>        if (key == &quot;content-length&quot;) content_len = static_cast&lt;size_t&gt;(::atoll(val.c_str()));</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>    }</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>    if (content_len &gt; kMaxBody) return false;</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a></span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>    // body：rest 已读部分 + 剩余</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>    req.body.reserve(content_len);</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>    req.body = rest.substr(0, std::min(rest.size(), content_len));</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>    while (req.body.size() &lt; content_len) {</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>        ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>        if (n &lt;= 0) return false;</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>        size_t take = std::min(static_cast&lt;size_t&gt;(n), content_len - req.body.size());</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>        req.body.append(chunk, take);</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>    }</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>    return true;</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>}</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a></span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>void HttpServer::write_response(int fd, const HttpResponse&amp; resp) {</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>    std::string head = &quot;HTTP/1.1 &quot; + std::to_string(resp.status) + &quot; &quot; + status_text(resp.status) +</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>                       &quot;\r\nContent-Type: &quot; + resp.content_type +</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>                       &quot;\r\nContent-Length: &quot; + std::to_string(resp.body.size()) +</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>                       &quot;\r\nConnection: close\r\n\r\n&quot;;</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>    ::send(fd, head.data(), head.size(), MSG_NOSIGNAL);</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>    if (!resp.body.empty()) ::send(fd, resp.body.data(), resp.body.size(), MSG_NOSIGNAL);</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>    ::shutdown(fd, SHUT_RDWR);</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>    ::close(fd);</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>}</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a></span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>void HttpServer::handle_connection(int fd) {</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>    HttpRequest req;</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>    std::string raw_head;</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>    if (!read_request(fd, req, raw_head)) {</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>        ::close(fd);</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>        return;</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>    }</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a></span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>    const std::string key = req.method + &quot; &quot; + req.path;</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a></span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>    // 异步路由：接入线程提交后立即返回（不占 worker 等待计算，§7.4.3 接入边界）；</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>    // 响应由流水线完成线程经 done 写回。done 单次生效（原子标记防重复写）。</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>    auto ait = async_routes_.find(key);</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>    if (ait != async_routes_.end()) {</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>        pending_async_.fetch_add(1);</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>        auto done = [this, fd, called = std::make_shared&lt;std::atomic&lt;bool&gt;&gt;(false)](</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>                        HttpResponse resp) {</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>            if (called-&gt;exchange(true)) return;  // 幂等：只写一次</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>            write_response(fd, resp);</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>            pending_async_.fetch_sub(1);</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>        };</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>        try {</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>            ait-&gt;second(req, done);</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>        } catch (const std::exception&amp; e) {</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>            done(HttpResponse::json(500, std::string(&quot;{\&quot;error\&quot;:\&quot;&quot;) + e.what() + &quot;\&quot;}&quot;));</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>        } catch (...) {</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>            done(HttpResponse::json(500, &quot;{\&quot;error\&quot;:\&quot;unknown\&quot;}&quot;));</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>        }</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>        return;  // worker 立即处理下一连接</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>    }</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a></span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>    HttpResponse resp;</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>    auto it = routes_.find(key);</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>    if (it != routes_.end()) {</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>        try {</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>            resp = it-&gt;second(req);</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>        } catch (const std::exception&amp; e) {</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>            resp = HttpResponse::json(500, std::string(&quot;{\&quot;error\&quot;:\&quot;&quot;) + e.what() + &quot;\&quot;}&quot;);</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>        } catch (...) {</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>            resp = HttpResponse::json(500, &quot;{\&quot;error\&quot;:\&quot;unknown\&quot;}&quot;);</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>        }</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>    } else {</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>        // 存在路径但方法不符 → 405（同步与异步路由都算路径存在）</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>        bool path_exists = false;</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>        for (const auto&amp; [k, h] : routes_) {</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>            if (k.substr(k.find(&#x27; &#x27;) + 1) == req.path) path_exists = true;</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>        }</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>        for (const auto&amp; [k, h] : async_routes_) {</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>            if (k.substr(k.find(&#x27; &#x27;) + 1) == req.path) path_exists = true;</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>        }</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>        resp = path_exists ? HttpResponse::json(405, &quot;{\&quot;error\&quot;:\&quot;method not allowed\&quot;}&quot;)</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>                           : HttpResponse::json(404, &quot;{\&quot;error\&quot;:\&quot;not found\&quot;}&quot;);</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>    }</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a></span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>    write_response(fd, resp);</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>}</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a></span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>}  // namespace onetrans</span></pre></html>

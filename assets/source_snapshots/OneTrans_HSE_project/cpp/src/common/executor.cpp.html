@@ -1,0 +1,67 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/common/executor.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/common/executor.cpp</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>70bf05233624e3fd2af2296db32b7b00d703f0a21525b011b9e66ec62a1b8483</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;common/executor.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;folly/executors/thread_factory/NamedThreadFactory.h&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>namespace onetrans {</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>Executor::Executor(std::string name, int num_threads, size_t queue_capacity, bool io)</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>    : name_(std::move(name)),</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>      cap_(queue_capacity == 0 ? 1 : queue_capacity),</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>      io_(io) {</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>    const size_t n = num_threads &gt; 0 ? static_cast&lt;size_t&gt;(num_threads) : 1;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>    if (io_) {</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>        // IO 池（EmbedLookup / KV I/O）：每线程独立 event base，承接阻塞式网络/外部调用。</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>        io_exec_ = std::make_shared&lt;folly::IOThreadPoolExecutor&gt;(</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>            n, std::make_shared&lt;folly::NamedThreadFactory&gt;(name_));</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>    } else {</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>        // CPU 池（Frontend Encode / Compute）：folly 绑核线程 + 无界队列，</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>        // 有界性由 add() 侧的 pending 快照软判定兜底（避免阻塞式满队列死锁）。</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>        cpu_ = std::make_shared&lt;folly::CPUThreadPoolExecutor&gt;(</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>            n, std::make_shared&lt;folly::NamedThreadFactory&gt;(name_));</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>    }</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>}</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>Executor::~Executor() { stop(); }</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>void Executor::add(std::function&lt;void()&gt; fn) {</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    size_t pending = 0;</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>    {</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>        std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>        if (stopped_) throw std::logic_error(&quot;executor &#x27;&quot; + name_ + &quot;&#x27; stopped&quot;);</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>        // 快照式软背压：判定与入队非原子；瞬时超限由接入层降级吸收即可。</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>        pending = cpu_ ? cpu_-&gt;getPendingTaskCount() : io_exec_-&gt;getPendingTaskCount();</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>        if (pending &gt;= cap_) throw ExecutorOverloaded(name_);</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    }</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    if (cpu_) {</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>        cpu_-&gt;add(std::move(fn));</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    } else {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>        io_exec_-&gt;add(std::move(fn));</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    }</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>}</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>void Executor::stop() {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    {</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>        std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>        if (stopped_) return;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>        stopped_ = true;</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    }</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    // join：folly 在退出时排空已入队任务并回收线程（与自研池的 drain+join 语义对齐）。</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    if (cpu_) cpu_-&gt;join();</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    if (io_exec_) io_exec_-&gt;join();</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>}</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>std::shared_ptr&lt;Executor&gt; ExecutorSet::make(const std::string&amp; name, int num_threads,</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>                                            size_t queue_capacity, bool io) {</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    auto pool = std::make_shared&lt;Executor&gt;(name, num_threads, queue_capacity, io);</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    pools_.push_back(pool);</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    return pool;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>void ExecutorSet::stop_all() {</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    std::lock_guard&lt;std::mutex&gt; lk(mu_);</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    for (auto&amp; p : pools_) p-&gt;stop();</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    pools_.clear();</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>}</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>}  // namespace onetrans</span></pre></html>

@@ -4,6 +4,8 @@
 
 本文是**教学样例，不是服务运行记录**：用户和历史沿用已有样例，向量、语义编码、召回结果和模型分数用于说明格式与字段传递。完整数据见[本次请求 JSON](assets/walkthrough_sample.json)，逐接口查看见[完整请求与响应](assets/request_example/README.md)。正文用 Python 表达数据构造、JSON 表达接口内容；它们共同说明流程，不是一份可直接运行的客户端。
 
+本文的 Redis 交互按单分片、未拆批的查询展示；四次业务特征 RPC 不等于任何部署下都只有四条 Redis 命令。具体工作量、拆批及线程等待见 [Redis 负载分析](11_redis_workload.md)，PaiRec 和 OneTrans 内部执行见各自模块文档。
+
 ## 1. 请求怎样变成调用参数
 
 ### 1.1 原始请求与场景配置

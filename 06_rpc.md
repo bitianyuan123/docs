@@ -8,14 +8,15 @@
 
 ## 1. 逻辑视图
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：逻辑结构示意图（非 UML）。箭头表示通信能力依赖，不表示处理步骤；实际调用先后在第 3 节展开。
 
 ```mermaid
 flowchart LR
-    A[业务字段检查] --> B[调用期限与容量控制]
-    B --> C[协议字段转换]
-    C --> D[发送与接收]
-    D --> E[业务成功或明确错误]
+    C[业务调用接口] --> V[字段与版本契约]
+    C --> L[调用生命周期管理]
+    C --> P[协议适配]
+    L --> B[期限与容量策略]
+    P --> T[传输能力]
 ```
 
 | 调用方 → 服务 | 方法及输入 → 输出 | 协议与状态 |
@@ -24,10 +25,10 @@ flowchart LR
 | PaiRec → 特征服务 | `BatchGetItemRepresentations`：历史物品 ID → SID 等表示 | 目标原生 bRPC |
 | 生成服务 → 特征服务 | 同一方法按 SID 查询 → 每个 SID 的物品 ID 列表 | 目标原生 bRPC |
 | PaiRec → 特征服务 | `BatchGetItemFeatures`：候选 ID、字段集合 → 同序属性及状态 | 目标原生 bRPC |
-| PaiRec → 向量召回 | 用户查询向量、向量空间版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用HTTP 适配桥适配旧后端 |
-| PaiRec → 稀疏召回 | 词项、权重、配方版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用HTTP 适配桥适配旧后端 |
+| PaiRec → 向量召回 | 用户查询向量、向量空间版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用 HTTP 适配桥连接旧后端 |
+| PaiRec → 稀疏召回 | 词项、权重、配方版本、topk → 候选 ID 与分数 | 目标原生 bRPC，可用 HTTP 适配桥连接旧后端 |
 | PaiRec → 生成召回 | 历史 SID、生成参数 → 原始候选 ID | 已有原生 bRPC proto；版本字段及特征反查待补 |
-| PaiRec → OneTrans 历史 | `/ingest`：调用方历史、位置 → 写入结果 | 当前 HTTP；严格沿用实际字段 |
+| PaiRec → OneTrans 历史 | `/ingest`：`item_ids`、等长占位序号 `timestamps` → 写入结果 | 当前 HTTP；序号不参与模型位置编码 |
 | PaiRec → OneTrans 精排 | `/rank`：用户 ID、候选 ID → ID 与 sigmoid 分数 | 当前 HTTP；服务内部读取 TSV |
 | 特征服务 → Redis | 版本化 key → JSON String 或缺失 | Redis RESP 存储协议，无额外 Feature RPC |
 
@@ -35,17 +36,18 @@ OneTrans 的 `/score` 是另一个接收完整特征的已有 HTTP 入口，当�
 
 ## 2. 开发视图
 
-图法：模块关系示意图（非 UML，连线含义见本节）。
+图法：源码依赖示意图（非 UML）。箭头为导入、链接或代码生成依赖，不表示 RPC；通信库编入相应程序，不作为服务部署。
 
 ```mermaid
 flowchart LR
-    B[PaiRec业务接口] -->|进程内调用| G[Go薄封装]
-    G -->|进程内调用| C[进程内C接口]
-    C -->|进程内调用| N[原生bRPC客户端]
-    N -->|网络调用| F[特征服务处理器]
-    N -->|网络调用| R[召回服务处理器或协议桥]
-    B -->|进程内调用| H[当前OneTrans HTTP客户端]
+    B[PaiRec业务客户端源码] --> G[Go与C接口封装]
+    G --> N[C++原生客户端源码]
+    N --> L[bRPC库与生成的接口代码]
+    S[特征与召回服务处理器源码] --> L
+    B --> H[当前OneTrans<br/>HTTP客户端源码]
 ```
+
+客户端封装、原生库及 HTTP 客户端随 PaiRec 程序交付；服务处理器与协议定义生成的代码编入对应服务。公共接口文件是构建输入，不是网络中转服务。
 
 ```python
 # 新特征接口的公共调用上下文；完整字段在数据字典中定义。
@@ -108,23 +110,39 @@ if stage_budget <= 0:
 
 超时、取消后，远端计算可能继续完成。当前 OneTrans 没有请求级释放协议；通信层不能承诺取消会删除 KV。目标编排必须区分运输成功与业务成功：例如 `/ingest` 需要检查实际返回的 `accepted`，`/rank` 则要核对 `trace.kv_hit` 及模型执行证据，不能要求不存在的 `ready/executed` 响应字段。
 
+### 等待发生在哪里
+
+| 执行边界 | 等待与唤醒 | 对负载判断的影响 |
+|---|---|---|
+| Go HTTP 客户端 | 使用 Go 网络轮询机制时，等待网络的 goroutine 暂停，网络就绪后恢复为可运行 | 等待的 goroutine 数不等于阻塞的 OS 线程数；具体连接行为见 PaiRec 与 OneTrans 文档 |
+| Go 进入原生 C/C++ | 若适配函数同步等待 RPC 终态，调用所在 OS 线程可能一直留在原生代码中 | 原生线程、内存与 Go 共用容器资源；`GOMAXPROCS` 不是整个进程的线程或 CPU 上限 |
+| bRPC 调用与回调 | bthread 在工作 pthread 上调度；同步等待是否让出工作线程取决于实际等待原语，普通阻塞库调用不能自动转换 | 不能把“用了 bthread”当作所有等待均非阻塞的证据；回调也不保证在提交线程执行 |
+| 目标跨语言完成通知 | 必须明确谁持有请求、谁发布终态、谁唤醒 Go 等待者、谁释放结果；当前文档不假定该机制已实现 | 只有接口叫 `Submit` 并不能证明原生工作线程已释放；需要线程与队列证据 |
+
+bRPC 的 Channel 可复用，但 Controller、请求、响应应按调用隔离；避免为了“线程安全”用一把客户端全局锁包住整个 RPC 等待。[bRPC 客户端约定](https://brpc.apache.org/docs/client/basics/)、[bthread 的调度与阻塞边界](https://brpc.apache.org/docs/bthread/bthread/)。Go 执行机制与实际旧客户端的串行锁分析见 [PaiRec 负载分析](03_pairec_orchestration.md)。
+
+排查时将一次调用分成 `等待容量 → 编码/复制 → 发送 → 等待回复 → 解码 → 发布结果`，同时观测等待队列、线程数、字节数和 CPU 时间。客户端总耗时减服务端耗时仍含排队、调度、编解码与测量边界差异，不能直接命名为“网络时延”。
+
 ## 4. 物理视图
 
-图法：部署映射示意图（非 UML，连线含义见本节）。
+图法：部署映射示意图（非 UML）。以特征调用为例，Pod 内含容器、容器运行进程；双向连线表示网络连通。主机和副本数未定。
 
 ```mermaid
 flowchart LR
-    N[Nginx] -->|HTTP| P[PaiRec与进程内原生客户端]
-    P -->|原生bRPC目标| F[特征服务]
-    F -->|Redis RESP| R[(Redis)]
-    P -->|原生bRPC目标| V[向量或稀疏服务前端]
-    V -->|可选HTTP适配桥| B[原有召回后端]
-    P -->|原生bRPC| G[生成服务]
-    G -->|原生bRPC目标| F
-    P -->|现有HTTP| O[OneTrans历史或精排服务]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序<br/>Go运行时与原生客户端库]
+    end
+    subgraph FP[Pod：特征服务]
+        F[容器：特征服务<br/>进程：特征查询程序]
+    end
+    subgraph RP[Pod：特征数据库]
+        R[容器：Redis<br/>进程：redis-server]
+    end
+    P <-->|bRPC| F
+    F <-->|Redis RESP| R
 ```
 
-图仅表达通信角色；目标 Pod、容器与进程的部署边界见[系统物理视图](01_system.md)，主机分配尚未确定。各召回服务的数据库在各自模块图展开。新客户端使用原生库是前期已选设计；当前旧 Go TCP/PRPC 实现不能直接当作这个原生客户端，见[参考代码](assets/source_snapshots/pairec4tigerllm_8506/services/brpcwire/client.go.html#L155)。
+图中的 Go 封装、C 接口与原生 bRPC 库位于同一进程；原生库自己的工作线程也计入该容器。网关及模型服务的部署见[系统物理视图](01_system.md)，HTTP 适配桥的可选方案见[其他召回模块](07_other_services.md)。当前旧 Go TCP/PRPC 实现不能直接当作目标原生客户端，见[参考代码](assets/source_snapshots/pairec4tigerllm_8506/services/brpcwire/client.go.html#L155)。
 
 ```yaml
 发布绑定:

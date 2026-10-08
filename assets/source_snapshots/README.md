@@ -1,10 +1,10 @@
 # 源码与前期设计证据快照
 
-此目录仅保存正文已经引用的文件，方便单独 clone 文档仓库后核对依据。每个 HTML 保留原始行号，可直接定位 `#L234`，并以纯文本方式显示源内容。它们不是服务源码的完整分发，不能用于构建服务。
+此目录保存正文引用的文件，方便单独 clone 后核对依据。HTML 保留原始行号及 `#L234` 锚点，以纯文本显示内容；不是可构建的完整服务源码。
 
-清单中的 `source_sha256` 是原文件摘要，`sha256` 是当前 HTML 快照摘要；原工程文件未修改。少量连接口令已遮盖并在对应快照中标明。历史文档内容按当时版本保存，不代表本版设计。
+`source_sha256` 为原文件摘要，`sha256` 为 HTML 摘要。连接口令如有遮盖会注明行号。历史分析按原文保存，其结论需要以当前源码复核；官方 PaiRec v2.6.2 快照来自 Go 模块归档，原许可一并保留。
 
-| 文件 | 来源提交 |
+| 文件 | 来源提交或版本 |
 |---|---|
 | [prior_design/01_recommendation_detailed_design.md](prior_design/01_recommendation_detailed_design.md.html) | `前期资料` |
 | [prior_design/02_recommendation_development_guide.md](prior_design/02_recommendation_development_guide.md.html) | `前期资料` |
@@ -46,5 +46,32 @@
 | [pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml](pairec4tigerllm/k8s/deployment-datasystem-pool-hostnetwork.yaml.html) | `cadc1855404b` |
 | [pairec4tigerllm/k8s/deployment-milvus-standalone.yaml](pairec4tigerllm/k8s/deployment-milvus-standalone.yaml.html) | `cadc1855404b` |
 | [pairec4tigerllm/k8s/deployment-inference-brpc-trtllm.yaml](pairec4tigerllm/k8s/deployment-inference-brpc-trtllm.yaml.html) | `cadc1855404b` |
+| [OneTrans_HSE_project/cpp/CMakeLists.txt](OneTrans_HSE_project/cpp/CMakeLists.txt.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/net/http_server.cpp](OneTrans_HSE_project/cpp/src/net/http_server.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/common/executor.cpp](OneTrans_HSE_project/cpp/src/common/executor.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp](OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/serving/compute_bridge.h](OneTrans_HSE_project/cpp/src/serving/compute_bridge.h.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/tools/bridge_score.py](OneTrans_HSE_project/cpp/tools/bridge_score.py.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/engine/two_stage.cpp](OneTrans_HSE_project/cpp/src/engine/two_stage.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/engine/model.cpp](OneTrans_HSE_project/cpp/src/engine/model.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/common/tensor.cpp](OneTrans_HSE_project/cpp/src/common/tensor.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/kv/serialize.cpp](OneTrans_HSE_project/cpp/src/kv/serialize.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/kv/datasystem_store.h](OneTrans_HSE_project/cpp/src/kv/datasystem_store.h.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/onetrans/serving/two_stage.py](OneTrans_HSE_project/onetrans/serving/two_stage.py.html) | `16aecd6f7bd1` |
+| [pairec_v2.6.2/service/user_recommend.go](pairec_v2.6.2/service/user_recommend.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/recall.go](pairec_v2.6.2/service/recall.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/pipeline/pipeline.go](pairec_v2.6.2/service/pipeline/pipeline.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/rank/rank_service.go](pairec_v2.6.2/service/rank/rank_service.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/feature/feature_service.go](pairec_v2.6.2/service/feature/feature_service.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/algorithm/algorithm.go](pairec_v2.6.2/algorithm/algorithm.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/module/user.go](pairec_v2.6.2/module/user.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/module/item.go](pairec_v2.6.2/module/item.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/context/recommend_context.go](pairec_v2.6.2/context/recommend_context.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/LICENSE](pairec_v2.6.2/LICENSE.html) | `v2.6.2` |
+| [pairec4tigerllm_8506/services/scachelatch/scachelatch.go](pairec4tigerllm_8506/services/scachelatch/scachelatch.go.html) | `530f77327f0d` |
+| [pairec4tigerllm_8506/services/feature/consumer.go](pairec4tigerllm_8506/services/feature/consumer.go.html) | `530f77327f0d` |
+| [pairec_sh/pairec-demo/src/stageClient/stageClient.go](pairec_sh/pairec-demo/src/stageClient/stageClient.go.html) | `f7c4c49cbea7` |
+| [pairec_sh/pairec-demo/src/cpp/stageBridge_c.cpp](pairec_sh/pairec-demo/src/cpp/stageBridge_c.cpp.html) | `f7c4c49cbea7` |
+| [prior_design/pairec-orchestration-analysis.md](prior_design/pairec-orchestration-analysis.md.html) | `前期资料` |
 
 完整来源与校验信息见 [manifest.json](manifest.json)。

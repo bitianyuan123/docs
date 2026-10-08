@@ -1,4 +1,10 @@
 flowchart LR
-    U[外部请求方] --> N[Nginx网关部署单元]
-    N --> P1[PaiRec实例1]
-    N --> P2[PaiRec实例2，可选]
+    U[外部请求方]
+    subgraph NP[Pod：网关]
+        N[容器：Nginx<br/>master进程与worker进程]
+    end
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    U <-->|HTTP| N
+    N <-->|HTTP| P

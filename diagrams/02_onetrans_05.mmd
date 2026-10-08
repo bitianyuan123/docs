@@ -1,11 +1,30 @@
-flowchart TD
-    N[Nginx 网关] --> P[PaiRec 进程]
-    P -->|HTTP /ingest| H[OneTrans 历史计算进程]
-    P -->|HTTP /rank| R[OneTrans 候选打分进程]
-    J[历史 JSON 或 Kafka 消费缓存] --> P
-    F[本地用户与物品 TSV 文件] --> H
-    F --> R
-    H -->|原生 bRPC| PS[模型参数服务 PS]
-    R -->|原生 bRPC| PS
-    H -->|写历史 K/V| D[共享 DataSystem]
-    R -->|读历史 K/V| D
+flowchart TB
+    subgraph Gateway[Pod：网关]
+        N[容器：Nginx<br/>进程：master与worker]
+    end
+    subgraph Orchestrator[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序<br/>内含历史提供器]
+    end
+    subgraph History[Pod：历史计算]
+        H[容器：OneTrans<br/>进程：onetrans_server]
+    end
+    subgraph Candidate[Pod：候选打分]
+        R[容器：OneTrans<br/>进程：onetrans_server]
+    end
+    subgraph Parameter[Pod：模型参数服务]
+        PS[容器：参数服务<br/>进程：embedding_server]
+    end
+    subgraph Worker[Pod：DataSystem worker]
+        W[容器：DataSystem<br/>进程：datasystem_worker]
+    end
+    subgraph Metadata[Pod：DataSystem元数据]
+        E[容器：etcd<br/>进程：etcd]
+    end
+    N <-->|HTTP| P
+    P <-->|HTTP ingest| H
+    P <-->|HTTP rank| R
+    H <-->|参数连接| PS
+    R <-->|参数连接| PS
+    H <-->|历史状态连接| W
+    R <-->|历史状态连接| W
+    W <-->|集群元数据连接| E

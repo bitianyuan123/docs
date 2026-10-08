@@ -1,0 +1,315 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/module/user.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/module/user.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Go 模块归档；许可见同目录 LICENSE.html。</p><p>来源版本：<code>官方模块版本 v2.6.2</code><br>原文件 SHA256：<code>973c897c9da10261f1c5acd1699492ad625120668dff1087e0fe545242809f35</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package module</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;errors&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;maps&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;strconv&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;strings&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;sync&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;sync/atomic&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;github.com/alibaba/pairec/v2/context&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>)</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>type UID string</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>type User struct {</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	Id UID `json:&quot;uid&quot;`</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	//Vector     string</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	mutex                    sync.RWMutex</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	Properties               map[string]interface{}    `json:&quot;properties&quot;`</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	cacheFeatures            map[string]map[string]any `json:&quot;-&quot;`</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	featureAsyncLoadCount    int32</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	featureAsyncLoadCh       chan struct{}</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	featureAsyncLoadChClosed bool</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>}</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>func NewUser(id string) *User {</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	user := User{</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>		Id:                    UID(id),</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>		cacheFeatures:         make(map[string]map[string]any),</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>		featureAsyncLoadCount: 0,</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>		featureAsyncLoadCh:    make(chan struct{}, 1),</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	}</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	user.Properties = make(map[string]interface{})</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	return &amp;user</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>}</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>func NewUserWithContext(id UID, context *context.RecommendContext) *User {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	user := NewUser(string(id))</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a></span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	features := context.GetParameter(&quot;features&quot;)</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	properties := make(map[string]any, 64)</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	if featuresMap, ok := features.(map[string]interface{}); ok {</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>		properties = make(map[string]any, len(featuresMap))</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>		for k, v := range featuresMap {</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>			if strValue, ok := v.(string); ok {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>				if strValue != &quot;&quot; {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>					properties[k] = v</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>				}</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>			} else {</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>				properties[k] = v</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>			}</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>		}</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	}</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>	properties[&quot;uid&quot;] = string(id)</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>	user.Properties = properties</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	return user</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>func (u *User) Clone() *User {</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	user := User{</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>		Id:                       u.Id,</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>		Properties:               make(map[string]interface{}),</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		cacheFeatures:            make(map[string]map[string]any),</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		featureAsyncLoadCh:       make(chan struct{}, 1),</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		featureAsyncLoadChClosed: true,</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>	}</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>	u.mutex.RLock()</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	close(user.featureAsyncLoadCh)</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	for k, v := range u.Properties {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>		user.Properties[k] = v</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	}</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a></span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	for name, m := range u.cacheFeatures {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		cloneMap := make(map[string]any, len(m))</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>		for k, v := range m {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>			cloneMap[k] = v</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>		}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>		user.cacheFeatures[name] = cloneMap</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a></span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	}</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a></span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>	return &amp;user</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>}</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a></span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>func (u *User) AddProperty(key string, value interface{}) {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	u.mutex.Lock()</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	u.Properties[key] = value</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	u.mutex.Unlock()</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>}</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>func (u *User) AddProperties(properties map[string]interface{}) {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>	u.mutex.Lock()</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	for key, val := range properties {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		u.Properties[key] = val</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	}</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>	u.mutex.Unlock()</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>}</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>func (u *User) FloatProperty(key string) (float64, error) {</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	u.mutex.RLock()</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	val, ok := u.Properties[key]</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	if !ok {</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>		return float64(0), errors.New(&quot;property key not exist&quot;)</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>	}</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a></span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	switch value := val.(type) {</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>	case float64:</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>		return value, nil</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	case int:</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>		return float64(value), nil</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>	case string:</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>		f, err := strconv.ParseFloat(value, 64)</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>		return f, err</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>	default:</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>		return float64(0), errors.New(&quot;unsupported type&quot;)</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>	}</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>}</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a></span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>func (u *User) GetEmbeddingFeature() (features map[string]interface{}) {</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>	u.mutex.RLock()</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	features = make(map[string]interface{})</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>	for k, v := range u.Properties {</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>		if strings.HasSuffix(k, &quot;embedding&quot;) {</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>			if emb, ok := v.(string); ok {</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>				features[k] = strings.Trim(emb, &quot;{}&quot;)</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>			} else {</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>				features[k] = v</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>			}</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>		}</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	}</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>	return</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>}</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>func (u *User) MakeUserFeatures() (features map[string]interface{}) {</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>	u.mutex.RLock()</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>	features = make(map[string]interface{})</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>	for k, v := range u.Properties {</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>		if k == &quot;type&quot; {</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>			continue</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>		}</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>		if s, ok := v.(float64); ok {</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>			features[k] = s</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>			continue</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>		}</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>		if str, ok := v.(string); ok {</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>			if s, err := strconv.ParseFloat(str, 64); err == nil {</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>				features[k] = s</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>				continue</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>			}</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>		}</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a></span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>		features[k] = v</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>	}</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>	return</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>}</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a></span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>// MakeUserFeatures2 for easyrec processor</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>func (u *User) MakeUserFeatures2() (features map[string]interface{}) {</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>	u.mutex.RLock()</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>	features = maps.Clone(u.Properties)</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	return</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>}</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>func (u *User) StringProperty(key string) string {</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>	u.mutex.RLock()</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>	val, ok := u.Properties[key]</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>	if !ok {</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>		return &quot;&quot;</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	}</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a></span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>	switch value := val.(type) {</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>	case string:</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>		return value</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>	case int:</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>		return strconv.Itoa(value)</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>	case float64:</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>		return strconv.FormatFloat(value, &#x27;f&#x27;, -1, 64)</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>	case int32:</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>		return strconv.Itoa(int(value))</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>	case int64:</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>		return strconv.Itoa(int(value))</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>	}</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>	return &quot;&quot;</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>}</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a></span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>func (u *User) SetProperties(p map[string]interface{}) {</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>	u.mutex.Lock()</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>	u.Properties = p</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>	u.mutex.Unlock()</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>}</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a></span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>func (u *User) DeleteProperty(key string) {</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	u.mutex.Lock()</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>	delete(u.Properties, key)</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>	u.mutex.Unlock()</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>}</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a></span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>func (u *User) DeleteProperties(features []string) {</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	u.mutex.Lock()</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>	for _, key := range features {</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>		delete(u.Properties, key)</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>	}</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>	u.mutex.Unlock()</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>}</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>func (u *User) IntProperty(key string) (int, error) {</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>	u.mutex.RLock()</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>	val, ok := u.Properties[key]</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>	if !ok {</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>		return int(0), errors.New(&quot;property key not exist&quot;)</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>	}</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a></span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>	switch value := val.(type) {</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>	case float64:</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>		return int(value), nil</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>	case int:</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>		return value, nil</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>	case uint:</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>		return int(value), nil</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>	case int32:</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>		return int(value), nil</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>	case int64:</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>		return int(value), nil</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>	case string:</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>		return strconv.Atoi(value)</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>	default:</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>		return int(0), errors.New(&quot;unsupported type&quot;)</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>	}</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>}</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>func (u *User) GetProperty(key string) interface{} {</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>	u.mutex.RLock()</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>	val, ok := u.Properties[key]</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>	if !ok {</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>		return nil</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>	}</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>	return val</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>}</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>func (u *User) AddCacheFeatures(key string, features map[string]any) {</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>	u.mutex.Lock()</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>	defer u.mutex.Unlock()</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>	m, ok := u.cacheFeatures[key]</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>	if !ok {</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>		m = make(map[string]any, len(features))</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a></span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>	}</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a></span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>	for k, v := range features {</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>		m[k] = v</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>	}</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>	u.cacheFeatures[key] = m</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>}</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a></span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>func (u *User) LoadCacheFeatures(key string) {</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>	u.mutex.Lock()</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>	defer u.mutex.Unlock()</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>	if m, ok := u.cacheFeatures[key]; ok {</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>		for k, v := range m {</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>			u.Properties[k] = v</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>		}</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>	}</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>}</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a></span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>func (u *User) GetCacheFeatures(key string) (result map[string]interface{}) {</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>	u.mutex.RLock()</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>	result = make(map[string]interface{})</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>	if m, ok := u.cacheFeatures[key]; ok {</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>		for k, v := range m {</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>			result[k] = v</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>		}</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>	}</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>	return</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>}</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a></span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>func (u *User) IncrementFeatureAsyncLoadCount(count int32) {</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>	atomic.AddInt32(&amp;u.featureAsyncLoadCount, count)</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>}</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a></span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>func (u *User) DescFeatureAsyncLoadCount(count int32) {</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>	u.mutex.Lock()</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>	defer u.mutex.Unlock()</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>	if atomic.LoadInt32(&amp;u.featureAsyncLoadCount) &lt; 1 {</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>		panic(&quot;featureAsyncLoadCount not less than 0&quot;)</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>	}</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>	curr := atomic.AddInt32(&amp;u.featureAsyncLoadCount, -1*count)</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>	if curr == 0 {</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>		if !u.featureAsyncLoadChClosed {</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>			close(u.featureAsyncLoadCh)</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>			u.featureAsyncLoadChClosed = true</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>		}</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>	}</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>}</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a></span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>func (u *User) FeatureAsyncLoadCount() int32 {</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>	return atomic.LoadInt32(&amp;u.featureAsyncLoadCount)</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>}</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a></span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>func (u *User) GetCacheFeaturesNames() (ret []string) {</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>	u.mutex.RLock()</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>	defer u.mutex.RUnlock()</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>	for k := range u.cacheFeatures {</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>		ret = append(ret, k)</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>	}</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>	return</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>}</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a></span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>func (u *User) FeatureAsyncLoadCh() &lt;-chan struct{} {</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>	return u.featureAsyncLoadCh</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>}</span></pre></html>

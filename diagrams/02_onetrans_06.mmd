@@ -22,5 +22,5 @@ sequenceDiagram
     R->>DS: Get：与历史阶段相同的用户和模型 key
     DS-->>R: 序列化历史 K/V（本图为命中成功路径）
     R->>R: 执行候选 Transformer 并取首头 sigmoid
-    R-->>P: items=[item_id,score]，trace.kv_hit，model_version
+    R-->>P: items=[{item_id,score}]，trace.kv_hit，model_version
     P->>P: 将分数回填原候选，按分数稳定降序

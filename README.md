@@ -15,7 +15,7 @@ cd docs
 
 本仓库使用相对链接，不要求存在原作者的工作目录。源码引用打开的是保留行号与提交信息的[只读证据快照](assets/source_snapshots/README.md)，不是可构建的完整服务源码。修改图文后如何重新生成、怎样执行便携校验，见[维护说明](assets/RENDERING.md)。
 
-本次重点修订[系统 4+1](01_system.md)和[用户 1 请求推演](08_request_walkthrough.md)：一张 L1 逻辑图展开多路召回与精排职责，开发图表达源码依赖，进程图表达并发执行，物理图展开 Pod、容器及其内部进程，并用含数据库的场景验证。主机分配尚未确定；已有部署配置与目标安排分别说明。请求文档逐段解释字段来源、转换规则和模型计算含义。完整教学样例可在[JSON 附件](assets/walkthrough_sample.json)逐项核对。
+各模块沿用[系统 4+1](01_system.md)的划分：逻辑能力依赖、源码静态依赖、并发执行、Pod/容器部署及具体场景。主机分配尚未确定；已有机制与目标安排分别说明。[用户 1 请求推演](08_request_walkthrough.md)集中解释接口字段，本次进一步在 PaiRec、OneTrans 和 Redis 文档中展开线程或协程、队列、等待与唤醒、数据复制及 OS 负载。瓶颈分析区分源码机制、条件推断与待测指标，不把分析当作实测容量。
 
 图形符号见[图法与 UML 约定](DIAGRAM_NOTATION.md)：时序图按 UML 语义使用；普通结构和流程图明确标为非 UML。`call_meta` 等示意函数已经就地解释，另提供[10 组完整请求与响应](assets/request_example/README.md)，不必自行展开伪代码。
 
@@ -27,8 +27,9 @@ cd docs
 | 系统整体如何划分职责和部署 | [系统 4+1](01_system.md) |
 | 特征服务怎样查询、加工、装载、发布 | [特征服务 4+1](05_feature_data.md) |
 | 一个具体请求经过每个服务时输入输出是什么 | [用户 1 的请求时序](08_request_walkthrough.md) |
-| PaiRec 如何组织并发等待、召回合并与重排 | [编排层 4+1](03_pairec_orchestration.md) |
-| 当前 OneTrans 到底从哪里取数、怎样计算 | [OneTrans 源码 4+1](02_onetrans.md) |
+| PaiRec 怎样执行、等待与汇合，给 CPU/调度/内存/网络带来什么负载 | [编排层 4+1 与负载分析](03_pairec_orchestration.md) |
+| OneTrans 的 HTTP 线程、阶段线程池与模型计算怎样协作 | [OneTrans 源码 4+1 与负载分析](02_onetrans.md) |
+| Redis 一次请求处理多少数据，事件循环、后台任务与 OS 瓶颈是什么 | [Redis 执行与负载分析](11_redis_workload.md) |
 | 生成召回如何取得历史编码并还原候选 | [生成式召回 4+1](04_generative_recall.md) |
 | 服务之间如何通信 | [RPC 4+1](06_rpc.md) |
 | 向量、稀疏、网关如何工作 | [其他服务各自的 4+1](07_other_services.md) |

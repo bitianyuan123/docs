@@ -1,19 +1,20 @@
-flowchart LR
-    subgraph Caller[调用方代码]
-        P[PaiRec特征客户端]
-        C[确有专属查询的子服务客户端]
+sequenceDiagram
+    participant A as 特征任务甲
+    participant B as 特征任务乙
+    participant C as 同进程连接池
+    participant R as Redis服务
+    par 请求甲
+        A->>C: acquire(remaining_timeout_ms)
+        C-->>A: 可用连接
+        A->>R: MGET user/history/user_rep对应4键
+        R-->>A: 单个数组回复，含4个位置
+        A->>C: release(connection)，本批RESP读取完成
+        A->>A: 解码；核对版本与history_hash
+    and 请求乙
+        B->>C: acquire(remaining_timeout_ms)
+        C-->>B: 可用连接
+        B->>R: MGET 本请求候选物品键
+        R-->>B: 同序值与缺失位置
+        B->>C: release(connection)，本批RESP读取完成
+        B->>B: 恢复原ID次序，投影所需字段
     end
-    subgraph Server[特征服务代码]
-        H[业务接口处理器]
-        V[字段与版本检查]
-        Q[批量读取与结果对齐]
-        R[Redis访问适配]
-        H -->|进程内调用| V
-        V -->|进程内调用| Q
-        Q -->|进程内调用| R
-    end
-    P -->|原生bRPC| H
-    C -->|原生bRPC| H
-    S[共享接口定义] -.->|提供类型定义| P
-    S -.->|提供类型定义| C
-    S -.->|提供类型定义| H

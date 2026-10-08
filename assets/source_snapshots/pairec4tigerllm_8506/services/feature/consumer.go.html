@@ -1,0 +1,212 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm_8506/services/feature/consumer.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm_8506/services/feature/consumer.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>530f77327f0d7f7f15f54b1ddbfe422b58e94a88</code><br>原文件 SHA256：<code>0bd6202ae90da8cfe966aba7f920c70112129485a526f4bc984770fc05d8d758</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// feature/consumer.go</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// Kafka 特征消费者.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// 持续消费 Flink 生成的用户特征更新，维护本地内存缓存.</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a></span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>package feature</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>import (</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;context&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;encoding/json&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;fmt&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;log&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	&quot;strconv&quot;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	&quot;sync&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;time&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	&quot;github.com/segmentio/kafka-go&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>)</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>// KafkaUserFeature 适配 recall-sink topic 的数据格式</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>type KafkaUserFeature struct {</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	UserID        int    `json:&quot;user_id&quot;`        // 数字类型</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	Gender        int    `json:&quot;gender&quot;`         // 性别</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	Age           int    `json:&quot;age&quot;`            // 年龄</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	ClickHistory  string `json:&quot;click_history&quot;`  // JSON 字符串，如 &quot;[\&quot;3035268\&quot;]&quot;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>}</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>// Consumer Kafka 特征消费者.</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>type Consumer struct {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	config        *KafkaConfig</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	reader        *kafka.Reader</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>	cache         *sync.Map // map[string]*UserFeatures</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	ctx           context.Context</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	cancel        context.CancelFunc</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	maxMessages   int       // 最大消费消息数（0表示无限制）</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	msgCount      int       // 已消费消息计数</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>}</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>// NewConsumer 创建 Kafka 消费者.</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>//</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>// Args:</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>//     config: Kafka 配置，包含 brokers、topic、group_id</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>//     maxMessages: 最大消费消息数（0表示无限制）</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>//</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>// Returns:</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>//     消费者实例</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>func NewConsumer(config *KafkaConfig, maxMessages int) *Consumer {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	ctx, cancel := context.WithCancel(context.Background())</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	reader := kafka.NewReader(kafka.ReaderConfig{</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>		Brokers:     config.Brokers,</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>		Topic:       config.Topic,</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>		GroupID:     config.GroupID,</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>		MinBytes:    10e3, // 10KB</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>		MaxBytes:    10e6, // 10MB</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>		MaxWait:     time.Second,</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>		ReadBackoffMin: 100 * time.Millisecond,</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>		ReadBackoffMax: time.Second,</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	})</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	return &amp;Consumer{</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>		config:      config,</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>		reader:      reader,</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		cache:       &amp;sync.Map{},</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		ctx:         ctx,</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		cancel:      cancel,</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>		maxMessages: maxMessages,</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>		msgCount:    0,</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	}</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>}</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>// Start 启动消费循环（非阻塞）.</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>// 在后台 goroutine 中持续消费 Kafka 消息.</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>func (c *Consumer) Start() error {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	go c.consume()</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>	log.Printf(&quot;[FeatureConsumer] Started, topic=%s, group=%s&quot;, c.config.Topic, c.config.GroupID)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	return nil</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>}</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a></span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>// Stop 停止消费者.</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>// 调用此方法会停止消费循环并关闭 Kafka 连接.</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>func (c *Consumer) Stop() error {</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	c.cancel()</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	return c.reader.Close()</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>}</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a></span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>// Get 获取用户特征.</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>//</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>// Args:</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>//     userID: 用户 ID</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>//</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>// Returns:</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>//     用户特征，如果不存在返回 nil</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>func (c *Consumer) Get(userID string) *UserFeatures {</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	if v, ok := c.cache.Load(userID); ok {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		return v.(*UserFeatures)</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	}</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>	return nil</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>}</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a></span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>// GetCacheSize 获取缓存中的用户数量（用于监控）.</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>func (c *Consumer) GetCacheSize() int {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	count := 0</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	c.cache.Range(func(_, _ interface{}) bool {</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>		count++</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>		return true</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>	})</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	return count</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>}</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a></span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>// consume 消费循环.</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>// 持续读取 Kafka 消息并更新本地缓存.</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>func (c *Consumer) consume() {</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>	for {</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>		select {</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>		case &lt;-c.ctx.Done():</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>			return</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>		default:</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>		}</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a></span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>		// 检查是否达到最大消费数量</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>		if c.maxMessages &gt; 0 &amp;&amp; c.msgCount &gt;= c.maxMessages {</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>			log.Printf(&quot;[FeatureConsumer] Reached max messages limit (%d), stopping consumption&quot;, c.maxMessages)</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>			return</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>		}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a></span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>		msg, err := c.reader.ReadMessage(c.ctx)</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>		if err != nil {</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>			if c.ctx.Err() != nil {</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>				return</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>			}</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>			log.Printf(&quot;[FeatureConsumer] Read error: %v&quot;, err)</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>			time.Sleep(time.Second)</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>			continue</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>		}</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>		// 解析 recall-sink 格式的消息</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>		var kafkaFeature KafkaUserFeature</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>		if err := json.Unmarshal(msg.Value, &amp;kafkaFeature); err != nil {</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>			log.Printf(&quot;[FeatureConsumer] Unmarshal error: %v, raw=%s&quot;, err, string(msg.Value))</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>			continue</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>		}</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a></span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>		// 转换为内部 UserFeatures 格式</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>		features := c.convertToUserFeatures(&amp;kafkaFeature)</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>		if features == nil {</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>			log.Printf(&quot;[FeatureConsumer] Failed to convert feature for user=%d&quot;, kafkaFeature.UserID)</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>			continue</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>		}</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a></span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>		// 更新本地缓存（全量替换）</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>		c.cache.Store(features.UserID, features)</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>		c.msgCount++</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>		</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>		// 调试日志：显示详细的特征信息</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>		log.Printf(&quot;[FeatureConsumer] [KAFKA→CACHE] User=%s, History=%v, HistoryLen=%d, Count=%d/%d&quot;,</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>			features.UserID, </span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>			features.ClickHistory,</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>			len(features.ClickHistory),</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>			c.msgCount, c.maxMessages)</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>	}</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>}</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a></span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>// convertToUserFeatures 将 Kafka 格式转换为内部 UserFeatures 格式</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>func (c *Consumer) convertToUserFeatures(kf *KafkaUserFeature) *UserFeatures {</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	// 1. 转换 user_id: int -&gt; string</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	userID := strconv.Itoa(kf.UserID)</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a></span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>	// 2. 解析 click_history: JSON 字符串 -&gt; []int</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>	// click_history 格式: &quot;[]&quot; 或 &quot;[\&quot;3035268\&quot;]&quot; 或 &quot;[\&quot;123\&quot;,\&quot;456\&quot;]&quot;</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>	var historyStrs []string</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>	if err := json.Unmarshal([]byte(kf.ClickHistory), &amp;historyStrs); err != nil {</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>		log.Printf(&quot;[FeatureConsumer] Failed to parse click_history string: %v, raw=%s&quot;, err, kf.ClickHistory)</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>		// 如果解析失败，返回空历史而不是 nil</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>		historyStrs = []string{}</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>	}</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a></span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>	// 3. 字符串数组转 int 数组</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>	clickHistory := make([]int, 0, len(historyStrs))</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>	for _, s := range historyStrs {</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>		if s == &quot;&quot; {</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>			continue</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>		}</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>		id, err := strconv.Atoi(s)</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>		if err != nil {</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>			log.Printf(&quot;[FeatureConsumer] Failed to convert item_id to int: %s&quot;, s)</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>			continue</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>		}</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>		clickHistory = append(clickHistory, id)</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>	}</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a></span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>	return &amp;UserFeatures{</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>		UserID:        userID,</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>		ClickHistory:  clickHistory,</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>		UpdateTime:    time.Now().Format(time.RFC3339), // 使用当前时间</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>		RealtimeCTR:   0.0,</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>		ShortTermTags: []string{},</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	}</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>}</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a></span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>// IsHealthy 检查消费者健康状态.</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>func (c *Consumer) IsHealthy() bool {</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>	// 简单检查：如果能获取到缓存大小，说明运行正常</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	_ = c.GetCacheSize()</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>	return c.ctx.Err() == nil</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>}</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a></span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>// String 返回消费者状态信息.</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>func (c *Consumer) String() string {</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>	return fmt.Sprintf(&quot;Consumer{topic=%s, group=%s, cache_size=%d}&quot;,</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>		c.config.Topic, c.config.GroupID, c.GetCacheSize())</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>}</span></pre></html>

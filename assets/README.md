@@ -6,8 +6,9 @@
 |---|---|
 | [完整请求教学样例](walkthrough_sample.json) | 本轮新增；用户 1 从请求到返回的具体字段，向量/SID/模型分数为标记清楚的教学值 |
 | [按接口拆分的完整输入输出](request_example/README.md) | 同一次请求的 10 组具体 JSON 请求与响应；公共字段均已展开 |
-| [源码与前期资料快照](source_snapshots/README.md) | 文中引用的 37 份只读文件，保留原行号、提交与校验值，支持独立 clone 阅读 |
+| [源码与前期资料快照](source_snapshots/README.md) | 文中引用的只读文件，保留原行号、来源版本与校验值，支持独立 clone 阅读 |
 | [教学样例关系检查](walkthrough_checks.json) | 检查字段来源、候选次序、缺失处理和分数归属，不执行服务或模型 |
+| [Redis 样例工作量](redis_workload_example.json)与[计算脚本](redis_workload_example.py) | 从同一用户请求计算键数和 RESP2 字节；候选仅为字段投影下限，不连接 Redis、不产生测试流量 |
 | [contracts.py](contracts.py) | 目标特征接口的数据类型；当前 OneTrans HTTP 字段单列，两者不混接 |
 | [场景配置模板](scene.feature_service.template.json) | 服务职责、三种查询、版本和预算；尚缺真实模型与服务地址绑定，不能上线 |
 | [真实输入样例目录](feature_examples) | 用户 1、历史、词项、物品统计的键值及查询示例；发布状态仍为 BUILDING |

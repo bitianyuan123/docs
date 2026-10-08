@@ -1,7 +1,17 @@
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC目标接口| G[生成进程与GPU]
-    P -->|特征RPC| F[特征服务进程]
-    G -->|特征RPC| F
-    F -->|Redis协议| R[(在线特征Redis)]
-    A[(模型引擎与tokenizer文件)] --> G
-    G <-->|DataSystem SDK| K[(模型缓存存储)]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph GP[Pod：生成式召回]
+        G[容器：生成服务<br/>进程：brpc_inference_server<br/>内含 TRT Executor]
+    end
+    subgraph FP[Pod：特征服务]
+        F[容器：特征服务<br/>进程：特征查询程序]
+    end
+    subgraph WP[Pod 类型：模型缓存]
+        K[容器：DataSystem worker<br/>进程：worker]
+    end
+    P <-->|bRPC| G
+    P <-->|特征RPC| F
+    G <-->|编码反查RPC| F
+    G <-->|SDK连接| K

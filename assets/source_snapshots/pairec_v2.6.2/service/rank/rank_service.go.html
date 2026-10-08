@@ -1,0 +1,366 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/service/rank/rank_service.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/service/rank/rank_service.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Go 模块归档；许可见同目录 LICENSE.html。</p><p>来源版本：<code>官方模块版本 v2.6.2</code><br>原文件 SHA256：<code>091780b304f75a1fee291b27b65e1d8191280a45c85d0f41a04037961fd907ac</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package rank</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;encoding/json&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;fmt&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;strconv&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;sync&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;time&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;github.com/alibaba/pairec/v2/algorithm&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;github.com/alibaba/pairec/v2/algorithm/eas&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;github.com/alibaba/pairec/v2/algorithm/response&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	&quot;github.com/alibaba/pairec/v2/context&quot;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	&quot;github.com/alibaba/pairec/v2/log&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;github.com/alibaba/pairec/v2/module&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	&quot;github.com/alibaba/pairec/v2/recconf&quot;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	&quot;github.com/alibaba/pairec/v2/utils&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	&quot;github.com/alibaba/pairec/v2/utils/ast&quot;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>)</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a></span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>var rankService *RankService</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>func init() {</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	rankService = NewRankService()</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>}</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>type RankService struct {</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	rankInters                   map[string][]IRank</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	featureConsistencyJobService *FeatureConsistencyJobService</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>}</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>func NewRankService() *RankService {</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	rank := RankService{</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>		rankInters:                   make(map[string][]IRank, 0),</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>		featureConsistencyJobService: new(FeatureConsistencyJobService),</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	}</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a></span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	return &amp;rank</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>}</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a></span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>func DefaultRankService() *RankService {</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	return rankService</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>}</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>func RegisterRank(sceneName string, ranks ...IRank) {</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	DefaultRankService().AddRanks(sceneName, ranks...)</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>}</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>func (r *RankService) AddRanks(sceneName string, ranks ...IRank) {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	var rankInters []IRank</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>	if preRanks, ok := r.rankInters[sceneName]; ok {</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>		rankInters = preRanks</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	}</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a></span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>	for _, rank := range ranks {</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>		rankInters = append(rankInters, rank)</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>	}</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a></span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	r.rankInters[sceneName] = rankInters</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>}</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>func (r *RankService) GetRanks(sceneName string, context *context.RecommendContext) (ret []IRank) {</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	// first find experiment info</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		rankconf := context.ExperimentResult.GetExperimentParams().Get(&quot;coldStartRankConf&quot;, &quot;&quot;)</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		if rankconf != &quot;&quot; {</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>			var rankConfig recconf.ColdStartRankConfig</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>			d, _ := json.Marshal(rankconf)</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>			if err := json.Unmarshal(d, &amp;rankConfig); err == nil {</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>				rank := NewColdStartRank(&amp;rankConfig)</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>				ret = append(ret, rank)</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>				// when rank is not ColdStartRank, add it</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>				if ranks, exist := r.rankInters[sceneName]; exist {</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>					for _, rank := range ranks {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>						if _, ok := rank.(*ColdStartRank); !ok {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>							ret = append(ret, rank)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>						}</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>					}</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>				}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>				return</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>			} else {</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>				context.LogError(fmt.Sprintf(&quot;Unmarshal rank config error\terr=%v\tconfig=%s&quot;, err, rankconf))</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>			}</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>		}</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>	}</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a></span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>	if ranks, ok := r.rankInters[sceneName]; ok {</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>		ret = ranks</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	}</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a></span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	return</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>}</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a></span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>type boostFunc func(score float64, user *module.User, item *module.Item, context *context.RecommendContext) float64</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a></span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>var boostScoreFunc boostFunc</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>func SetBoostFunc(bf boostFunc) {</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>	boostScoreFunc = bf</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>}</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>func (r *RankService) Rank(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	start := time.Now()</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	if context.Debug {</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>		data, _ := json.Marshal(user)</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>		size := len(data)</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>		for i := 0; i &lt; size; {</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>			end := i + 4096</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>			if end &gt;= size {</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>				end = size</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>			} else {</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>				for end &gt; i {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>					if data[end] == &#x27;,&#x27; {</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>						end++</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>						break</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>					}</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>					end--</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>				}</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>				if end == i {</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>					end = i + 4096</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>				}</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>			}</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>			log.Info(fmt.Sprintf(&quot;requestId=%s\tuser=%s&quot;, context.RecommendId, string(data[i:end])))</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>			i = end</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>		}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>	}</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a></span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>	rankItems := items</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>	algoDataList := make([]IAlgoData, 0)</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	scene := context.GetParameter(&quot;scene&quot;).(string)</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a></span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	i := 0</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	var customRanks []*customRank</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>	for _, rank := range r.GetRanks(scene, context) {</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>		customRank := newCustomRank(rank)</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>		customRanks = append(customRanks, customRank)</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>	}</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a></span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	// find rank config</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>	var rankConfig recconf.RankConfig</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>	var rankscore string</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>	found := false</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>		rankscore = context.ExperimentResult.GetExperimentParams().GetString(&quot;rankscore&quot;, &quot;&quot;)</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>		rankconf := context.ExperimentResult.GetExperimentParams().Get(&quot;rankconf&quot;, &quot;&quot;)</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>		if rankconf != &quot;&quot; {</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>			d, _ := json.Marshal(rankconf)</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>			if err := json.Unmarshal(d, &amp;rankConfig); err == nil {</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>				found = true</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>			}</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>		}</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>	}</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>	if !found {</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>		if rankConfigs, ok := recconf.Config.RankConf[scene]; ok {</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>			rankConfig = rankConfigs</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>		}</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>	}</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a></span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>	if rankscore != &quot;&quot; {</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>		rankConfig.RankScore = rankscore</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>	}</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a></span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>	batchCount := 100</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>	if rankConfig.BatchCount &gt; 0 {</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>		batchCount = rankConfig.BatchCount</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	}</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	algoGenerator := CreateAlgoDataGenerator(rankConfig.Processor, rankConfig.ContextFeatures)</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a></span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>	var userFeatures map[string]interface{}</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a></span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>	if rankConfig.Processor == eas.Eas_Processor_EASYREC {</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>		userFeatures = user.MakeUserFeatures2()</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>		algoGenerator.SetItemFeatures(rankConfig.ItemFeatures)</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	} else {</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>		userFeatures = user.MakeUserFeatures()</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>	}</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a></span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>	var filter bool</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>	for _, item := range rankItems {</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>		filter = false</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>		if len(customRanks) &gt; 0 {</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>			for _, rank := range customRanks {</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>				if rank.rankInter.Filter(user, item, context) {</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>					filter = true</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>					if _, ok := rank.rankInter.(*ColdStartRank); ok {</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>						rank.appendFeature(nil, item, context)</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>					} else {</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>						rank.appendFeature(userFeatures, item, context)</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>					}</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>					break</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>				}</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>			}</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>		}</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a></span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>		if filter {</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>			continue</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>		}</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a></span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>		var features map[string]any</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>		if rankConfig.Processor == eas.Eas_Processor_EASYREC {</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>			if len(rankConfig.ContextFeatures) &gt; 0 || len(rankConfig.ItemFeatures) &gt; 0 {</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>				features = item.GetFeatures()</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>			}</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>		} else {</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>			features = item.GetFeatures()</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>		}</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>		algoGenerator.AddFeatures(item, features, userFeatures)</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>		i++</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>		if i%batchCount == 0 {</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>			var algoData IAlgoData</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>			if context.Debug {</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>				algoData = algoGenerator.GeneratorAlgoDataDebugWithLevel(100)</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>			} else {</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>				algoData = algoGenerator.GeneratorAlgoData()</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>			}</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>			algoDataList = append(algoDataList, algoData)</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>		}</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>	}</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a></span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>	if algoGenerator.HasFeatures() {</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>		var algoData IAlgoData</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>		if context.Debug {</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>			algoData = algoGenerator.GeneratorAlgoDataDebugWithLevel(100)</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>		} else {</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>			algoData = algoGenerator.GeneratorAlgoData()</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>		}</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>		algoDataList = append(algoDataList, algoData)</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>	}</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a></span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>	var rankWG sync.WaitGroup</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>	// invoke custom rank</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>	if len(customRanks) &gt; 0 {</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>		for _, rank := range customRanks {</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>			rankWG.Add(1)</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>			go func(customRank *customRank) {</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>				defer rankWG.Done()</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>				customRank.rankInter.Rank(user, customRank.items, customRank.requestData, context)</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>			}(rank)</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>		}</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>	}</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a></span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>	if len(algoDataList) == 0 {</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>		if len(customRanks) &gt; 0 {</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>			rankWG.Wait()</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>		}</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>		return</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>	}</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>	requestCh := make(chan IAlgoData, len(algoDataList))</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>	responseCh := make(chan IAlgoData, len(algoDataList))</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>	defer close(requestCh)</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>	defer close(responseCh)</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a></span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>	for _, data := range algoDataList {</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>		requestCh &lt;- data</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>	}</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a></span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>	gCount := len(algoDataList)</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>	for i := 0; i &lt; gCount; i++ {</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>		go func() {</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>			algoData := &lt;-requestCh</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a></span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>			var wg sync.WaitGroup</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>			for _, algoName := range rankConfig.RankAlgoList {</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>				wg.Add(1)</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>				go func(algo string) {</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>					defer wg.Done()</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>					ret, err := algorithm.Run(algo, algoData.GetFeatures())</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>					if err != nil {</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>						log.Error(fmt.Sprintf(&quot;requestId=%s\terror=run algorithm error(%v)&quot;, context.RecommendId, err))</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>						algoData.SetError(err)</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>					} else {</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>						if result, ok := ret.([]response.AlgoResponse); ok {</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>							algoData.SetAlgoResult(algo, result)</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>						}</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>					}</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a></span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>				}(algoName)</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a></span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>			}</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>			wg.Wait()</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>			responseCh &lt;- algoData</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>		}()</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>	}</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a></span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>	exprAst, err := ast.GetExpASTWithType(rankConfig.RankScore, rankConfig.ASTType)</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>	if err != nil {</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>		log.Error(fmt.Sprintf(&quot;requestId=%s\tmodule=rank\trankscore=%s\terror=%v&quot;, context.RecommendId, rankConfig.RankScore, err))</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>	}</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a></span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>	var scoreRewriteAst map[string]ast.ExprAST</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>	if len(rankConfig.ScoreRewrite) &gt; 0 {</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>		scoreRewriteAst = make(map[string]ast.ExprAST, len(rankConfig.ScoreRewrite))</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>		for source, sourceExpr := range rankConfig.ScoreRewrite {</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>			ast, err := ast.GetExpASTWithType(sourceExpr, rankConfig.ASTType)</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>			if err != nil {</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>				log.Info(fmt.Sprintf(&quot;requestId=%s\tmodule=rank\tscorerewrite=%s\terror=%v&quot;, context.RecommendId, rankConfig.RankScore, err))</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>				continue</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>			}</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>			scoreRewriteAst[source] = ast</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>		}</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>	}</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a></span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>	for i := 0; i &lt; gCount; i++ {</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>		algoData := &lt;-responseCh</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>		if algoData.Error() == nil &amp;&amp; algoData.GetAlgoResult() != nil {</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>			for name, algoResult := range algoData.GetAlgoResult() {</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>				itemList := algoData.GetItems()</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>				for j := 0; j &lt; len(algoResult) &amp;&amp; j &lt; len(itemList); j++ {</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>					if algoResult[j].GetModuleType() {</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>						arr_score := algoResult[j].GetScoreMap()</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>						for k, v := range arr_score {</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>							itemList[j].AddAlgoScore(name+&quot;_&quot;+k, v)</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>						}</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>					} else if resp, ok := algoResult[j].(response.AlgoMultiClassifyResponse); ok {</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>						arr_score := resp.GetClassifyMap()</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>						for k, scores := range arr_score {</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>							if len(scores) == 1 {</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>								itemList[j].AddAlgoScore(name+&quot;_&quot;+k, scores[0])</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>							} else if len(scores) &gt; 1 {</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>								for i, score := range scores {</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>									itemList[j].AddAlgoScore(name+&quot;_&quot;+k+&quot;_&quot;+strconv.Itoa(i), score)</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>								}</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>								itemList[j].AddProperty(name+&quot;_&quot;+k, scores)</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>							}</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>						}</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>					} else {</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>						itemList[j].AddAlgoScore(name, algoResult[j].GetScore())</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>					}</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>				}</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>			}</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>		}</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a></span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>		if rankConfig.RankScore != &quot;&quot; {</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>			itemList := algoData.GetItems()</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>			for k := range itemList {</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>				// score rewrite 重写</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>				if len(rankConfig.ScoreRewrite) &gt; 0 {</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>					scores := make(map[string]float64, len(rankConfig.ScoreRewrite))</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>					for source := range rankConfig.ScoreRewrite {</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>						if exprAst, ok := scoreRewriteAst[source]; ok {</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>							scores[source] = ast.ExprASTResultWithType(exprAst, AstParameterData{context, itemList[k]}, rankConfig.ASTType)</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>						} else {</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>							scores[source] = 0</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>						}</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>					}</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>					itemList[k].AddAlgoScores(scores)</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>				}</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a></span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>				if exprAst != nil {</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>					itemList[k].Score = ast.ExprASTResultWithType(exprAst, AstParameterData{context, itemList[k]}, rankConfig.ASTType)</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>				}</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a></span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>				if boostScoreFunc != nil {</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>					itemList[k].Score = boostScoreFunc(itemList[k].Score, user, itemList[k], context)</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>				}</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>			}</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>		}</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>	}</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a></span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>	if len(customRanks) &gt; 0 {</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>		rankWG.Wait()</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>	}</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a></span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>	go r.featureConsistencyJobService.LogRankResult(user, items, context)</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>	log.Info(fmt.Sprintf(&quot;requestId=%s\tmodule=rank\tcost=%d&quot;, context.RecommendId, utils.CostTime(start)))</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>}</span></pre></html>

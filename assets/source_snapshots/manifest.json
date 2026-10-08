@@ -116,7 +116,8 @@
       "line_count": 88,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "08_request_walkthrough.md"
       ]
     },
     {
@@ -169,7 +170,8 @@
       "line_count": 81,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "08_request_walkthrough.md"
       ]
     },
     {
@@ -182,7 +184,8 @@
       "line_count": 318,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "08_request_walkthrough.md"
       ]
     },
     {
@@ -266,6 +269,7 @@
       "line_count": 327,
       "redacted_lines": [],
       "referenced_by": [
+        "01_system.md",
         "02_onetrans.md"
       ]
     },
@@ -305,6 +309,7 @@
       "line_count": 1922,
       "redacted_lines": [],
       "referenced_by": [
+        "01_system.md",
         "04_generative_recall.md"
       ]
     },
@@ -411,7 +416,8 @@
       "line_count": 166,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "03_pairec_orchestration.md"
       ]
     },
     {
@@ -440,7 +446,8 @@
       "line_count": 291,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "03_pairec_orchestration.md"
       ]
     },
     {
@@ -467,9 +474,11 @@
       "line_count": 152,
       "redacted_lines": [],
       "referenced_by": [
+        "03_pairec_orchestration.md",
         "05_feature_data.md",
         "06_rpc.md",
-        "09_evidence_and_gaps.md"
+        "09_evidence_and_gaps.md",
+        "11_redis_workload.md"
       ]
     },
     {
@@ -482,6 +491,7 @@
       "line_count": 256,
       "redacted_lines": [],
       "referenced_by": [
+        "03_pairec_orchestration.md",
         "05_feature_data.md",
         "09_evidence_and_gaps.md"
       ]
@@ -538,7 +548,380 @@
       "line_count": 154,
       "redacted_lines": [],
       "referenced_by": [
-        "01_system.md"
+        "01_system.md",
+        "04_generative_recall.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/CMakeLists.txt.html",
+      "sha256": "6cf4604a8c16e45e2609d02b480617d2c17e1a04a5f2a305765253e9ce703a55",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/CMakeLists.txt",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "58cb4aba7074bce6aa737e1e334cf9105ac5f0f2ec68c471c949a503c31f722b",
+      "line_count": 246,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/net/http_server.cpp.html",
+      "sha256": "c9aaf17d2008ea297ddf23d84bcc5c032f57bd792a723ba6d78b1576bb087add",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/net/http_server.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "4d64d1d8b8f21b89b6e33b792e38dfd0c5148b72aca65ae3617ee0b3296b0953",
+      "line_count": 319,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/common/executor.cpp.html",
+      "sha256": "bd97264e4137f432d942ae6e702b7987ea5d483b03937b01a24b76f9e6d526e3",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/common/executor.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "70bf05233624e3fd2af2296db32b7b00d703f0a21525b011b9e66ec62a1b8483",
+      "line_count": 67,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html",
+      "sha256": "d346fc98bb7666e0e1e0137ef69466b46a6d99cb547187f51470e5380f65812a",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/compute_bridge.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "d618d1397052aa534aa9f805d43dd8ed915bef3c39d51607c41fa16f9f91149d",
+      "line_count": 268,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/compute_bridge.h.html",
+      "sha256": "668cac825d24a5fdc1415b3a8c5032cb4b73470f03e38b7bc6c4b467d3b110cc",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/compute_bridge.h",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "f898ebba00f794ca3dd6744cc61ef176261911991e9f2255501b9d8b20a3f372",
+      "line_count": 76,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/tools/bridge_score.py.html",
+      "sha256": "5133bf4ddf524929d410603a0334227ffa3173915e1b98c22f564ae3c76a47d3",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/tools/bridge_score.py",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "b929d4194ba2b46c44d5044939c4efdf19e72c0f957c9b0b31398b82a09e1270",
+      "line_count": 128,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/engine/two_stage.cpp.html",
+      "sha256": "bf489cf72e952f07a0ddc3a30b0d9ac5f7d342ff7bd8005644f84f186a53fd2b",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/engine/two_stage.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "69aecafcba14b62d48af3af92bbedbee39bc8d89038589af8295d9d8ff151905",
+      "line_count": 226,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/engine/model.cpp.html",
+      "sha256": "081a118841939a051531e477bd1dcb8297913b49731fca995d22ae001497e832",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/engine/model.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "a1d3857b11e31711ffe9bc30819fecb3fb64cfde950545315852ab32be011cc6",
+      "line_count": 247,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/common/tensor.cpp.html",
+      "sha256": "9fc7cf2d678a4939cb8203d9d474c00d46705d4cd97cbc0042bda6b3e4e6624c",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/common/tensor.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "2a26a5d9e890d267a6efba710e230f87c84c49c85a2f17062c8dd4e382e189ee",
+      "line_count": 110,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/kv/serialize.cpp.html",
+      "sha256": "81d4ee32eed0f702e37caf682b69b4b41baed1039f6f226434ad86a477d1304b",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/kv/serialize.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "8c8da0d09c37354de1249604acda58071d816a106dbca733e4d9c15a869e1f95",
+      "line_count": 196,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/kv/datasystem_store.h.html",
+      "sha256": "6b25f8337bda8683fe2a9346892c66cfcc3cdc8f576f06b9c7cf9f1ae36009bb",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/kv/datasystem_store.h",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "75986754e9e7363765b8d9e99388c5c216d3d5cd8df914c0b5ccd248b108d905",
+      "line_count": 49,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/onetrans/serving/two_stage.py.html",
+      "sha256": "8d45fe21e4f86a353a07ef3d8c90b403161dea87c19f6680d4871a54c4fa4d7e",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "onetrans/serving/two_stage.py",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "72a6f99428375440607afa4027bd2da2ac18e68470aee374edef220a29543e0c",
+      "line_count": 254,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "pairec_v2.6.2/service/user_recommend.go.html",
+      "sha256": "95e5115ae2fa12d1daff95a8d41c5a44078128b4e46f9c37d7c8ff9e9a7a9503",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/user_recommend.go",
+      "source_commit": null,
+      "source_sha256": "d7b08581831935cd8663e984d2a356e39d12b874019de32a52e95f16b511a17a",
+      "line_count": 251,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md",
+        "09_evidence_and_gaps.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/recall.go.html",
+      "sha256": "06425ddcad9ca48dee72edd32734cca1c1385fedceae9b21e5a7e6783b9fd552",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/recall.go",
+      "source_commit": null,
+      "source_sha256": "caa122e95c2f9eda8fae30d093043826f3ae51b1fec240aaa285dd0f05c50adf",
+      "line_count": 146,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/pipeline/pipeline.go.html",
+      "sha256": "4ddf50888ce1ae90f4e866edcc1a8189e744d3bb30de7d34ac1994e833b1a308",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/pipeline/pipeline.go",
+      "source_commit": null,
+      "source_sha256": "e4eb5eebc870c85f74de9e2e65e60626773587ed3cfb0df3acd7b20ca340b16c",
+      "line_count": 68,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/rank/rank_service.go.html",
+      "sha256": "c4016d6d2f6aad290367a92dcefe37cbddbf269db3ac39917562687644927d72",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/rank/rank_service.go",
+      "source_commit": null,
+      "source_sha256": "091780b304f75a1fee291b27b65e1d8191280a45c85d0f41a04037961fd907ac",
+      "line_count": 366,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/feature/feature_service.go.html",
+      "sha256": "712a4bfd1041014ed4b2b17cd018b36cdbcfe3dd681b13aef05c8fec41644a38",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/feature/feature_service.go",
+      "source_commit": null,
+      "source_sha256": "dc643540f81c35370c97569d44fd5b8f065121ddc68866b6a2964d7bff6f56b9",
+      "line_count": 228,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/algorithm/algorithm.go.html",
+      "sha256": "448860a274a981cc68cc3069e6abc05ab1f6e27fc044ae12aadd3e445ce8d2df",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "algorithm/algorithm.go",
+      "source_commit": null,
+      "source_sha256": "fde66902492c5c69abe898cfa98df8f82d96526a5d304d523fe245df546485c0",
+      "line_count": 174,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/module/user.go.html",
+      "sha256": "7b353bbe9b20348735a7a3b71c7133f161d49ed672c6bb35355bd5e7cdb328b3",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "module/user.go",
+      "source_commit": null,
+      "source_sha256": "973c897c9da10261f1c5acd1699492ad625120668dff1087e0fe545242809f35",
+      "line_count": 315,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/module/item.go.html",
+      "sha256": "b0d5ae3704e971818930ec4dbbe0bf5654d0807f107bcde807c77fe637775c0a",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "module/item.go",
+      "source_commit": null,
+      "source_sha256": "b935d9cf3e07e7020cf974d971145887497ab7c3b9ccaf3f9e3d4e636abd5abe",
+      "line_count": 317,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/context/recommend_context.go.html",
+      "sha256": "0c28d55c18eaf3b7e4c7776c40dfe6c65d6d13661706b00ae763ae7496af1390",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "context/recommend_context.go",
+      "source_commit": null,
+      "source_sha256": "54d22f6d4d6a5655ad70812a46b794f21c54df74200217442742b8f2b81477ce",
+      "line_count": 103,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/LICENSE.html",
+      "sha256": "6bcbe8580d33b9ce1e0e66724691e27337175fc9e151e28c8c21bff3c7ffa012",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "LICENSE",
+      "source_commit": null,
+      "source_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "line_count": 201,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec4tigerllm_8506/services/scachelatch/scachelatch.go.html",
+      "sha256": "83d6bcf17b91ff9c5fb28b992bc038305e61b369caeb38116e54ab2ffafcab50",
+      "source_repository": "pairec4tigerllm_8506",
+      "source_path": "services/scachelatch/scachelatch.go",
+      "source_commit": "530f77327f0d7f7f15f54b1ddbfe422b58e94a88",
+      "source_sha256": "81bea1be6ee52afe491045c2552d3da75148847dc5b0ca6a4e7d2d0a780d7021",
+      "line_count": 45,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ]
+    },
+    {
+      "file": "pairec4tigerllm_8506/services/feature/consumer.go.html",
+      "sha256": "6f00f7981698d2e639b84fc29daba1fd48caf672ad063a0c23ed78b1d90a6174",
+      "source_repository": "pairec4tigerllm_8506",
+      "source_path": "services/feature/consumer.go",
+      "source_commit": "530f77327f0d7f7f15f54b1ddbfe422b58e94a88",
+      "source_sha256": "0bd6202ae90da8cfe966aba7f920c70112129485a526f4bc984770fc05d8d758",
+      "line_count": 212,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ]
+    },
+    {
+      "file": "pairec_sh/pairec-demo/src/stageClient/stageClient.go.html",
+      "sha256": "5a8cd32683ef0a1c745b624da64a46f76fcb5b83bff84db333d28ceb1e04dd5f",
+      "source_repository": "pairec_sh",
+      "source_path": "pairec-demo/src/stageClient/stageClient.go",
+      "source_commit": "f7c4c49cbea73bada4dbb45fcd7d89078496a6e2",
+      "source_sha256": "666b6b3044947d862abf71b0dd410e9d436ebe7eca6ab31f4152f552c25b5ead",
+      "line_count": 157,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ]
+    },
+    {
+      "file": "pairec_sh/pairec-demo/src/cpp/stageBridge_c.cpp.html",
+      "sha256": "83f1cb00fe167bd43ad684269d1f2c580335474149555885c49512b0380a66ae",
+      "source_repository": "pairec_sh",
+      "source_path": "pairec-demo/src/cpp/stageBridge_c.cpp",
+      "source_commit": "f7c4c49cbea73bada4dbb45fcd7d89078496a6e2",
+      "source_sha256": "e4d6bbd2f17335f09597f549fe06cb4984eca6ca7afeba9806d42c07deb8e28e",
+      "line_count": 117,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ]
+    },
+    {
+      "file": "prior_design/pairec-orchestration-analysis.md.html",
+      "sha256": "94d871f53f9934548898c52073d686098e78dd8c2aeacba1331ee18bf534c8f7",
+      "source_repository": "prior_design",
+      "source_path": "pairec-orchestration-analysis.md",
+      "source_commit": null,
+      "source_sha256": "39ec86df3d794af72509023eee3285fc4784552b2aaa47a0bf8d0da98da5cb68",
+      "line_count": 1174,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
       ]
     }
   ]

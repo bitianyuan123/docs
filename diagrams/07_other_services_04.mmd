@@ -1,6 +1,12 @@
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC| B[向量服务桥进程：可选]
-    B -->|HTTP| V[向量服务进程]
-    V -->|Milvus SDK| M[(Milvus服务)]
-    L[离线向量装载进程] --> M
-    M --- D[(索引与数据持久化)]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph VP[Pod：向量召回]
+        V[容器：向量召回<br/>进程：召回程序]
+    end
+    subgraph MP[Pod：向量数据库]
+        M[容器：Milvus<br/>进程：standalone，内嵌etcd]
+    end
+    P <-->|bRPC| V
+    V <-->|Milvus协议| M

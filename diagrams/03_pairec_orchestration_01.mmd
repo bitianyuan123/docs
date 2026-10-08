@@ -1,6 +1,21 @@
 flowchart LR
-    Request[推荐请求] --> Recall[召回]
-    Recall --> RecallMerge[召回合并]
-    RecallMerge --> Rank[精排]
-    Rank --> Rerank[重排]
-    Rerank --> Response[推荐列表]
+    Entry[请求接入与场景选择] --> Engine[推荐编排]
+    Engine --> Policy[发布版本与人工规则]
+    Engine --> Features[特征查询]
+    Engine --> Merge[召回合并与资格检查]
+    Engine --> Post[重排与结果校验]
+    subgraph Recall[多路召回能力]
+        V[向量召回]
+        S[稀疏召回]
+        G[生成式召回]
+    end
+    Engine --> V
+    Engine --> S
+    Engine --> G
+    subgraph Rank[精排能力]
+        H[历史计算]
+        D[候选打分]
+    end
+    Engine --> H
+    Engine --> D
+    Engine --> History[现有OneTrans历史提供器]

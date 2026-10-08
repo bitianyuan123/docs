@@ -1,0 +1,123 @@
+{
+  "source": "walkthrough_sample.json",
+  "kind": "illustrative_byte_accounting",
+  "service_executed": false,
+  "protocol": "RESP2",
+  "json_encoding": "compact UTF-8, no compression",
+  "note": "Candidate values contain only header, item_id and response projections; full stored records are larger. No TCP/TLS/IP or Redis object-memory overhead is counted.",
+  "batches": [
+    {
+      "name": "user",
+      "keys": [
+        "rec:qkv:demo_tenrec_v1:user:1",
+        "rec:qkv:demo_tenrec_v1:history:1",
+        "rec:qkv:demo_tenrec_v1:user_rep:dense:demo_dssm_64_v1:1",
+        "rec:qkv:demo_tenrec_v1:user_rep:sparse:video_type_binary_v1:1"
+      ],
+      "key_count": 4,
+      "value_bytes_by_position": [
+        144,
+        336,
+        638,
+        366
+      ],
+      "found_count": 4,
+      "missing_count": 0,
+      "json_value_bytes": 1484,
+      "key_bytes": 177,
+      "resp2_request_bytes": 219,
+      "resp2_reply_bytes": 1520,
+      "candidate_projection_lower_bound": false
+    },
+    {
+      "name": "history_sid",
+      "keys": [
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:2",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:3",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:80936",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:781",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:111774",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:1230",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:26403",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:991",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:2362",
+        "rec:qkv:demo_tenrec_v1:item_rep:demo_sid_v1:1202"
+      ],
+      "key_count": 10,
+      "value_bytes_by_position": [
+        130,
+        130,
+        134,
+        132,
+        135,
+        133,
+        134,
+        132,
+        133,
+        134
+      ],
+      "found_count": 10,
+      "missing_count": 0,
+      "json_value_bytes": 1327,
+      "key_bytes": 476,
+      "resp2_request_bytes": 561,
+      "resp2_reply_bytes": 1412,
+      "candidate_projection_lower_bound": false
+    },
+    {
+      "name": "generated_sid",
+      "keys": [
+        "rec:qkv:demo_tenrec_v1:sid_map:demo_sid_v1:21.31.41.51",
+        "rec:qkv:demo_tenrec_v1:sid_map:demo_sid_v1:22.32.42.52"
+      ],
+      "key_count": 2,
+      "value_bytes_by_position": [
+        141,
+        137
+      ],
+      "found_count": 2,
+      "missing_count": 0,
+      "json_value_bytes": 278,
+      "key_bytes": 108,
+      "resp2_request_bytes": 136,
+      "resp2_reply_bytes": 298,
+      "candidate_projection_lower_bound": false
+    },
+    {
+      "name": "item_projection",
+      "keys": [
+        "rec:qkv:demo_tenrec_v1:item:4",
+        "rec:qkv:demo_tenrec_v1:item:1201",
+        "rec:qkv:demo_tenrec_v1:item:9002",
+        "rec:qkv:demo_tenrec_v1:item:9001",
+        "rec:qkv:demo_tenrec_v1:item:9003"
+      ],
+      "key_count": 5,
+      "value_bytes_by_position": [
+        446,
+        412,
+        387,
+        387,
+        null
+      ],
+      "found_count": 4,
+      "missing_count": 1,
+      "json_value_bytes": 1632,
+      "key_bytes": 157,
+      "resp2_request_bytes": 206,
+      "resp2_reply_bytes": 1673,
+      "candidate_projection_lower_bound": true
+    }
+  ],
+  "totals": {
+    "key_count": 21,
+    "found_count": 20,
+    "missing_count": 1,
+    "json_value_bytes": 4721,
+    "key_bytes": 918,
+    "resp2_request_bytes": 1122,
+    "resp2_reply_bytes": 4903,
+    "mget_commands_single_instance_without_splitting": 4,
+    "resp2_both_directions_bytes": 6025
+  }
+}

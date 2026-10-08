@@ -1,20 +1,26 @@
-flowchart LR
-    subgraph Online[在线应用部署]
-        P[PaiRec进程]
-        C[有专属查询的子服务进程]
-        F[FeatureService进程，可多副本]
-    end
-    subgraph Store[在线特征存储]
-        R[(Redis实例或集群)]
-        V[(持久化卷或可重载快照)]
-        R --- V
-    end
-    subgraph Offline[离线数据环境]
-        A[构建与装载进程]
-        O[(源数据和版本化产物)]
-        O --> A
-    end
-    P -->|原生bRPC| F
-    C -->|原生bRPC，按需| F
-    F -->|Redis RESP| R
-    A -->|装载新版本| R
+sequenceDiagram
+    participant P as PaiRec
+    participant G as 生成服务
+    participant F as 特征服务
+    participant R as Redis
+    P->>F: GetUserContext(user_id="1",release_id)
+    F->>R: MGET 用户、历史、向量、词项4键
+    R-->>F: 4条记录
+    F-->>P: user/history/dense_query/sparse_query
+    P->>F: BatchGetItemRepresentations(item_ids=10项历史)
+    F->>R: MGET 10个item_rep键
+    R-->>F: 10项编码记录
+    F-->>P: 原顺序的10项SID
+    P->>G: Recommend(history=[{value:SID}],同一版本)
+    G->>G: 本例生成2个SID
+    G->>F: BatchGetItemRepresentations(semantic_ids=2项)
+    F->>R: MGET 2个sid_map键
+    R-->>F: 2条记录，item_ids为["4","1201"]、["9002"]
+    F-->>G: 2个结果位置，共关联3个物品
+    G-->>P: 生成候选4、1201、9002
+    P->>P: 汇合其他召回，得到4、1201、9002、9001、9003
+    P->>F: BatchGetItemFeatures(item_ids=5项)
+    F->>R: MGET 5个item键
+    R-->>F: 4条记录与9003的nil位置
+    F-->>P: 4项FOUND；9003为NOT_FOUND
+    P->>P: 剔除9003；保留4项进入精排

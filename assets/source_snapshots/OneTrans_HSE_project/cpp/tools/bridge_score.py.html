@@ -1,0 +1,128 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/tools/bridge_score.py</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/tools/bridge_score.py</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>b929d4194ba2b46c44d5044939c4efdf19e72c0f957c9b0b31398b82a09e1270</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>&quot;&quot;&quot;Stage II 计算桥（PyTorch 算子下发，§7.4.5）。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>由 C++ PythonComputeBridge 进程内嵌入调用（嵌入式解释器，非子进程）：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>- ``init(weights_dir)``：解析 weights.bin（与 C++ ArtifactStore 同一格式）→ 构建</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>  OneTrans backbone + TwoStageRunner，权重常驻 GPU（无 CUDA 时 CPU）。</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>- ``score_batch(kv_blobs, row_map, ns_blob, n_rows, ns, d)``：批量交叉注意力前向</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>  （C++ 已完成 lookup/encode_ns/KV mget/攒批，本函数只做最终计算下发）。</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>数值契约：与 C++ ``TwoStageRunner::score_ns_batch`` 逐位对拍（e2e_test 守护，</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>golden 阈值 1e-5）。UserKV payload 为 C++/Python 二进制兼容格式（serialize.py）。</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>&quot;&quot;&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>from __future__ import annotations</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>import json</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>from pathlib import Path</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a></span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>import numpy as np</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>import torch</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>from onetrans.models.one_trans import OneTrans</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>from onetrans.serving.serialize import deserialize_with_meta</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>from onetrans.serving.two_stage import TwoStageRunner, UserKV</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>_DEVICE = &quot;cuda&quot; if torch.cuda.is_available() else &quot;cpu&quot;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>_runner: TwoStageRunner | None = None</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>_META: dict = {}</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a></span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>def _load_state_dict(weights_dir: Path) -&gt; dict[str, torch.Tensor]:</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    manifest = json.loads((weights_dir / &quot;manifest.json&quot;).read_text(encoding=&quot;utf-8&quot;))</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    blob = np.fromfile(weights_dir / &quot;weights.bin&quot;, dtype=&quot;&lt;f4&quot;)</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    sd: dict[str, torch.Tensor] = {}</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    for name, meta in manifest[&quot;tensors&quot;].items():</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>        n = 1</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>        for s in meta[&quot;shape&quot;]:</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>            n *= s</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>        flat = blob[meta[&quot;offset&quot;] : meta[&quot;offset&quot;] + n].copy()</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>        sd[name] = torch.from_numpy(flat).view(*meta[&quot;shape&quot;])</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>    return sd</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a></span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>def init(weights_dir: str) -&gt; dict:</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>    &quot;&quot;&quot;加载权重并构建 runner（幂等；返回运行元数据供 C++ 侧校验）。&quot;&quot;&quot;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    global _runner, _META</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    wdir = Path(weights_dir)</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    cfg = json.loads((wdir / &quot;manifest.json&quot;).read_text(encoding=&quot;utf-8&quot;))[&quot;config&quot;]</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    sd = _load_state_dict(wdir)</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    backbone = OneTrans(</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>        d_model=cfg[&quot;d_model&quot;],</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>        num_blocks=cfg[&quot;num_blocks&quot;],</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>        num_heads=cfg[&quot;num_heads&quot;],</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>        max_seq_len=cfg[&quot;max_seq_len&quot;],</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>        min_seq_len=cfg[&quot;min_seq_len&quot;],</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>        ns_tokens_num=cfg[&quot;ns_tokens_num&quot;],</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>        dropout=0.0,</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>        use_cls_token=cfg[&quot;use_cls_token&quot;],</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    )</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    # manifest 中 backbone.* 前缀即本模块 state_dict 键（dims 为普通属性不进 state_dict）</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    backbone_sd = {k[len(&quot;backbone.&quot;) :]: v for k, v in sd.items() if k.startswith(&quot;backbone.&quot;)}</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    missing, unexpected = backbone.load_state_dict(backbone_sd, strict=False)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    if unexpected or missing:</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        raise RuntimeError(f&quot;bridge: 权重不完整 missing={missing} unexpected={unexpected}&quot;)</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    backbone = backbone.to(_DEVICE).eval()</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a></span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    _runner = TwoStageRunner(backbone)</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    _META = {</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        &quot;device&quot;: _DEVICE,</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>        &quot;d_model&quot;: cfg[&quot;d_model&quot;],</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>        &quot;num_blocks&quot;: cfg[&quot;num_blocks&quot;],</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>        &quot;ns_tokens_num&quot;: cfg[&quot;ns_tokens_num&quot;],</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>        &quot;dims&quot;: cfg[&quot;dims&quot;],</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    }</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    return dict(_META)</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a></span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>def meta() -&gt; dict:</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    return dict(_META)</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a></span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>def _kv_from_payload(payload: bytes) -&gt; UserKV:</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    per_layer, s_len, per_layer_len = deserialize_with_meta(payload)</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    return UserKV(</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>        per_layer=[(k.to(_DEVICE), v.to(_DEVICE)) for k, v in per_layer],</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>        per_layer_len=per_layer_len,</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>        s_len=s_len,</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    )</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a></span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>def score_batch(</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>    kv_blobs: list[bytes],</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    row_map: list[int],</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    ns_blob: bytes,</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    n_rows: int,</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    ns: int,</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    d: int,</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>) -&gt; bytes:</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>    &quot;&quot;&quot;批量 Stage II 前向。</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a></span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    :param kv_blobs: 去重后的 UserKV payload 列表（C++ kv_serialize 格式）</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>    :param row_map: 每候选行 → kv_blobs 下标（长度 == n_rows；同用户多候选共享 KV）</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    :param ns_blob: fp32 小端连续字节，[n_rows, ns, d]（C++ Frontend Encode Pool 产出）</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    :return: logits fp32 小端字节 [n_rows, T]</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    &quot;&quot;&quot;</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>    if _runner is None:</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>        raise RuntimeError(&quot;bridge: 未初始化（先调 init）&quot;)</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a></span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>    ns_emb = (</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>        torch.frombuffer(bytearray(ns_blob), dtype=torch.float32)</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>        .reshape(n_rows, ns, d)</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>        .to(_DEVICE)</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>    )</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a></span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>    cache: dict[int, UserKV] = {}</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>    kvs: list[UserKV] = []</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>    for idx in row_map:</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>        kv = cache.get(idx)</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>        if kv is None:</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>            kv = _kv_from_payload(kv_blobs[idx])</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>            cache[idx] = kv</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>        kvs.append(kv)</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a></span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    with torch.no_grad():</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>        logits = _runner.score_ns_batch(kvs, ns_emb)</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    return logits.detach().to(&quot;cpu&quot;).contiguous().numpy().tobytes()</span></pre></html>

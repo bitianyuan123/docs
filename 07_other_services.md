@@ -10,12 +10,14 @@
 
 ### 1.1 逻辑视图
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：逻辑结构示意图（非 UML）。箭头表示能力依赖，不表示执行顺序；索引表示可查询的业务集合，不在此规定数据库进程。
 
 ```mermaid
 flowchart LR
-    A[查询向量校验] --> B[物品相似向量检索]
-    B --> C[候选ID与分数还原]
+    R[向量召回] --> V[向量与版本契约]
+    R --> Q[相似物品检索]
+    R --> C[候选结果适配]
+    Q --> I[物品向量索引]
 ```
 
 ```yaml
@@ -39,15 +41,18 @@ DSSM 表示用户塔和物品塔映射到同一向量空间的双塔模型。首
 
 ### 1.2 开发视图
 
-图法：模块关系示意图（非 UML，连线含义见本节）。
+图法：源码与配置依赖示意图（非 UML）。箭头表示代码依赖或静态配置引用，不表示服务调用或数据装载。
 
 ```mermaid
 flowchart LR
-    A[双塔向量导出器] -->|向量文件| B[Milvus装载器]
-    C[向量服务处理器] -->|进程内调用| D[查询向量校验器]
-    C -->|进程内调用| E[Milvus检索客户端]
-    F[向量bRPC服务桥：可选] -->|HTTP调用| C
+    A[双塔向量导出源码] --> D[向量文件与版本定义]
+    B[Milvus装载源码] --> D
+    C[向量服务处理器源码] --> V[查询契约与校验代码]
+    C --> E[Milvus SDK]
+    F[可选协议桥源码] --> V
 ```
+
+导出与装载源码交付离线工具、向量文件和发布清单；处理器交付向量召回程序，可选桥源码单独交付适配程序。文件从导出器交给装载器属于离线数据流，不是编译依赖。
 
 ```python
 # 目标离线导出：同一checkpoint、词表、输入配方、输出维度与归一化规则。
@@ -102,16 +107,24 @@ Milvus不可用 → 明确错误
 
 ### 1.4 物理视图
 
-图法：部署映射示意图（非 UML，连线含义见本节）。
+图法：部署映射示意图（非 UML）。Pod 包含容器，容器列出进程；双向连线表示网络连通。图为目标部署边界，主机与副本数待定。
 
 ```mermaid
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC| B[向量服务桥进程：可选]
-    B -->|HTTP| V[向量服务进程]
-    V -->|Milvus SDK| M[(Milvus服务)]
-    L[离线向量装载进程] --> M
-    M --- D[(索引与数据持久化)]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph VP[Pod：向量召回]
+        V[容器：向量召回<br/>进程：召回程序]
+    end
+    subgraph MP[Pod：向量数据库]
+        M[容器：Milvus<br/>进程：standalone，内嵌etcd]
+    end
+    P <-->|bRPC| V
+    V <-->|Milvus协议| M
 ```
+
+本图采用内置 bRPC 的目标召回程序，与系统图一致；若采用前面的 HTTP 桥方案，则多一个桥进程，其容器归属另行确定。Milvus 容器需要数据目录或持久卷，离线装载任务通过 Milvus 接口写入；数据卷后端与装载任务运行位置尚未指定。
 
 ```yaml
 deployment:
@@ -142,12 +155,14 @@ flowchart TD
 
 ### 2.1 逻辑视图
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：逻辑结构示意图（非 UML）。箭头表示能力依赖，不表示执行顺序；索引表示可查询的业务集合，不在此规定数据库进程。
 
 ```mermaid
 flowchart LR
-    A[用户类型词项校验] --> B[词项匹配与BM25计分]
-    B --> C[候选ID与分数还原]
+    R[稀疏召回] --> V[词项与版本契约]
+    R --> Q[词项匹配与BM25评分]
+    R --> C[候选结果适配]
+    Q --> I[物品文档索引]
 ```
 
 ```yaml
@@ -172,15 +187,19 @@ BM25 是按词项在文档中的出现情况及文档分布计算匹配分数的
 
 ### 2.2 开发视图
 
-图法：模块关系示意图（非 UML，连线含义见本节）。
+图法：源码与配置依赖示意图（非 UML）。箭头表示代码依赖或静态配置引用，不表示服务调用或数据装载。
 
 ```mermaid
 flowchart LR
-    A[真实物品文档构建器] -->|物品文档文件| B[索引mapping与bulk装载器]
-    C[稀疏服务处理器] -->|进程内调用| D[查询构造器]
-    D -->|查询请求对象| E[OpenSearch客户端]
-    F[稀疏bRPC服务桥：可选] -->|HTTP调用| C
+    A[物品文档构建源码] --> M[文档与mapping定义]
+    B[索引装载源码] --> M
+    C[稀疏服务处理器源码] --> D[词项校验与查询构造代码]
+    C --> E[OpenSearch客户端库]
+    F[可选协议桥源码] --> T[召回接口类型]
+    C --> T
 ```
+
+构建与装载代码交付文档生成工具、mapping 和可重放装载文件；服务处理器交付稀疏召回程序，可选桥单独构建。离线装载文档和在线 search 使用同一发布绑定，但没有编译依赖关系。
 
 ```json
 {
@@ -245,16 +264,24 @@ sequenceDiagram
 
 ### 2.4 物理视图
 
-图法：部署映射示意图（非 UML，连线含义见本节）。
+图法：部署映射示意图（非 UML）。Pod 包含容器，容器列出进程；双向连线表示网络连通。图为目标部署边界，主机与副本数待定。
 
 ```mermaid
 flowchart LR
-    P[PaiRec进程] -->|原生bRPC| B[稀疏服务桥进程：可选]
-    B -->|HTTP| S[稀疏服务进程]
-    S -->|OpenSearch HTTP| O[(OpenSearch服务)]
-    L[离线文档装载进程] -->|mapping与bulk| O
-    O --- D[(索引持久化卷)]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph SP[Pod：稀疏召回]
+        S[容器：稀疏召回<br/>进程：召回程序]
+    end
+    subgraph OP[Pod：文档检索数据库]
+        O[容器：OpenSearch<br/>进程：OpenSearch JVM]
+    end
+    P <-->|bRPC| S
+    S <-->|HTTP| O
 ```
+
+本图采用内置 bRPC 的目标程序；采用 HTTP 桥时另行增加桥进程。OpenSearch 容器需要索引数据卷，离线任务通过 mapping/bulk 接口装载；本图不指定磁盘介质、分片数或服务副本数。
 
 ```yaml
 readiness:
@@ -293,13 +320,14 @@ flowchart LR
 
 ### 3.1 逻辑视图
 
-图法：结构或流程示意图（非 UML，连线含义见本节）。
+图法：逻辑结构示意图（非 UML）。箭头表示能力依赖，不表示执行顺序；入口代理需要边界策略、上游选择和访问记录能力。
 
 ```mermaid
 flowchart LR
-    A[推荐请求接入] --> B[入口格式与大小限制]
-    B --> C[转发到可用PaiRec实例]
-    C --> D[返回推荐响应与访问记录]
+    A[推荐入口代理] --> B[HTTP边界策略]
+    A --> C[上游选择与转发能力]
+    A --> D[访问关联与记录]
+    C --> U[推荐服务上游配置]
 ```
 
 ```yaml
@@ -319,7 +347,7 @@ business_responsibility: PaiRec负责读特征、召回、排序和精排
 
 ### 3.2 开发视图
 
-图法：模块关系示意图（非 UML，连线含义见本节）。
+图法：源码与配置依赖示意图（非 UML）。箭头表示代码依赖或静态配置引用，不表示服务调用或数据装载。
 
 ```mermaid
 flowchart LR
@@ -328,6 +356,8 @@ flowchart LR
     A --> D[访问日志配置]
     E[PaiRec自有控制器] --> F[请求校验与内部ID生成]
 ```
+
+网关交付 Nginx 配置文件，控制器源码编入 PaiRec 程序；上游地址是配置引用，不是 Nginx 对 PaiRec 源码的编译依赖。
 
 ```nginx
 # 目标配置片段；放在http块中，DNS、端口和容量值由部署清单替换。
@@ -377,6 +407,8 @@ sequenceDiagram
     N-->>U: 原样返回业务响应和HTTP状态
 ```
 
+Nginx master 管理 worker 与配置，worker 通过事件机制处理多个连接；不能将每条请求理解为新建一个线程。等待上游时主要保留连接、请求缓冲和超时状态，具体 worker 数与连接上限由实际配置决定。[Nginx 进程模型](https://nginx.org/en/docs/beginners_guide.html)、[worker 与连接配置](https://nginx.org/en/docs/ngx_core_module.html#worker_connections)。这使入口的待处理连接数与 PaiRec 中的推荐任务数成为不同的容量指标。
+
 ```yaml
 logging:
   nginx: gateway_request_id、HTTP状态、request_time、upstream_response_time、上游地址
@@ -389,20 +421,26 @@ failure_handling:
 
 ### 3.4 物理视图
 
-图法：部署映射示意图（非 UML，连线含义见本节）。
+图法：部署映射示意图（非 UML）。Pod 包含容器，容器列出进程；双向连线表示网络连通。图为目标部署边界，主机与副本数待定。
 
 ```mermaid
 flowchart LR
-    U[外部请求方] --> N[Nginx网关部署单元]
-    N --> P1[PaiRec实例1]
-    N --> P2[PaiRec实例2，可选]
+    U[外部请求方]
+    subgraph NP[Pod：网关]
+        N[容器：Nginx<br/>master进程与worker进程]
+    end
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    U <-->|HTTP| N
+    N <-->|HTTP| P
 ```
 
 ```yaml
 deployment:
   public_entry: Nginx统一对外
   internal_entry: PaiRec仅作为网关上游
-  replica_policy: 首条链路一个PaiRec实例即可；容量需要时增加
+  replica_policy: 实例数量由容量与可用性要求确定，本图不指定数量
   publish_order: 数据READY → 模型和存储ready → PaiRecready → 网关上游接流量
   rollback: 切回已验证PaiRec配置或release，排空旧请求
   health: 网关存活与推荐依赖就绪分开检查

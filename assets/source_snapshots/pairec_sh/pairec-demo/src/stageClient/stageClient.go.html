@@ -1,0 +1,157 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_sh/pairec-demo/src/stageClient/stageClient.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_sh/pairec-demo/src/stageClient/stageClient.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>f7c4c49cbea73bada4dbb45fcd7d89078496a6e2</code><br>原文件 SHA256：<code>666b6b3044947d862abf71b0dd410e9d436ebe7eca6ab31f4152f552c25b5ead</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>//go:build cgo</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// Package stageclient bridges the C++ ConnectClients (see include/ConnectClients.h)</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// to Go, so that redis data is fetched via the brpc c++ client, and opensearch</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>// searches are sent via the brpc http c++ client.</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>//</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// The underlying C++ clients are singletons, all clients created by</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>// NewClient/NewOpensearchClient share one pooled connection to the addr passed</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>// at creation.</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>//</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>// Before building with CGO_ENABLED=1, build the static library first (linux):</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>//</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>//	cd src/cpp &amp;&amp; make</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>//</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>// which produces libstageclients.a in lib/.</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>package stageclient</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a></span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>/*</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>#cgo CFLAGS:   -I${SRCDIR}/../../include</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>#cgo CXXFLAGS: -I${SRCDIR}/../../include -std=c++17</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>#cgo LDFLAGS: -L${SRCDIR}/../../lib -lstageclients -L/usr/local/lib64 -Wl,-rpath,/usr/local/lib64 -lbrpc -lleveldb -lgflags -lssl -lcrypto -lprotobuf -lpthread -ldl -lstdc++</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>#include &quot;stageBridge_c.h&quot;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>#include &lt;stdlib.h&gt;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>*/</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>import &quot;C&quot;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>import (</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	&quot;fmt&quot;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	&quot;unsafe&quot;</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>// Client is a stage client which talks to redis via the brpc c++ client</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>type Client struct {</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	clis *C.ConnectClients_T</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>}</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a></span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>// NewClient connects to the redis server at addr, example: &quot;127.0.0.1:6379&quot;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>func NewRedisClient(addr string) (*Client, error) {</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	clis := C.Clis_New()</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	if clis == nil {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>		return nil, fmt.Errorf(&quot;stageClient: new connect clients error&quot;)</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	}</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	cAddr := C.CString(addr)</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	defer C.free(unsafe.Pointer(cAddr))</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	if rc := C.Clis_ConnectRedis(clis, cAddr); rc != 0 {</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>		C.Clis_Delete(clis)</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>		return nil, fmt.Errorf(&quot;stageClient: connect redis error, addr=%s, rc=%d&quot;, addr, int(rc))</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	}</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>	return &amp;Client{clis: clis}, nil</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>}</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>// NewOpensearchClient connects to the opensearch server at addr,</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>// example: &quot;127.0.0.1:9200&quot;, user and password may be empty when</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>// the server has no basic authentication</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>func NewOpensearchClient(addr, user, password string) (*Client, error) {</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>	clis := C.Clis_New()</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>	if clis == nil {</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>		return nil, fmt.Errorf(&quot;stageClient: new connect clients error&quot;)</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>	cAddr := C.CString(addr)</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	defer C.free(unsafe.Pointer(cAddr))</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	cUser := C.CString(user)</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	defer C.free(unsafe.Pointer(cUser))</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>	cPassword := C.CString(password)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>	defer C.free(unsafe.Pointer(cPassword))</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	if rc := C.Clis_ConnectOpensearch(clis, cAddr, cUser, cPassword); rc != 0 {</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>		C.Clis_Delete(clis)</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>		return nil, fmt.Errorf(&quot;stageClient: connect opensearch error, addr=%s, rc=%d&quot;, addr, int(rc))</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	}</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	return &amp;Client{clis: clis}, nil</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>}</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a></span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>// Close releases the c++ connect clients</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>func (c *Client) Close() {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	if c != nil &amp;&amp; c.clis != nil {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		C.Clis_Delete(c.clis)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>		c.clis = nil</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>	}</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>// Get returns the value of the key, found is false when the key does not exist</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>func (c *Client) Get(key string) (value string, found bool, err error) {</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	cKey := C.CString(key)</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	defer C.free(unsafe.Pointer(cKey))</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a></span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>	var cValue *C.char</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>	rc := C.Clis_RedisGet(c.clis, cKey, &amp;cValue)</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>	switch rc {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	case 0:</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>		defer C.Clis_FreeString(cValue)</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>		return C.GoString(cValue), true, nil</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>	case 1:</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>		return &quot;&quot;, false, nil</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>	default:</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>		return &quot;&quot;, false, fmt.Errorf(&quot;stageClient: redis get error, key=%s, rc=%d&quot;, key, int(rc))</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>	}</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>}</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a></span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>// Set stores the value of the key</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>func (c *Client) Set(key string, value string) error {</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	cKey := C.CString(key)</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	defer C.free(unsafe.Pointer(cKey))</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	cValue := C.CString(value)</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	defer C.free(unsafe.Pointer(cValue))</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a></span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>	if rc := C.Clis_RedisSet(c.clis, cKey, cValue); rc != 0 {</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>		return fmt.Errorf(&quot;stageClient: redis set error, key=%s, rc=%d&quot;, key, int(rc))</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	}</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>	return nil</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>}</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a></span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>// MGet returns the values of the keys in one pipelined command,</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>// values[i] is empty when the key does not exist</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>func (c *Client) MGet(keys []string) ([]string, error) {</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>	if len(keys) == 0 {</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>		return []string{}, nil</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>	}</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a></span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	cKeys := make([]*C.char, len(keys))</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>	for i, key := range keys {</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>		cKeys[i] = C.CString(key)</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>	}</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>	defer func() {</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>		for _, cKey := range cKeys {</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>			C.free(unsafe.Pointer(cKey))</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>		}</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>	}()</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a></span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>	var cValues **C.char</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	if rc := C.Clis_RedisMGet(c.clis, &amp;cKeys[0], C.int(len(keys)), &amp;cValues); rc != 0 {</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>		return nil, fmt.Errorf(&quot;stageClient: redis mget error, count=%d, rc=%d&quot;, len(keys), int(rc))</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	}</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	defer C.Clis_FreeStringArray(cValues, C.int(len(keys)))</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a></span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>	values := make([]string, len(keys))</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>	for i := range values {</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>		p := *(**C.char)(unsafe.Pointer(uintptr(unsafe.Pointer(cValues)) + uintptr(i)*unsafe.Sizeof(*cValues)))</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>		values[i] = C.GoString(p)</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	}</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>	return values, nil</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>}</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a></span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>// Search posts the query DSL body to /{index}/_search and returns</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>// the response body json, an empty result set is still a success</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>func (c *Client) Search(index string, body string) (string, error) {</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>	cIndex := C.CString(index)</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>	defer C.free(unsafe.Pointer(cIndex))</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>	cBody := C.CString(body)</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>	defer C.free(unsafe.Pointer(cBody))</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a></span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>	var cValue *C.char</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>	if rc := C.Clis_OpensearchSearch(c.clis, cIndex, cBody, &amp;cValue); rc != 0 {</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>		return &quot;&quot;, fmt.Errorf(&quot;stageClient: opensearch search error, index=%s, rc=%d&quot;, index, int(rc))</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>	}</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>	defer C.Clis_FreeString(cValue)</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>	return C.GoString(cValue), nil</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>}</span></pre></html>

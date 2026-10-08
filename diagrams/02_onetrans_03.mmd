@@ -1,13 +1,20 @@
-flowchart TD
-    A[HTTP 路由与 JSON 解析] --> B[历史处理 NearlineWorker]
-    A --> C[候选装配 RankAssembler]
-    A --> D[候选流水线 ScoreFlow]
-    C --> D
-    B --> E[特征编码 EmbeddingFrontend]
-    D --> E
-    E --> F[参数查询 PsLookupClient 或本地表]
-    B --> G[模型计算 TwoStageRunner]
-    D --> G
-    D --> H[PyTorch 计算桥]
-    B --> I[历史结果存储 KVStore]
-    D --> I
+sequenceDiagram
+    participant P as PaiRec
+    participant A as HTTP接入与响应代码
+    participant H as 历史计算线程池
+    participant PS as 参数服务
+    participant DS as DataSystem
+    P->>A: POST /ingest {user_id,item_ids,timestamps}
+    A->>A: 读取与解析；检查两个数组等长
+    A-)H: 异步提交历史任务，保存响应回调
+    Note over A: 接入线程提交后可处理下一连接
+    H->>H: 截取末尾50项、左补0、构造掩码
+    H->>PS: Lookup(model_version + "/item", padded_ids)
+    PS-->>H: 50 × 128 个浮点参数
+    H->>H: 历史编码、C++前向、序列化、计算checksum
+    H->>DS: Set(user_model_key, payload)
+    DS-->>H: 写入状态
+    H->>A: 调用done回调：accepted及计时
+    Note over A,H: 响应代码在历史任务线程执行<br/>不唤醒原接入线程
+    A-->>P: 发送原HTTP响应并关闭连接
+    A-->>H: 回调结束

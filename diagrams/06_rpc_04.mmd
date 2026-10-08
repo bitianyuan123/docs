@@ -1,9 +1,12 @@
 flowchart LR
-    N[Nginx] -->|HTTP| P[PaiRec与进程内原生客户端]
-    P -->|原生bRPC目标| F[特征服务]
-    F -->|Redis RESP| R[(Redis)]
-    P -->|原生bRPC目标| V[向量或稀疏服务前端]
-    V -->|可选HTTP适配桥| B[原有召回后端]
-    P -->|原生bRPC| G[生成服务]
-    G -->|原生bRPC目标| F
-    P -->|现有HTTP| O[OneTrans历史或精排服务]
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序<br/>Go运行时与原生客户端库]
+    end
+    subgraph FP[Pod：特征服务]
+        F[容器：特征服务<br/>进程：特征查询程序]
+    end
+    subgraph RP[Pod：特征数据库]
+        R[容器：Redis<br/>进程：redis-server]
+    end
+    P <-->|bRPC| F
+    F <-->|Redis RESP| R

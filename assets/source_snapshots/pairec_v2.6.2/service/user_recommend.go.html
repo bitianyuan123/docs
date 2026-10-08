@@ -1,0 +1,251 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/service/user_recommend.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/service/user_recommend.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Go 模块归档；许可见同目录 LICENSE.html。</p><p>来源版本：<code>官方模块版本 v2.6.2</code><br>原文件 SHA256：<code>d7b08581831935cd8663e984d2a356e39d12b874019de32a52e95f16b511a17a</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package service</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;fmt&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;sync&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;time&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;github.com/alibaba/pairec/v2/context&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;github.com/alibaba/pairec/v2/log&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;github.com/alibaba/pairec/v2/log/feature_log&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;github.com/alibaba/pairec/v2/module&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;github.com/alibaba/pairec/v2/service/debug&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	&quot;github.com/alibaba/pairec/v2/service/fallback&quot;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	&quot;github.com/alibaba/pairec/v2/service/feature&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;github.com/alibaba/pairec/v2/service/general_rank&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	&quot;github.com/alibaba/pairec/v2/service/hook&quot;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	&quot;github.com/alibaba/pairec/v2/service/metrics&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	&quot;github.com/alibaba/pairec/v2/service/pipeline&quot;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	&quot;github.com/alibaba/pairec/v2/service/rank&quot;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	&quot;github.com/alibaba/pairec/v2/utils&quot;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>)</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>type UserRecommendService struct {</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	RecommendService</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	recallService                *RecallService</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	generalRankService           *general_rank.GeneralRankService</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>	rankService                  *rank.RankService</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	userFeatureService           *feature.UserFeatureService</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	featureService               *feature.FeatureService</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	featureConsistencyJobService *rank.FeatureConsistencyJobService</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>}</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>func NewUserRecommendService() *UserRecommendService {</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	service := UserRecommendService{</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>		recallService:                &amp;RecallService{},</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>		rankService:                  rank.DefaultRankService(),</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>		userFeatureService:           feature.DefaultUserFeatureService(),</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>		featureService:               feature.DefaultFeatureService(),</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>		featureConsistencyJobService: new(rank.FeatureConsistencyJobService),</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>		generalRankService:           general_rank.DefaultGeneralRankService(),</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>	}</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	return &amp;service</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>}</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>func (r *UserRecommendService) Recommend(context *context.RecommendContext) []*module.Item {</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	start := time.Now()</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	var scene, expId string</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>		scene = context.ExperimentResult.SceneName</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>		//expId = context.ExperimentResult.ExpId</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	} else {</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>		scene, _ = context.Param.GetParameter(&quot;scene&quot;).(string)</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	}</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>	userId := r.GetUID(context)</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>	user := module.NewUserWithContext(userId, context)</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a></span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	//loadFeatureStart := time.Now()</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	// load user features</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	r.userFeatureService.LoadUserFeatures(user, context)</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a></span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>	//if metrics.Enabled() {</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>	//metrics.LoadFeatureDurSecs.WithLabelValues(scene, expId, &quot;before_recall&quot;).Observe(time.Since(loadFeatureStart).Seconds())</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	//}</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a></span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>	debugService := debug.NewDebugService(user, context)</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	var pipelineItems []*module.Item</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>	var wg sync.WaitGroup</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	wg.Add(1)</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	go func() {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>		defer wg.Done()</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		pipelineItems = pipeline.Recommend(user, context, debugService)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	}()</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	recallStart := time.Now()</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	items := r.recallService.GetItems(user, context)</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a></span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	if metrics.Enabled() {</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>		metrics.RecallDurSecs.WithLabelValues(scene, expId).Observe(time.Since(recallStart).Seconds())</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>		metrics.RecallCountTotal.WithLabelValues(scene).Add(float64(len(items)))</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a></span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>		recallCountMap := map[string]int{}</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>		for _, item := range items {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>			recallCountMap[item.RetrieveId]++</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>		}</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a></span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>		for src, count := range recallCountMap {</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>			//metrics.RecallItemsPercentage.WithLabelValues(src).Set(float64(count) / float64(len(items)))</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>			metrics.RecallCount.WithLabelValues(scene, src).Add(float64(count))</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>		}</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>	}</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>	debugService.WriteRecallLog(user, items, context)</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a></span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	filterStart := time.Now()</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	// filter</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	items = r.Filter(user, items, context)</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a></span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>	if metrics.Enabled() {</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>		metrics.FilterDurSecs.WithLabelValues(scene, expId).Observe(time.Since(filterStart).Seconds())</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>	}</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a></span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>	debugService.WriteFilterLog(user, items, context)</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a></span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	generalRankStart := time.Now()</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a></span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>	// general rank</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>	items = r.generalRankService.Rank(user, items, context)</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>	if metrics.Enabled() {</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>		metrics.GeneralRankDurSecs.WithLabelValues(scene, expId).Observe(time.Since(generalRankStart).Seconds())</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>	}</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a></span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>	debugService.WriteGeneralLog(user, items, context)</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a></span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>	//loadFeatureStart = time.Now()</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a></span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	// load user or item features</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>	// can load data from datasource(holo, ots, redis)</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>	// after load data, use feature engine to create or modify features</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>	items = r.featureService.LoadFeatures(user, items, context)</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a></span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>	//if metrics.Enabled() {</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	//metrics.LoadFeatureDurSecs.WithLabelValues(scene, expId, &quot;before_rank&quot;).Observe(time.Since(loadFeatureStart).Seconds())</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>	//}</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a></span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	rankStart := time.Now()</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a></span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>	r.rankService.Rank(user, items, context)</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>	if metrics.Enabled() {</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>		metrics.RankDurSecs.WithLabelValues(scene, expId).Observe(time.Since(rankStart).Seconds())</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	}</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a></span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>	wg.Wait()</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>	items = r.mergePipelineItems(items, pipelineItems)</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a></span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>	debugService.WriteRankLog(user, items, context)</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a></span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>	sortStart := time.Now()</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a></span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>	// sort items</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>	items = r.Sort(user, items, context)</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a></span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>	if metrics.Enabled() {</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>		metrics.SortDurSecs.WithLabelValues(scene, expId).Observe(time.Since(sortStart).Seconds())</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>	}</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>	debugService.WriteSortLog(user, items, context)</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a></span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>	size := context.Size</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>	if size &gt; len(items) {</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>		size = len(items)</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>		log.Warning(fmt.Sprintf(&quot;requestId=%s\tmodule=recommend\tevent=filter\tuid=%s\tmsg=length of items less than size\tcount=%d&quot;, context.RecommendId, userId, len(items)))</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a></span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>		if metrics.Enabled() {</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>			metrics.SizeNotEnoughTotal.WithLabelValues(scene, expId).Inc()</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>		}</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>	}</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a></span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	items = items[:size]</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	go feature_log.FeatureLog(user, items, context)</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>	go r.featureConsistencyJobService.LogSampleResult(user, items, context)</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>	debugService.WriteRecommendLog(user, items, context)</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>	// asynchronous clean hook func</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>	for _, hf := range hook.RecommendCleanHooks {</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>		go hf(context, user, items)</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>	}</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a></span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>	if metrics.Enabled() {</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>		metrics.RecTotal.WithLabelValues(scene, expId).Inc()</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>		metrics.RecDurSecs.WithLabelValues(scene, expId).Observe(time.Since(start).Seconds())</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>	}</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a></span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>	return items</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>}</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a></span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>func (r *UserRecommendService) mergePipelineItems(items []*module.Item, pipelineItems []*module.Item) []*module.Item {</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>	itemMap := make(map[module.ItemId]*module.Item, len(items))</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>	for _, item := range items {</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>		itemMap[item.Id] = item</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>	}</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>	// need to merge item properties of different pipelines</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>	for _, item := range pipelineItems {</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>		if exist, ok := itemMap[item.Id]; ok {</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>			exist.AddProperties(item.GetProperties())</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>		} else {</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>			itemMap[item.Id] = item</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>			items = append(items, item)</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>		}</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>	}</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>	return items</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>}</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a></span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>func (r *UserRecommendService) TryRecommendWithFallback(context *context.RecommendContext) []*module.Item {</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>	start := time.Now()</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>	scene, _ := context.Param.GetParameter(&quot;scene&quot;).(string)</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a></span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	f := fallback.DefaultFallbackService().GetFallback(scene)</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>	if f == nil {</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>		return r.Recommend(context)</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>	}</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a></span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>	fallbackTimer := f.GetTimer()</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a></span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>	tryResult := make(chan []*module.Item, 1)</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a></span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>	go func() {</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>		tryResult &lt;- r.Recommend(context)</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>	}()</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a></span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>	select {</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>	case &lt;-fallbackTimer.C:</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>		f.PutTimer(fallbackTimer)</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>		fallbackResult := f.Recommend(context)</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>		log.Warning(fmt.Sprintf(&quot;requestId=%s\tmodule=recommend\tevent=fallback\tcause=timeout\tcost=%d&quot;, context.RecommendId, utils.CostTime(start)))</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>		return fallbackResult</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>	case ret := &lt;-tryResult:</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>		f.PutTimer(fallbackTimer)</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a></span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>		if f.CompleteItemsIfNeed() &amp;&amp; len(ret) &lt; context.Size {</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>			originRetMap := make(map[module.ItemId]bool)</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>			for _, item := range ret {</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>				originRetMap[item.Id] = true</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>			}</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a></span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>			fallbackResult := f.Recommend(context)</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>			for i := 0; i &lt; len(fallbackResult); i++ {</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>				fallbackItem := fallbackResult[i]</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a></span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>				if !originRetMap[fallbackItem.Id] { // must not appear in origin result</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>					ret = append(ret, fallbackItem)</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a></span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>					if len(ret) == context.Size {</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>						break</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>					}</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>				}</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>			}</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a></span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>			log.Warning(fmt.Sprintf(&quot;requestId=%s\tmodule=recommend\tevent=fallback\tcause=itemNotEnough\tcost=%d&quot;, context.RecommendId, utils.CostTime(start)))</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>			return ret</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>		} else {</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>			return ret</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>		}</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>	}</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>}</span></pre></html>

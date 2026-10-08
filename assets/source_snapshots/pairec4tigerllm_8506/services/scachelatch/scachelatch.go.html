@@ -1,0 +1,45 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm_8506/services/scachelatch/scachelatch.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm_8506/services/scachelatch/scachelatch.go</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>530f77327f0d7f7f15f54b1ddbfe422b58e94a88</code><br>原文件 SHA256：<code>81bea1be6ee52afe491045c2552d3da75148847dc5b0ca6a4e7d2d0a780d7021</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Package scachelatch 提供一把&quot;按用户&quot;的闸门，用于保证 OneTrans 两阶段的一致性：</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>//	S 阶段（/ingest）预计算的 UserKV 缓存在写入完成后闭锁放行；</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>//	NS 阶段（/rank）在 KV miss 时做一次有届等待后重查，从而让&quot;NS 读取&quot;严格发生在</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//	&quot;S 落盘&quot;之后，消除冷启动竞态下的无区分度打分，全程不需要在线补算。</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>//</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// 两个约定（务必遵守）：</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>//  1. 闭锁时机 Done() 必须在 OneTrans store_.put 真正完成后调用，否则 NS 等到的是</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>//     &quot;仅被接受、尚未写完&quot;的信号，重查仍会 miss。</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>//  2. 等待 Wait() 必须带超时上限；对&quot;无闸门（冷用户/无历史）&quot;的场景不要执行等待，</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>//     避免空等一个永不发生的写入而挂户。</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>package scachelatch</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>import (</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;sync&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	&quot;time&quot;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>)</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a></span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>// ContextKey 用于在 PaiRec 单请求共享的 RecommendContext 中携带闸门，</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>// 使 S 阶段（recall）设置的闸门能被 NS 阶段（sort）同步取到。</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>const ContextKey = &quot;onetrans.s_cache_latch&quot;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>// Latch 是一把幂等的按用户闸门。</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>type Latch struct {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	ch   chan struct{}</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	once sync.Once</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>}</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>// New 创建一把初始关闭（未就绪）的闸门。</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>func New() *Latch { return &amp;Latch{ch: make(chan struct{})} }</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>// Done 标记 S 已成功写入缓存并放行所有等待者。可被并发安全地多次调用（幂等）。</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>func (l *Latch) Done() { l.once.Do(func() { close(l.ch) }) }</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a></span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>// Wait 有届等待闸门放行。</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>//   - 返回 true：S 已就绪（缓存已写入），可放心重查；</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>//   - 返回 false：超时（S 失败/尚未完成），调用方应降级而不是无限挂起。</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>func (l *Latch) Wait(timeout time.Duration) bool {</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	select {</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	case &lt;-l.ch:</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>		return true</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	case &lt;-time.After(timeout):</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>		return false</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	}</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>}</span></pre></html>

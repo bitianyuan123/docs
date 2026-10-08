@@ -1,0 +1,76 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/serving/compute_bridge.h</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/serving/compute_bridge.h</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>f898ebba00f794ca3dd6744cc61ef176261911991e9f2255501b9d8b20a3f372</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Python 计算桥（§7.4.5）：嵌入式解释器 + 专用线程持 GIL 下发 PyTorch 算子。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 边界契约（与 docs/detailed_design.md §7.4 一致）：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// - C++ 编排（lookup/encode/KV mget/攒批/回填）全部在标准库线程池</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//   （common/executor.h）上运行，不触碰 GIL；</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>// - 唯一持 GIL 的是本桥的专用线程：从有界队列取批 → PyGILState_Ensure →</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>//   调 bridge_score.score_batch（PyTorch CUDA/CPU 前向）→ 回填回调 → Release；</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>// - 队列满 / 解释器不可用 / torch 缺失 → available()==false 或 submit 返回</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>//   false，上层降级为 C++ CPU score_ns_batch（数值等价，性能降级）；</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>// - 多 GPU 扩展：每 GPU 一个桥实例（互不共享队列）。</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#pragma once</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>#include &lt;atomic&gt;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>#include &lt;condition_variable&gt;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>#include &lt;deque&gt;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>#include &lt;functional&gt;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>#include &lt;memory&gt;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>#include &lt;mutex&gt;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>#include &lt;string&gt;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>#include &lt;thread&gt;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>#include &lt;vector&gt;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>namespace onetrans {</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a></span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>// 一个待计算批（C++ 侧已完成全部前处理）</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>struct BridgeBatch {</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    std::string ns_blob;                     // fp32 LE [n_rows, ns, d]</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>    std::vector&lt;std::string&gt; kv_payloads;     // 去重后的 UserKV payload（C++ kv_serialize）</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>    std::vector&lt;int32_t&gt; row_kv_idx;          // 每行 → payload 下标（长度 n_rows）</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>    int64_t n_rows = 0, ns = 0, d_model = 0;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    // 回调（桥线程调用；on_ok 的 blob 为 fp32 LE [n_rows, T]）</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    std::function&lt;void(std::string logits_blob)&gt; on_ok;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    std::function&lt;void(const std::string&amp; err)&gt; on_fail;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>};</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a></span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>class PythonComputeBridge {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>public:</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    // module_dir：bridge_score.py 所在目录（sys.path 注入）</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>    // weights_dir：weights.bin/manifest.json 所在目录</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>    // init_timeout_s：import torch + 权重上载的最长等待（超时视为不可用，降级）</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>    bool start(const std::string&amp; module_dir, const std::string&amp; weights_dir,</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>               int init_timeout_s = 120);</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    void stop();</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    bool available() const { return ready_.load(std::memory_order_acquire); }</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    const std::string&amp; last_error() const { return last_error_; }</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    // 投递一批（队列满返回 false → 调用方降级）</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    bool submit(BridgeBatch batch);</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    size_t queued() const;</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a></span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>private:</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    void run();</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    bool init_python(const std::string&amp; module_dir, const std::string&amp; weights_dir);</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    // 持 GIL 执行一次前向；返回 logits blob，失败抛异常</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    std::string call_score(BridgeBatch&amp; b);</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a></span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>    mutable std::mutex mu_;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    std::condition_variable cv_;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    std::deque&lt;BridgeBatch&gt; q_;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    size_t cap_ = 16;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    bool stopped_ = true;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    std::atomic&lt;bool&gt; ready_{false};</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    std::string last_error_;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    std::thread thread_;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    // Python 对象句柄（实现细节，void* 隔离 Python.h 泄漏到头文件）</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    void* py_module_ = nullptr;</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    void* py_score_fn_ = nullptr;</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    void* py_meta_fn_ = nullptr;</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    // 首轮 init 后已 PyEval_SaveThread（重试时需走 Ensure/Release 而非再 Save）</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    bool py_thread_saved_ = false;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>};</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a></span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>}  // namespace onetrans</span></pre></html>

@@ -1,18 +1,11 @@
 flowchart TB
-    Input[校验请求并固定发布版本] --> User[向特征服务查询用户和历史]
-    User --> Vector[调用向量召回]
-    User --> Sparse[调用稀疏召回]
-    User --> Semantic[向特征服务查询历史物品语义编码]
-    Semantic --> Generate[调用生成式召回]
-    Input --> History[从现有历史提供器取得OneTrans历史]
-    History --> Ingest[调用OneTrans历史计算]
-    Vector --> Fuse[候选合并、去重与已看过滤]
-    Sparse --> Fuse
-    Generate --> Fuse
-    Fuse --> Items[向特征服务批量查询候选业务特征]
-    Items --> Filter[资格检查与缺失处理]
-    Filter --> Join[汇合候选和历史调用结果]
-    Ingest --> Join
-    Join --> Rank[只传用户ID和候选ID调用OneTrans精排]
-    Rank --> Post[校验分数并执行重排]
-    Post --> Return[返回推荐列表]
+    Controller[自有请求控制器] --> Framework[官方PaiRec框架库]
+    Controller --> Engine[RecommendEngine源码]
+    Engine --> Contracts[业务客户端接口与数据类型]
+    Engine --> Rules[融合、资格、重排规则源码]
+    Engine --> Provider[现有历史Provider适配源码]
+    Adapters[特征与召回客户端源码] --> Contracts
+    Adapters --> Native[Go与C接口、C++原生客户端]
+    Native --> Brpc[bRPC库与生成接口代码]
+    OneTrans[OneTrans HTTP客户端源码] --> Contracts
+    OneTrans --> Http[Go net/http库]

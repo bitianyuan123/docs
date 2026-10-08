@@ -1,0 +1,226 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/engine/two_stage.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/engine/two_stage.cpp</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>69aecafcba14b62d48af3af92bbedbee39bc8d89038589af8295d9d8ff151905</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;engine/two_stage.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;stdexcept&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>namespace onetrans {</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>namespace {</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>struct LayerQkv {</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>    // NS 段 Q/K/V：[B, Ns, H*d]（bshd 去 batch 维）</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>    std::vector&lt;float&gt; q, k, v;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>};</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a></span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>// NS 逐 token 投影：h [B, Ns, D] → q/k/v [B, Ns, H*d]</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>// 语义：token i 的所有候选行经 W_ns[i] 投影（Python _project_ns）。</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>LayerQkv project_ns(const AttnWeights&amp; attn, const float* h, int64_t B, int64_t Ns, int64_t D,</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>                    int H, int64_t d) {</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    LayerQkv out;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    out.q.resize(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>    out.k.resize(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>    out.v.resize(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>    std::vector&lt;float&gt; qkv3(static_cast&lt;size_t&gt;(3 * D));</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>    for (int64_t b = 0; b &lt; B; ++b) {</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>        for (int64_t i = 0; i &lt; Ns; ++i) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>            // token i 的候选 b 输入行</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>            const float* x = h + (b * Ns + i) * D;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>            linear_rows(x, attn.w_ns[i].data.data(), qkv3.data(), 1, D, 3 * D);</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>            float* q = out.q.data() + (b * Ns + i) * D;</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>            float* k = out.k.data() + (b * Ns + i) * D;</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>            float* v = out.v.data() + (b * Ns + i) * D;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>            std::copy_n(qkv3.begin(), D, q);</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>            std::copy_n(qkv3.begin() + D, D, k);</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>            std::copy_n(qkv3.begin() + 2 * D, D, v);</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>        }</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    }</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    return out;</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>}</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>// NS 段逐 token FFN：h [B, Ns, D] → out [B, Ns, D]</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>void apply_ns_ffn(const std::vector&lt;FfnWeights&gt;&amp; ffn_ns, const float* h, float* out, int64_t B,</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>                  int64_t Ns, int64_t D) {</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>    for (int64_t b = 0; b &lt; B; ++b)</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>        for (int64_t i = 0; i &lt; Ns; ++i)</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>            ffn_forward(ffn_ns[i], h + (b * Ns + i) * D, out + (b * Ns + i) * D, 1, D);</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>}</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a></span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>}  // namespace</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>// Stage I</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>UserKV TwoStageRunner::encode_s(const Tensor&amp; s_emb, const Tensor&amp; s_mask) const {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    if (s_emb.shape[0] != 1) throw std::runtime_error(&quot;encode_s 只支持 B=1&quot;);</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    const int64_t D = m_.cfg.d_model;</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    const int H = m_.cfg.num_heads, d = D / H;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    const float eps = static_cast&lt;float&gt;(m_.cfg.rms_eps);</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a></span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    int64_t S = s_emb.shape[1];</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>    std::vector&lt;float&gt; s(s_emb.data);</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    std::vector&lt;uint8_t&gt; smask(S);</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    int64_t s_len = 0;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    for (int64_t j = 0; j &lt; S; ++j) {</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>        smask[j] = s_mask.at(j) != 0.0f ? 1 : 0;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>        s_len += smask[j];</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    }</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a></span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    UserKV kv;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    kv.s_len = s_len;</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a></span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    for (int l = 0; l &lt; m_.cfg.num_blocks; ++l) {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>        const BlockWeights&amp; bw = m_.blocks[l];</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>        int64_t valid = 0;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>        for (auto v : smask) valid += v;</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>        kv.per_layer_len.push_back(valid);</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a></span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>        std::vector&lt;float&gt; h(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>        rms_norm_rows(s.data(), bw.norm_g.data.data(), h.data(), S, D, eps);</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a></span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>        // W_s 投影 → q/k/v [S, H, d]</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>        std::vector&lt;float&gt; qkv(static_cast&lt;size_t&gt;(S * 3 * D));</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>        linear_rows(h.data(), bw.attn.w_s.data.data(), qkv.data(), S, D, 3 * D);</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>        Tensor k_t({1, S, H, d}), v_t({1, S, H, d});</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>        std::vector&lt;float&gt; q(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>        for (int64_t r = 0; r &lt; S; ++r) {</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>            std::copy_n(qkv.begin() + r * 3 * D, D, q.begin() + r * D);</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>            std::copy_n(qkv.begin() + r * 3 * D + D, D, k_t.data.begin() + r * D);</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>            std::copy_n(qkv.begin() + r * 3 * D + 2 * D, D, v_t.data.begin() + r * D);</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>        }</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>        kv.k.push_back(std::move(k_t));</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>        kv.v.push_back(std::move(v_t));</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>        // S 自注意力：padding 列掩 + causal</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>        std::vector&lt;uint8_t&gt; allow(static_cast&lt;size_t&gt;(S * S), 1);</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>        for (int64_t i = 0; i &lt; S; ++i)</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>            for (int64_t j = 0; j &lt; S; ++j)</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>                if (j &gt; i || !smask[j]) allow[static_cast&lt;size_t&gt;(i * S + j)] = 0;</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a></span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>        std::vector&lt;float&gt; attn(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>        sdpa_masked(q.data(), kv.k[l].data.data(), kv.v[l].data.data(), attn.data(), S, S, H, d,</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>                    allow.data());</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>        std::vector&lt;float&gt; proj(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>        linear_rows(attn.data(), bw.attn.final_proj.data.data(), proj.data(), S, D, D);</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a></span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>        std::vector&lt;float&gt; z(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>        for (size_t i = 0; i &lt; z.size(); ++i) z[i] = proj[i] + s[i];</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a></span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>        std::vector&lt;float&gt; h2(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>        rms_norm_rows(z.data(), bw.norm_g.data.data(), h2.data(), S, D, eps);</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>        std::vector&lt;float&gt; f(static_cast&lt;size_t&gt;(S * D));</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>        ffn_forward(bw.ffn_s, h2.data(), f.data(), S, D);</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>        for (size_t i = 0; i &lt; z.size(); ++i) z[i] += f[i];</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a></span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>        // pyramid 尾部裁剪（token 与 mask 同步）</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>        int64_t keep = bw.out_seq_num;</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>        s.assign(z.begin() + static_cast&lt;long&gt;((S - keep) * D), z.end());</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>        smask.assign(smask.begin() + (S - keep), smask.end());</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>        S = keep;</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>    }</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>    return kv;</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>}</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a></span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>// Stage II（单用户多候选 + 批量共用实现）</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>// --------------------------------------------------------------------------- //</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a></span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>namespace {</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a></span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>Tensor score_ns_impl(const OneTransModel&amp; m, const std::vector&lt;const UserKV*&gt;&amp; kvs,</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>                     const Tensor&amp; ns_emb) {</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>    const int64_t B = ns_emb.shape[0];</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    if (static_cast&lt;int64_t&gt;(kvs.size()) != B)</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>        throw std::runtime_error(&quot;kvs 数量须等于 ns_emb batch&quot;);</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>    const int64_t Ns = ns_emb.shape[1];</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>    const int64_t D = ns_emb.shape[2];</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>    const int H = m.cfg.num_heads, d = D / H;</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>    const float eps = static_cast&lt;float&gt;(m.cfg.rms_eps);</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a></span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>    std::vector&lt;float&gt; ns(ns_emb.data);</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>    const int64_t T = m.head_w.shape[0];</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a></span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>    for (int l = 0; l &lt; m.cfg.num_blocks; ++l) {</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>        const BlockWeights&amp; bw = m.blocks[l];</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>        const int64_t S_l = kvs[0]-&gt;k[l].shape[1];  // pyramid 宽度恒定</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a></span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>        std::vector&lt;float&gt; h(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>        rms_norm_rows(ns.data(), bw.norm_g.data.data(), h.data(), B * Ns, D, eps);</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>        LayerQkv nsq = project_ns(bw.attn, h.data(), B, Ns, D, H, d);</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a></span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>        // K/V 拼接：每候选 b：[k_s^l ∥ k_ns(b)] → [B, S_l+Ns, H, d]</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>        std::vector&lt;float&gt; kk(static_cast&lt;size_t&gt;(B * (S_l + Ns) * D));</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>        std::vector&lt;float&gt; vv(static_cast&lt;size_t&gt;(B * (S_l + Ns) * D));</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>        for (int64_t b = 0; b &lt; B; ++b) {</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>            const UserKV* kv = kvs[b];</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>            std::copy(kv-&gt;k[l].data.begin(), kv-&gt;k[l].data.end(),</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>                      kk.begin() + b * (S_l + Ns) * D);</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>            std::copy(nsq.k.begin() + b * Ns * D, nsq.k.begin() + (b + 1) * Ns * D,</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>                      kk.begin() + b * (S_l + Ns) * D + S_l * D);</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>            std::copy(kv-&gt;v[l].data.begin(), kv-&gt;v[l].data.end(),</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>                      vv.begin() + b * (S_l + Ns) * D);</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>            std::copy(nsq.v.begin() + b * Ns * D, nsq.v.begin() + (b + 1) * Ns * D,</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>                      vv.begin() + b * (S_l + Ns) * D + S_l * D);</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>        }</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a></span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>        // 逐候选左 padding 有效掩码 + NS causal</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>        std::vector&lt;uint8_t&gt; allow(static_cast&lt;size_t&gt;(B * Ns * (S_l + Ns)), 1);</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>        for (int64_t b = 0; b &lt; B; ++b) {</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>            int64_t valid = kvs[b]-&gt;per_layer_len[l];</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>            for (int64_t i = 0; i &lt; Ns; ++i) {</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>                uint8_t* row = allow.data() + (b * Ns + i) * (S_l + Ns);</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>                for (int64_t j = 0; j &lt; S_l; ++j)</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>                    if (j &lt; S_l - valid) row[j] = 0;  // 左 padding 列</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>                for (int64_t j = S_l; j &lt; S_l + Ns; ++j)</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>                    if (j - S_l &gt; i) row[j] = 0;  // NS causal</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>            }</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>        }</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a></span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>        // 分候选 SDPA（Q 布局 [b, Ns, H, d] → 每候选一个 [Ns, H, d] 块）</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>        std::vector&lt;float&gt; attn(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>        for (int64_t b = 0; b &lt; B; ++b) {</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>            sdpa_masked(nsq.q.data() + b * Ns * D, kk.data() + b * (S_l + Ns) * D,</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>                        vv.data() + b * (S_l + Ns) * D, attn.data() + b * Ns * D, Ns, S_l + Ns,</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>                        H, d, allow.data() + b * Ns * (S_l + Ns));</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>        }</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>        std::vector&lt;float&gt; proj(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>        linear_rows(attn.data(), bw.attn.final_proj.data.data(), proj.data(), B * Ns, D, D);</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a></span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>        std::vector&lt;float&gt; z(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>        for (size_t i = 0; i &lt; z.size(); ++i) z[i] = proj[i] + ns[i];</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a></span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>        std::vector&lt;float&gt; h2(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>        rms_norm_rows(z.data(), bw.norm_g.data.data(), h2.data(), B * Ns, D, eps);</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>        std::vector&lt;float&gt; f(static_cast&lt;size_t&gt;(B * Ns * D));</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>        apply_ns_ffn(bw.ffn_ns, h2.data(), f.data(), B, Ns, D);</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>        for (size_t i = 0; i &lt; z.size(); ++i) z[i] += f[i];</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>        ns = std::move(z);</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>    }</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a></span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>    // head：末 Ns token 均值 → linear（含 bias）</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>    Tensor logits({B, T});</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>    std::vector&lt;float&gt; pooled(static_cast&lt;size_t&gt;(D));</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>    for (int64_t b = 0; b &lt; B; ++b) {</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>        std::fill(pooled.begin(), pooled.end(), 0.0f);</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>        for (int64_t i = 0; i &lt; Ns; ++i)</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>            for (int64_t t = 0; t &lt; D; ++t) pooled[t] += ns[(b * Ns + i) * D + t];</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>        for (int64_t t = 0; t &lt; D; ++t) pooled[t] /= static_cast&lt;float&gt;(Ns);</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>        linear_rows(pooled.data(), m.head_w.data.data(), logits.data.data() + b * T, 1, D, T);</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>        for (int64_t t = 0; t &lt; T; ++t) logits.data.data()[b * T + t] += m.head_b.at(t);</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>    }</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>    return logits;</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>}</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a></span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>}  // namespace</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a></span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>Tensor TwoStageRunner::score_ns(const UserKV&amp; kv, const Tensor&amp; ns_emb) const {</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>    const int64_t B = ns_emb.shape[0];</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>    std::vector&lt;const UserKV*&gt; kvs(static_cast&lt;size_t&gt;(B), &amp;kv);</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>    return score_ns_impl(m_, kvs, ns_emb);</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>}</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a></span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>Tensor TwoStageRunner::score_ns_batch(const std::vector&lt;const UserKV*&gt;&amp; kvs,</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>                                       const Tensor&amp; ns_emb) const {</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>    return score_ns_impl(m_, kvs, ns_emb);</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>}</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a></span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>}  // namespace onetrans</span></pre></html>
