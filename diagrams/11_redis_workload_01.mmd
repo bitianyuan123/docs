@@ -1,10 +1,32 @@
-flowchart TB
-    subgraph RedisProcess[进程：redis-server / 参考7.2.5]
-        Main[主线程<br/>事件循环、MGET键循环、回复构造]
-        IO[可选IO工作线程<br/>socket读写与请求解析]
-        Bio[三个bio后台线程<br/>每工作线程有作业队列]
-        Main <-->|分配连接列表；原子计数确认完成| IO
-        Main -->|共享队列；互斥锁与条件变量| Bio
+sequenceDiagram
+    participant C as 特征客户端IO
+    participant K as Redis所在OS
+    participant M as Redis主线程
+    participant D as 同进程数据库与连接内存
+    M->>K: epoll_wait；无事件时休眠
+    C-)K: 用户1四键MGET，219字节
+    K-->>M: fd可读；主线程取得CPU后继续
+    M->>K: connRead → read
+    K-->>M: 请求字节
+    M->>D: 累积querybuf；生成argc=5与argv
+    D-->>M: 一条完整MGET的参数
+    M->>D: addReplyArrayLen，先写四元素数组头
+    loop 按输入次序处理四个键
+        M->>D: lookupKeyRead；检查过期及String类型
+        D-->>M: 本位置值对象，长度依次144/336/638/366
+        M->>D: addReplyBulk；复制本位置JSON并加入长度前缀
     end
-    Main -->|按条件fork| RDB[子进程：生成RDB]
-    Main -->|按条件fork| AOF[子进程：重写AOF]
+    M->>M: 本批回复累计1520字节
+    M->>D: resetClient释放argv；保留待发回复
+    M->>M: 回到事件循环；beforeSleep处理待写
+    M->>K: writeToClient；示意本次写1000字节后暂不可写
+    K-->>M: 已接受1000；后续EAGAIN
+    M->>D: 保留sentlen=1000；登记可写回调
+    M->>M: 可处理其他连接；本回复不重新查键
+    M->>K: 后续事件轮询
+    K-->>M: 可写事件返回
+    M->>K: sendReplyToClient；继续发送520字节
+    K-->>M: 剩余字节已接受
+    M->>D: 清空已发缓冲长度；撤销可写回调
+    K-)C: TCP交付全部回复字节
+    C->>C: RESP解析完成；交给特征任务解码JSON

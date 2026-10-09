@@ -1,0 +1,177 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>redigo_v1.9.3/LICENSE</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>redigo_v1.9.3/LICENSE</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v1.9.3</code><br>原文件 SHA256：<code>0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a></span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>                                 Apache License</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>                           Version 2.0, January 2004</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>                        http://www.apache.org/licenses/</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a></span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>   1. Definitions.</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>      &quot;License&quot; shall mean the terms and conditions for use, reproduction,</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>      and distribution as defined by Sections 1 through 9 of this document.</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>      &quot;Licensor&quot; shall mean the copyright owner or entity authorized by</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>      the copyright owner that is granting the License.</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>      &quot;Legal Entity&quot; shall mean the union of the acting entity and all</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>      other entities that control, are controlled by, or are under common</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>      control with that entity. For the purposes of this definition,</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>      &quot;control&quot; means (i) the power, direct or indirect, to cause the</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>      direction or management of such entity, whether by contract or</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>      otherwise, or (ii) ownership of fifty percent (50%) or more of the</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>      outstanding shares, or (iii) beneficial ownership of such entity.</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>      &quot;You&quot; (or &quot;Your&quot;) shall mean an individual or Legal Entity</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>      exercising permissions granted by this License.</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a></span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>      &quot;Source&quot; form shall mean the preferred form for making modifications,</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>      including but not limited to software source code, documentation</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>      source, and configuration files.</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>      &quot;Object&quot; form shall mean any form resulting from mechanical</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>      transformation or translation of a Source form, including but</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>      not limited to compiled object code, generated documentation,</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>      and conversions to other media types.</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>      &quot;Work&quot; shall mean the work of authorship, whether in Source or</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>      Object form, made available under the License, as indicated by a</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>      copyright notice that is included in or attached to the work</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>      (an example is provided in the Appendix below).</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a></span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>      &quot;Derivative Works&quot; shall mean any work, whether in Source or Object</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>      form, that is based on (or derived from) the Work and for which the</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>      editorial revisions, annotations, elaborations, or other modifications</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>      represent, as a whole, an original work of authorship. For the purposes</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>      of this License, Derivative Works shall not include works that remain</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>      separable from, or merely link (or bind by name) to the interfaces of,</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>      the Work and Derivative Works thereof.</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>      &quot;Contribution&quot; shall mean any work of authorship, including</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>      the original version of the Work and any modifications or additions</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>      to that Work or Derivative Works thereof, that is intentionally</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>      submitted to Licensor for inclusion in the Work by the copyright owner</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>      or by an individual or Legal Entity authorized to submit on behalf of</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>      the copyright owner. For the purposes of this definition, &quot;submitted&quot;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>      means any form of electronic, verbal, or written communication sent</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>      to the Licensor or its representatives, including but not limited to</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>      communication on electronic mailing lists, source code control systems,</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>      and issue tracking systems that are managed by, or on behalf of, the</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>      Licensor for the purpose of discussing and improving the Work, but</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>      excluding communication that is conspicuously marked or otherwise</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>      designated in writing by the copyright owner as &quot;Not a Contribution.&quot;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a></span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>      &quot;Contributor&quot; shall mean Licensor and any individual or Legal Entity</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>      on behalf of whom a Contribution has been received by Licensor and</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>      subsequently incorporated within the Work.</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>   2. Grant of Copyright License. Subject to the terms and conditions of</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>      this License, each Contributor hereby grants to You a perpetual,</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>      worldwide, non-exclusive, no-charge, royalty-free, irrevocable</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>      copyright license to reproduce, prepare Derivative Works of,</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>      publicly display, publicly perform, sublicense, and distribute the</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>      Work and such Derivative Works in Source or Object form.</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>   3. Grant of Patent License. Subject to the terms and conditions of</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>      this License, each Contributor hereby grants to You a perpetual,</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>      worldwide, non-exclusive, no-charge, royalty-free, irrevocable</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>      (except as stated in this section) patent license to make, have made,</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>      use, offer to sell, sell, import, and otherwise transfer the Work,</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>      where such license applies only to those patent claims licensable</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>      by such Contributor that are necessarily infringed by their</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>      Contribution(s) alone or by combination of their Contribution(s)</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>      with the Work to which such Contribution(s) was submitted. If You</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>      institute patent litigation against any entity (including a</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>      cross-claim or counterclaim in a lawsuit) alleging that the Work</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>      or a Contribution incorporated within the Work constitutes direct</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>      or contributory patent infringement, then any patent licenses</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>      granted to You under this License for that Work shall terminate</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>      as of the date such litigation is filed.</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a></span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>   4. Redistribution. You may reproduce and distribute copies of the</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>      Work or Derivative Works thereof in any medium, with or without</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>      modifications, and in Source or Object form, provided that You</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>      meet the following conditions:</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a></span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>      (a) You must give any other recipients of the Work or</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>          Derivative Works a copy of this License; and</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>      (b) You must cause any modified files to carry prominent notices</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>          stating that You changed the files; and</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a></span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>      (c) You must retain, in the Source form of any Derivative Works</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>          that You distribute, all copyright, patent, trademark, and</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>          attribution notices from the Source form of the Work,</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>          excluding those notices that do not pertain to any part of</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>          the Derivative Works; and</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a></span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>      (d) If the Work includes a &quot;NOTICE&quot; text file as part of its</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>          distribution, then any Derivative Works that You distribute must</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>          include a readable copy of the attribution notices contained</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>          within such NOTICE file, excluding those notices that do not</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>          pertain to any part of the Derivative Works, in at least one</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>          of the following places: within a NOTICE text file distributed</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>          as part of the Derivative Works; within the Source form or</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>          documentation, if provided along with the Derivative Works; or,</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>          within a display generated by the Derivative Works, if and</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>          wherever such third-party notices normally appear. The contents</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>          of the NOTICE file are for informational purposes only and</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>          do not modify the License. You may add Your own attribution</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>          notices within Derivative Works that You distribute, alongside</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>          or as an addendum to the NOTICE text from the Work, provided</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>          that such additional attribution notices cannot be construed</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>          as modifying the License.</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a></span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>      You may add Your own copyright statement to Your modifications and</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>      may provide additional or different license terms and conditions</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>      for use, reproduction, or distribution of Your modifications, or</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>      for any such Derivative Works as a whole, provided Your use,</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>      reproduction, and distribution of the Work otherwise complies with</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>      the conditions stated in this License.</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a></span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>   5. Submission of Contributions. Unless You explicitly state otherwise,</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>      any Contribution intentionally submitted for inclusion in the Work</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>      by You to the Licensor shall be under the terms and conditions of</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>      this License, without any additional terms or conditions.</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>      Notwithstanding the above, nothing herein shall supersede or modify</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>      the terms of any separate license agreement you may have executed</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>      with Licensor regarding such Contributions.</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a></span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>   6. Trademarks. This License does not grant permission to use the trade</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>      names, trademarks, service marks, or product names of the Licensor,</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>      except as required for reasonable and customary use in describing the</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>      origin of the Work and reproducing the content of the NOTICE file.</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a></span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>   7. Disclaimer of Warranty. Unless required by applicable law or</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>      agreed to in writing, Licensor provides the Work (and each</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>      Contributor provides its Contributions) on an &quot;AS IS&quot; BASIS,</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>      implied, including, without limitation, any warranties or conditions</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>      PARTICULAR PURPOSE. You are solely responsible for determining the</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>      appropriateness of using or redistributing the Work and assume any</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>      risks associated with Your exercise of permissions under this License.</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a></span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>   8. Limitation of Liability. In no event and under no legal theory,</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>      whether in tort (including negligence), contract, or otherwise,</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>      unless required by applicable law (such as deliberate and grossly</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>      negligent acts) or agreed to in writing, shall any Contributor be</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>      liable to You for damages, including any direct, indirect, special,</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>      incidental, or consequential damages of any character arising as a</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>      result of this License or out of the use or inability to use the</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>      Work (including but not limited to damages for loss of goodwill,</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>      work stoppage, computer failure or malfunction, or any and all</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>      other commercial damages or losses), even if such Contributor</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>      has been advised of the possibility of such damages.</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a></span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>   9. Accepting Warranty or Additional Liability. While redistributing</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>      the Work or Derivative Works thereof, You may choose to offer,</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>      and charge a fee for, acceptance of support, warranty, indemnity,</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>      or other liability obligations and/or rights consistent with this</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>      License. However, in accepting such obligations, You may act only</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>      on Your own behalf and on Your sole responsibility, not on behalf</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>      of any other Contributor, and only if You agree to indemnify,</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>      defend, and hold each Contributor harmless for any liability</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>      incurred by, or claims asserted against, such Contributor by reason</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>      of your accepting any such warranty or additional liability.</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a></span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>   END OF TERMS AND CONDITIONS</span></pre></html>

@@ -1,0 +1,967 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>go_go1.24.0/src/runtime/chan.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>go_go1.24.0/src/runtime/chan.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>go1.24.0</code><br>原文件 SHA256：<code>bea8a142d8854649cb5c9f7302e041fcfe170c9d5b4978d32cc217a08ece4989</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Copyright 2014 The Go Authors. All rights reserved.</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>// Use of this source code is governed by a BSD-style</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// license that can be found in the LICENSE file.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>package runtime</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// This file contains the implementation of Go channels.</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>// Invariants:</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>//  At least one of c.sendq and c.recvq is empty,</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>//  except for the case of an unbuffered channel with a single goroutine</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>//  blocked on it for both sending and receiving using a select statement,</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>//  in which case the length of c.sendq and c.recvq is limited only by the</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>//  size of the select statement.</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>//</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>// For buffered channels, also:</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>//  c.qcount &gt; 0 implies that c.recvq is empty.</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>//  c.qcount &lt; c.dataqsiz implies that c.sendq is empty.</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>import (</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	&quot;internal/abi&quot;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	&quot;internal/runtime/atomic&quot;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	&quot;internal/runtime/math&quot;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	&quot;internal/runtime/sys&quot;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	&quot;unsafe&quot;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>const (</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	maxAlign  = 8</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	hchanSize = unsafe.Sizeof(hchan{}) + uintptr(-int(unsafe.Sizeof(hchan{}))&amp;(maxAlign-1))</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	debugChan = false</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>)</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>type hchan struct {</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	qcount   uint           // total data in the queue</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	dataqsiz uint           // size of the circular queue</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	buf      unsafe.Pointer // points to an array of dataqsiz elements</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	elemsize uint16</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	synctest bool // true if created in a synctest bubble</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	closed   uint32</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>	timer    *timer // timer feeding this chan</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	elemtype *_type // element type</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	sendx    uint   // send index</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	recvx    uint   // receive index</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	recvq    waitq  // list of recv waiters</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	sendq    waitq  // list of send waiters</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	// lock protects all fields in hchan, as well as several</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>	// fields in sudogs blocked on this channel.</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	//</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>	// Do not change another G&#x27;s status while holding this lock</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	// (in particular, do not ready a G), as this can deadlock</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	// with stack shrinking.</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	lock mutex</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>}</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>type waitq struct {</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	first *sudog</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	last  *sudog</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>}</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>//go:linkname reflect_makechan reflect.makechan</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>func reflect_makechan(t *chantype, size int) *hchan {</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>	return makechan(t, size)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>}</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>func makechan64(t *chantype, size int64) *hchan {</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>	if int64(int(size)) != size {</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>		panic(plainError(&quot;makechan: size out of range&quot;))</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	}</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>	return makechan(t, int(size))</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>}</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a></span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>func makechan(t *chantype, size int) *hchan {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>	elem := t.Elem</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a></span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>	// compiler checks this but be safe.</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	if elem.Size_ &gt;= 1&lt;&lt;16 {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>		throw(&quot;makechan: invalid channel element type&quot;)</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	}</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>	if hchanSize%maxAlign != 0 || elem.Align_ &gt; maxAlign {</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>		throw(&quot;makechan: bad alignment&quot;)</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	}</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a></span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>	mem, overflow := math.MulUintptr(elem.Size_, uintptr(size))</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>	if overflow || mem &gt; maxAlloc-hchanSize || size &lt; 0 {</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>		panic(plainError(&quot;makechan: size out of range&quot;))</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	}</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a></span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	// Hchan does not contain pointers interesting for GC when elements stored in buf do not contain pointers.</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>	// buf points into the same allocation, elemtype is persistent.</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>	// SudoG&#x27;s are referenced from their owning thread so they can&#x27;t be collected.</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>	// TODO(dvyukov,rlh): Rethink when collector can move allocated objects.</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	var c *hchan</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>	switch {</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	case mem == 0:</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>		// Queue or element size is zero.</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>		c = (*hchan)(mallocgc(hchanSize, nil, true))</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>		// Race detector uses this location for synchronization.</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>		c.buf = c.raceaddr()</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	case !elem.Pointers():</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>		// Elements do not contain pointers.</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>		// Allocate hchan and buf in one call.</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>		c = (*hchan)(mallocgc(hchanSize+mem, nil, true))</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>		c.buf = add(unsafe.Pointer(c), hchanSize)</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>	default:</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>		// Elements contain pointers.</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>		c = new(hchan)</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>		c.buf = mallocgc(mem, elem, true)</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	}</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a></span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>	c.elemsize = uint16(elem.Size_)</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>	c.elemtype = elem</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>	c.dataqsiz = uint(size)</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>	if getg().syncGroup != nil {</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>		c.synctest = true</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>	}</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	lockInit(&amp;c.lock, lockRankHchan)</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a></span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>	if debugChan {</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>		print(&quot;makechan: chan=&quot;, c, &quot;; elemsize=&quot;, elem.Size_, &quot;; dataqsiz=&quot;, size, &quot;\n&quot;)</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>	}</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	return c</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a></span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>// chanbuf(c, i) is pointer to the i&#x27;th slot in the buffer.</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>//</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>// chanbuf should be an internal detail,</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>// but widely used packages access it using linkname.</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>// Notable members of the hall of shame include:</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>//   - github.com/fjl/memsize</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>//</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>// Do not remove or change the type signature.</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>// See go.dev/issue/67401.</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>//</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>//go:linkname chanbuf</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>func chanbuf(c *hchan, i uint) unsafe.Pointer {</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	return add(c.buf, uintptr(i)*uintptr(c.elemsize))</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>}</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a></span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>// full reports whether a send on c would block (that is, the channel is full).</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>// It uses a single word-sized read of mutable state, so although</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>// the answer is instantaneously true, the correct answer may have changed</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>// by the time the calling function receives the return value.</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>func full(c *hchan) bool {</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>	// c.dataqsiz is immutable (never written after the channel is created)</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>	// so it is safe to read at any time during channel operation.</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>	if c.dataqsiz == 0 {</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>		// Assumes that a pointer read is relaxed-atomic.</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>		return c.recvq.first == nil</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>	}</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>	// Assumes that a uint read is relaxed-atomic.</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>	return c.qcount == c.dataqsiz</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>}</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a></span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>// entry point for c &lt;- x from compiled code.</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>//</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>//go:nosplit</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>func chansend1(c *hchan, elem unsafe.Pointer) {</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>	chansend(c, elem, true, sys.GetCallerPC())</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>}</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a></span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>/*</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a> * generic single channel send/recv</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a> * If block is not nil,</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a> * then the protocol will not</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a> * sleep but return if it could</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a> * not complete.</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a> *</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a> * sleep can wake up with g.param == nil</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a> * when a channel involved in the sleep has</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a> * been closed.  it is easiest to loop and re-run</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a> * the operation; we&#x27;ll see that it&#x27;s now closed.</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a> */</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>	if c == nil {</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>		if !block {</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>			return false</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>		}</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>		gopark(nil, nil, waitReasonChanSendNilChan, traceBlockForever, 2)</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>		throw(&quot;unreachable&quot;)</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>	}</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a></span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>	if debugChan {</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>		print(&quot;chansend: chan=&quot;, c, &quot;\n&quot;)</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>	}</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a></span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>	if raceenabled {</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>		racereadpc(c.raceaddr(), callerpc, abi.FuncPCABIInternal(chansend))</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>	}</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a></span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>	if c.synctest &amp;&amp; getg().syncGroup == nil {</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>		panic(plainError(&quot;send on synctest channel from outside bubble&quot;))</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>	}</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a></span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>	// Fast path: check for failed non-blocking operation without acquiring the lock.</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	//</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>	// After observing that the channel is not closed, we observe that the channel is</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>	// not ready for sending. Each of these observations is a single word-sized read</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>	// (first c.closed and second full()).</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>	// Because a closed channel cannot transition from &#x27;ready for sending&#x27; to</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>	// &#x27;not ready for sending&#x27;, even if the channel is closed between the two observations,</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	// they imply a moment between the two when the channel was both not yet closed</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>	// and not ready for sending. We behave as if we observed the channel at that moment,</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>	// and report that the send cannot proceed.</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>	//</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>	// It is okay if the reads are reordered here: if we observe that the channel is not</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>	// ready for sending and then observe that it is not closed, that implies that the</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>	// channel wasn&#x27;t closed during the first observation. However, nothing here</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>	// guarantees forward progress. We rely on the side effects of lock release in</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>	// chanrecv() and closechan() to update this thread&#x27;s view of c.closed and full().</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>	if !block &amp;&amp; c.closed == 0 &amp;&amp; full(c) {</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>		return false</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>	}</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a></span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>	var t0 int64</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>	if blockprofilerate &gt; 0 {</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>		t0 = cputicks()</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>	}</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a></span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>	lock(&amp;c.lock)</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a></span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>	if c.closed != 0 {</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>		unlock(&amp;c.lock)</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>		panic(plainError(&quot;send on closed channel&quot;))</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>	}</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a></span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>	if sg := c.recvq.dequeue(); sg != nil {</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>		// Found a waiting receiver. We pass the value we want to send</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>		// directly to the receiver, bypassing the channel buffer (if any).</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>		send(c, sg, ep, func() { unlock(&amp;c.lock) }, 3)</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>		return true</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>	}</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a></span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>	if c.qcount &lt; c.dataqsiz {</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>		// Space is available in the channel buffer. Enqueue the element to send.</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>		qp := chanbuf(c, c.sendx)</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>		if raceenabled {</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>			racenotify(c, c.sendx, nil)</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>		}</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>		typedmemmove(c.elemtype, qp, ep)</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>		c.sendx++</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>		if c.sendx == c.dataqsiz {</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>			c.sendx = 0</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>		}</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>		c.qcount++</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>		unlock(&amp;c.lock)</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>		return true</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>	}</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a></span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>	if !block {</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>		unlock(&amp;c.lock)</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>		return false</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>	}</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a></span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>	// Block on the channel. Some receiver will complete our operation for us.</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>	gp := getg()</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>	mysg := acquireSudog()</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>	mysg.releasetime = 0</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>	if t0 != 0 {</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>		mysg.releasetime = -1</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>	}</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>	// No stack splits between assigning elem and enqueuing mysg</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>	// on gp.waiting where copystack can find it.</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>	mysg.elem = ep</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>	mysg.waitlink = nil</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>	mysg.g = gp</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>	mysg.isSelect = false</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>	mysg.c = c</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>	gp.waiting = mysg</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>	gp.param = nil</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>	c.sendq.enqueue(mysg)</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>	// Signal to anyone trying to shrink our stack that we&#x27;re about</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>	// to park on a channel. The window between when this G&#x27;s status</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>	// changes and when we set gp.activeStackChans is not safe for</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>	// stack shrinking.</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>	gp.parkingOnChan.Store(true)</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>	reason := waitReasonChanSend</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>	if c.synctest {</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>		reason = waitReasonSynctestChanSend</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>	}</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>	gopark(chanparkcommit, unsafe.Pointer(&amp;c.lock), reason, traceBlockChanSend, 2)</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>	// Ensure the value being sent is kept alive until the</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>	// receiver copies it out. The sudog has a pointer to the</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>	// stack object, but sudogs aren&#x27;t considered as roots of the</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>	// stack tracer.</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>	KeepAlive(ep)</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a></span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>	// someone woke us up.</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>	if mysg != gp.waiting {</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>		throw(&quot;G waiting list is corrupted&quot;)</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>	}</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>	gp.waiting = nil</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>	gp.activeStackChans = false</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>	closed := !mysg.success</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>	gp.param = nil</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>	if mysg.releasetime &gt; 0 {</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>		blockevent(mysg.releasetime-t0, 2)</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>	}</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>	mysg.c = nil</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>	releaseSudog(mysg)</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>	if closed {</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>		if c.closed == 0 {</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>			throw(&quot;chansend: spurious wakeup&quot;)</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>		}</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>		panic(plainError(&quot;send on closed channel&quot;))</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>	}</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>	return true</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>}</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a></span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>// send processes a send operation on an empty channel c.</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>// The value ep sent by the sender is copied to the receiver sg.</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>// The receiver is then woken up to go on its merry way.</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>// Channel c must be empty and locked.  send unlocks c with unlockf.</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>// sg must already be dequeued from c.</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>// ep must be non-nil and point to the heap or the caller&#x27;s stack.</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>	if c.synctest &amp;&amp; sg.g.syncGroup != getg().syncGroup {</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>		unlockf()</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>		panic(plainError(&quot;send on synctest channel from outside bubble&quot;))</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>	}</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>	if raceenabled {</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>		if c.dataqsiz == 0 {</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>			racesync(c, sg)</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>		} else {</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>			// Pretend we go through the buffer, even though</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>			// we copy directly. Note that we need to increment</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>			// the head/tail locations only when raceenabled.</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>			racenotify(c, c.recvx, nil)</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>			racenotify(c, c.recvx, sg)</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>			c.recvx++</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>			if c.recvx == c.dataqsiz {</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>				c.recvx = 0</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>			}</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>			c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>		}</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>	}</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>	if sg.elem != nil {</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>		sendDirect(c.elemtype, sg, ep)</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>		sg.elem = nil</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>	}</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>	gp := sg.g</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>	unlockf()</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>	gp.param = unsafe.Pointer(sg)</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>	sg.success = true</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>	if sg.releasetime != 0 {</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>		sg.releasetime = cputicks()</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>	}</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>	goready(gp, skip+1)</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>}</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a></span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>// timerchandrain removes all elements in channel c&#x27;s buffer.</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>// It reports whether any elements were removed.</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>// Because it is only intended for timers, it does not</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>// handle waiting senders at all (all timer channels</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>// use non-blocking sends to fill the buffer).</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>func timerchandrain(c *hchan) bool {</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>	// Note: Cannot use empty(c) because we are called</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>	// while holding c.timer.sendLock, and empty(c) will</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>	// call c.timer.maybeRunChan, which will deadlock.</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>	// We are emptying the channel, so we only care about</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>	// the count, not about potentially filling it up.</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>	if atomic.Loaduint(&amp;c.qcount) == 0 {</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>		return false</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>	}</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>	lock(&amp;c.lock)</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>	any := false</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>	for c.qcount &gt; 0 {</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>		any = true</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>		typedmemclr(c.elemtype, chanbuf(c, c.recvx))</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>		c.recvx++</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>		if c.recvx == c.dataqsiz {</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>			c.recvx = 0</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>		}</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>		c.qcount--</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>	}</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>	unlock(&amp;c.lock)</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>	return any</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a>}</span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a></span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>// Sends and receives on unbuffered or empty-buffered channels are the</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>// only operations where one running goroutine writes to the stack of</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>// another running goroutine. The GC assumes that stack writes only</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>// happen when the goroutine is running and are only done by that</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>// goroutine. Using a write barrier is sufficient to make up for</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>// violating that assumption, but the write barrier has to work.</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>// typedmemmove will call bulkBarrierPreWrite, but the target bytes</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>// are not in the heap, so that will not help. We arrange to call</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>// memmove and typeBitsBulkBarrier instead.</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a></span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>func sendDirect(t *_type, sg *sudog, src unsafe.Pointer) {</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>	// src is on our stack, dst is a slot on another stack.</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a></span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>	// Once we read sg.elem out of sg, it will no longer</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>	// be updated if the destination&#x27;s stack gets copied (shrunk).</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>	// So make sure that no preemption points can happen between read &amp; use.</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>	dst := sg.elem</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.Size_)</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a>	// No need for cgo write barrier checks because dst is always</span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>	// Go memory.</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>	memmove(dst, src, t.Size_)</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a>}</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a></span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a>func recvDirect(t *_type, sg *sudog, dst unsafe.Pointer) {</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>	// dst is on our stack or the heap, src is on another stack.</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>	// The channel is locked, so src will not move during this</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>	// operation.</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>	src := sg.elem</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.Size_)</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>	memmove(dst, src, t.Size_)</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>}</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a></span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>func closechan(c *hchan) {</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>	if c == nil {</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>		panic(plainError(&quot;close of nil channel&quot;))</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>	}</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a></span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>	lock(&amp;c.lock)</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>	if c.closed != 0 {</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>		unlock(&amp;c.lock)</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>		panic(plainError(&quot;close of closed channel&quot;))</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>	}</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a></span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>	if raceenabled {</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>		callerpc := sys.GetCallerPC()</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>		racewritepc(c.raceaddr(), callerpc, abi.FuncPCABIInternal(closechan))</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a>		racerelease(c.raceaddr())</span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>	}</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a></span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>	c.closed = 1</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a></span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>	var glist gList</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a></span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>	// release all readers</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>	for {</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>		sg := c.recvq.dequeue()</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>		if sg == nil {</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>			break</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>		}</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>		if sg.elem != nil {</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>			typedmemclr(c.elemtype, sg.elem)</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>			sg.elem = nil</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>		}</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>		if sg.releasetime != 0 {</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>			sg.releasetime = cputicks()</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>		}</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a>		gp := sg.g</span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>		gp.param = unsafe.Pointer(sg)</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>		sg.success = false</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>		if raceenabled {</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>			raceacquireg(gp, c.raceaddr())</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>		}</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>		glist.push(gp)</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>	}</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a></span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>	// release all writers (they will panic)</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>	for {</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>		sg := c.sendq.dequeue()</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>		if sg == nil {</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>			break</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a>		}</span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>		sg.elem = nil</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>		if sg.releasetime != 0 {</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>			sg.releasetime = cputicks()</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>		}</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>		gp := sg.g</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>		gp.param = unsafe.Pointer(sg)</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>		sg.success = false</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a>		if raceenabled {</span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a>			raceacquireg(gp, c.raceaddr())</span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a>		}</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>		glist.push(gp)</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a>	}</span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>	unlock(&amp;c.lock)</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a></span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>	// Ready all Gs now that we&#x27;ve dropped the channel lock.</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>	for !glist.empty() {</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>		gp := glist.pop()</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>		gp.schedlink = 0</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>		goready(gp, 3)</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a>	}</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>}</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a></span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>// empty reports whether a read from c would block (that is, the channel is</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>// empty).  It is atomically correct and sequentially consistent at the moment</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>// it returns, but since the channel is unlocked, the channel may become</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>// non-empty immediately afterward.</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>func empty(c *hchan) bool {</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a>	// c.dataqsiz is immutable.</span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>	if c.dataqsiz == 0 {</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>		return atomic.Loadp(unsafe.Pointer(&amp;c.sendq.first)) == nil</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>	}</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>	// c.timer is also immutable (it is set after make(chan) but before any channel operations).</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>	// All timer channels have dataqsiz &gt; 0.</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>	if c.timer != nil {</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>		c.timer.maybeRunChan()</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>	}</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>	return atomic.Loaduint(&amp;c.qcount) == 0</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>}</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a></span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>// entry points for &lt;- c from compiled code.</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>//</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a>//go:nosplit</span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>func chanrecv1(c *hchan, elem unsafe.Pointer) {</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a>	chanrecv(c, elem, true)</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a>}</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a></span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>//go:nosplit</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>func chanrecv2(c *hchan, elem unsafe.Pointer) (received bool) {</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>	_, received = chanrecv(c, elem, true)</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>	return</span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>}</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a></span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>// chanrecv receives on channel c and writes the received data to ep.</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>// ep may be nil, in which case received data is ignored.</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>// If block == false and no elements are available, returns (false, false).</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>// Otherwise, if c is closed, zeros *ep and returns (true, false).</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>// Otherwise, fills in *ep with an element and returns (true, true).</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>// A non-nil ep must point to the heap or the caller&#x27;s stack.</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>func chanrecv(c *hchan, ep unsafe.Pointer, block bool) (selected, received bool) {</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>	// raceenabled: don&#x27;t need to check ep, as it is always on the stack</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>	// or is new memory allocated by reflect.</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a></span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>	if debugChan {</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>		print(&quot;chanrecv: chan=&quot;, c, &quot;\n&quot;)</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a>	}</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a></span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>	if c == nil {</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>		if !block {</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a>			return</span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>		}</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a>		gopark(nil, nil, waitReasonChanReceiveNilChan, traceBlockForever, 2)</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a>		throw(&quot;unreachable&quot;)</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a>	}</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a></span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>	if c.synctest &amp;&amp; getg().syncGroup == nil {</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>		panic(plainError(&quot;receive on synctest channel from outside bubble&quot;))</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a>	}</span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a></span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>	if c.timer != nil {</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a>		c.timer.maybeRunChan()</span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>	}</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a></span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a>	// Fast path: check for failed non-blocking operation without acquiring the lock.</span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>	if !block &amp;&amp; empty(c) {</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a>		// After observing that the channel is not ready for receiving, we observe whether the</span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>		// channel is closed.</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a>		//</span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a>		// Reordering of these checks could lead to incorrect behavior when racing with a close.</span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>		// For example, if the channel was open and not empty, was closed, and then drained,</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>		// reordered reads could incorrectly indicate &quot;open and empty&quot;. To prevent reordering,</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a>		// we use atomic loads for both checks, and rely on emptying and closing to happen in</span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>		// separate critical sections under the same lock.  This assumption fails when closing</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>		// an unbuffered channel with a blocked send, but that is an error condition anyway.</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>		if atomic.Load(&amp;c.closed) == 0 {</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>			// Because a channel cannot be reopened, the later observation of the channel</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>			// being not closed implies that it was also not closed at the moment of the</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>			// first observation. We behave as if we observed the channel at that moment</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a>			// and report that the receive cannot proceed.</span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a>			return</span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>		}</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a>		// The channel is irreversibly closed. Re-check whether the channel has any pending data</span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>		// to receive, which could have arrived between the empty and closed checks above.</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>		// Sequential consistency is also required here, when racing with such a send.</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>		if empty(c) {</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a>			// The channel is irreversibly closed and empty.</span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a>			if raceenabled {</span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>				raceacquire(c.raceaddr())</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a>			}</span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a>			if ep != nil {</span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>				typedmemclr(c.elemtype, ep)</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>			}</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a>			return true, false</span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>		}</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>	}</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a></span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a>	var t0 int64</span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a>	if blockprofilerate &gt; 0 {</span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a>		t0 = cputicks()</span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a>	}</span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a></span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a>	lock(&amp;c.lock)</span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a></span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>	if c.closed != 0 {</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a>		if c.qcount == 0 {</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a>			if raceenabled {</span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a>				raceacquire(c.raceaddr())</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a>			}</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a>			unlock(&amp;c.lock)</span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a>			if ep != nil {</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a>				typedmemclr(c.elemtype, ep)</span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a>			}</span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a>			return true, false</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a>		}</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a>		// The channel has been closed, but the channel&#x27;s buffer have data.</span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a>	} else {</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a>		// Just found waiting sender with not closed.</span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a>		if sg := c.sendq.dequeue(); sg != nil {</span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a>			// Found a waiting sender. If buffer is size 0, receive value</span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>			// directly from sender. Otherwise, receive from head of queue</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>			// and add sender&#x27;s value to the tail of the queue (both map to</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a>			// the same buffer slot because the queue is full).</span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a>			recv(c, sg, ep, func() { unlock(&amp;c.lock) }, 3)</span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>			return true, true</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a>		}</span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>	}</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a></span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a>	if c.qcount &gt; 0 {</span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>		// Receive directly from queue</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a>		qp := chanbuf(c, c.recvx)</span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a>		if raceenabled {</span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a>			racenotify(c, c.recvx, nil)</span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a>		}</span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a>		if ep != nil {</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a>			typedmemmove(c.elemtype, ep, qp)</span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a>		}</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a>		typedmemclr(c.elemtype, qp)</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a>		c.recvx++</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a>		if c.recvx == c.dataqsiz {</span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a>			c.recvx = 0</span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a>		}</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a>		c.qcount--</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a>		unlock(&amp;c.lock)</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a>		return true, true</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>	}</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a></span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a>	if !block {</span>
+<span class="line" id="L629"><a class="ln" href="#L629">629</a>		unlock(&amp;c.lock)</span>
+<span class="line" id="L630"><a class="ln" href="#L630">630</a>		return false, false</span>
+<span class="line" id="L631"><a class="ln" href="#L631">631</a>	}</span>
+<span class="line" id="L632"><a class="ln" href="#L632">632</a></span>
+<span class="line" id="L633"><a class="ln" href="#L633">633</a>	// no sender available: block on this channel.</span>
+<span class="line" id="L634"><a class="ln" href="#L634">634</a>	gp := getg()</span>
+<span class="line" id="L635"><a class="ln" href="#L635">635</a>	mysg := acquireSudog()</span>
+<span class="line" id="L636"><a class="ln" href="#L636">636</a>	mysg.releasetime = 0</span>
+<span class="line" id="L637"><a class="ln" href="#L637">637</a>	if t0 != 0 {</span>
+<span class="line" id="L638"><a class="ln" href="#L638">638</a>		mysg.releasetime = -1</span>
+<span class="line" id="L639"><a class="ln" href="#L639">639</a>	}</span>
+<span class="line" id="L640"><a class="ln" href="#L640">640</a>	// No stack splits between assigning elem and enqueuing mysg</span>
+<span class="line" id="L641"><a class="ln" href="#L641">641</a>	// on gp.waiting where copystack can find it.</span>
+<span class="line" id="L642"><a class="ln" href="#L642">642</a>	mysg.elem = ep</span>
+<span class="line" id="L643"><a class="ln" href="#L643">643</a>	mysg.waitlink = nil</span>
+<span class="line" id="L644"><a class="ln" href="#L644">644</a>	gp.waiting = mysg</span>
+<span class="line" id="L645"><a class="ln" href="#L645">645</a></span>
+<span class="line" id="L646"><a class="ln" href="#L646">646</a>	mysg.g = gp</span>
+<span class="line" id="L647"><a class="ln" href="#L647">647</a>	mysg.isSelect = false</span>
+<span class="line" id="L648"><a class="ln" href="#L648">648</a>	mysg.c = c</span>
+<span class="line" id="L649"><a class="ln" href="#L649">649</a>	gp.param = nil</span>
+<span class="line" id="L650"><a class="ln" href="#L650">650</a>	c.recvq.enqueue(mysg)</span>
+<span class="line" id="L651"><a class="ln" href="#L651">651</a>	if c.timer != nil {</span>
+<span class="line" id="L652"><a class="ln" href="#L652">652</a>		blockTimerChan(c)</span>
+<span class="line" id="L653"><a class="ln" href="#L653">653</a>	}</span>
+<span class="line" id="L654"><a class="ln" href="#L654">654</a></span>
+<span class="line" id="L655"><a class="ln" href="#L655">655</a>	// Signal to anyone trying to shrink our stack that we&#x27;re about</span>
+<span class="line" id="L656"><a class="ln" href="#L656">656</a>	// to park on a channel. The window between when this G&#x27;s status</span>
+<span class="line" id="L657"><a class="ln" href="#L657">657</a>	// changes and when we set gp.activeStackChans is not safe for</span>
+<span class="line" id="L658"><a class="ln" href="#L658">658</a>	// stack shrinking.</span>
+<span class="line" id="L659"><a class="ln" href="#L659">659</a>	gp.parkingOnChan.Store(true)</span>
+<span class="line" id="L660"><a class="ln" href="#L660">660</a>	reason := waitReasonChanReceive</span>
+<span class="line" id="L661"><a class="ln" href="#L661">661</a>	if c.synctest {</span>
+<span class="line" id="L662"><a class="ln" href="#L662">662</a>		reason = waitReasonSynctestChanReceive</span>
+<span class="line" id="L663"><a class="ln" href="#L663">663</a>	}</span>
+<span class="line" id="L664"><a class="ln" href="#L664">664</a>	gopark(chanparkcommit, unsafe.Pointer(&amp;c.lock), reason, traceBlockChanRecv, 2)</span>
+<span class="line" id="L665"><a class="ln" href="#L665">665</a></span>
+<span class="line" id="L666"><a class="ln" href="#L666">666</a>	// someone woke us up</span>
+<span class="line" id="L667"><a class="ln" href="#L667">667</a>	if mysg != gp.waiting {</span>
+<span class="line" id="L668"><a class="ln" href="#L668">668</a>		throw(&quot;G waiting list is corrupted&quot;)</span>
+<span class="line" id="L669"><a class="ln" href="#L669">669</a>	}</span>
+<span class="line" id="L670"><a class="ln" href="#L670">670</a>	if c.timer != nil {</span>
+<span class="line" id="L671"><a class="ln" href="#L671">671</a>		unblockTimerChan(c)</span>
+<span class="line" id="L672"><a class="ln" href="#L672">672</a>	}</span>
+<span class="line" id="L673"><a class="ln" href="#L673">673</a>	gp.waiting = nil</span>
+<span class="line" id="L674"><a class="ln" href="#L674">674</a>	gp.activeStackChans = false</span>
+<span class="line" id="L675"><a class="ln" href="#L675">675</a>	if mysg.releasetime &gt; 0 {</span>
+<span class="line" id="L676"><a class="ln" href="#L676">676</a>		blockevent(mysg.releasetime-t0, 2)</span>
+<span class="line" id="L677"><a class="ln" href="#L677">677</a>	}</span>
+<span class="line" id="L678"><a class="ln" href="#L678">678</a>	success := mysg.success</span>
+<span class="line" id="L679"><a class="ln" href="#L679">679</a>	gp.param = nil</span>
+<span class="line" id="L680"><a class="ln" href="#L680">680</a>	mysg.c = nil</span>
+<span class="line" id="L681"><a class="ln" href="#L681">681</a>	releaseSudog(mysg)</span>
+<span class="line" id="L682"><a class="ln" href="#L682">682</a>	return true, success</span>
+<span class="line" id="L683"><a class="ln" href="#L683">683</a>}</span>
+<span class="line" id="L684"><a class="ln" href="#L684">684</a></span>
+<span class="line" id="L685"><a class="ln" href="#L685">685</a>// recv processes a receive operation on a full channel c.</span>
+<span class="line" id="L686"><a class="ln" href="#L686">686</a>// There are 2 parts:</span>
+<span class="line" id="L687"><a class="ln" href="#L687">687</a>//  1. The value sent by the sender sg is put into the channel</span>
+<span class="line" id="L688"><a class="ln" href="#L688">688</a>//     and the sender is woken up to go on its merry way.</span>
+<span class="line" id="L689"><a class="ln" href="#L689">689</a>//  2. The value received by the receiver (the current G) is</span>
+<span class="line" id="L690"><a class="ln" href="#L690">690</a>//     written to ep.</span>
+<span class="line" id="L691"><a class="ln" href="#L691">691</a>//</span>
+<span class="line" id="L692"><a class="ln" href="#L692">692</a>// For synchronous channels, both values are the same.</span>
+<span class="line" id="L693"><a class="ln" href="#L693">693</a>// For asynchronous channels, the receiver gets its data from</span>
+<span class="line" id="L694"><a class="ln" href="#L694">694</a>// the channel buffer and the sender&#x27;s data is put in the</span>
+<span class="line" id="L695"><a class="ln" href="#L695">695</a>// channel buffer.</span>
+<span class="line" id="L696"><a class="ln" href="#L696">696</a>// Channel c must be full and locked. recv unlocks c with unlockf.</span>
+<span class="line" id="L697"><a class="ln" href="#L697">697</a>// sg must already be dequeued from c.</span>
+<span class="line" id="L698"><a class="ln" href="#L698">698</a>// A non-nil ep must point to the heap or the caller&#x27;s stack.</span>
+<span class="line" id="L699"><a class="ln" href="#L699">699</a>func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {</span>
+<span class="line" id="L700"><a class="ln" href="#L700">700</a>	if c.synctest &amp;&amp; sg.g.syncGroup != getg().syncGroup {</span>
+<span class="line" id="L701"><a class="ln" href="#L701">701</a>		unlockf()</span>
+<span class="line" id="L702"><a class="ln" href="#L702">702</a>		panic(plainError(&quot;receive on synctest channel from outside bubble&quot;))</span>
+<span class="line" id="L703"><a class="ln" href="#L703">703</a>	}</span>
+<span class="line" id="L704"><a class="ln" href="#L704">704</a>	if c.dataqsiz == 0 {</span>
+<span class="line" id="L705"><a class="ln" href="#L705">705</a>		if raceenabled {</span>
+<span class="line" id="L706"><a class="ln" href="#L706">706</a>			racesync(c, sg)</span>
+<span class="line" id="L707"><a class="ln" href="#L707">707</a>		}</span>
+<span class="line" id="L708"><a class="ln" href="#L708">708</a>		if ep != nil {</span>
+<span class="line" id="L709"><a class="ln" href="#L709">709</a>			// copy data from sender</span>
+<span class="line" id="L710"><a class="ln" href="#L710">710</a>			recvDirect(c.elemtype, sg, ep)</span>
+<span class="line" id="L711"><a class="ln" href="#L711">711</a>		}</span>
+<span class="line" id="L712"><a class="ln" href="#L712">712</a>	} else {</span>
+<span class="line" id="L713"><a class="ln" href="#L713">713</a>		// Queue is full. Take the item at the</span>
+<span class="line" id="L714"><a class="ln" href="#L714">714</a>		// head of the queue. Make the sender enqueue</span>
+<span class="line" id="L715"><a class="ln" href="#L715">715</a>		// its item at the tail of the queue. Since the</span>
+<span class="line" id="L716"><a class="ln" href="#L716">716</a>		// queue is full, those are both the same slot.</span>
+<span class="line" id="L717"><a class="ln" href="#L717">717</a>		qp := chanbuf(c, c.recvx)</span>
+<span class="line" id="L718"><a class="ln" href="#L718">718</a>		if raceenabled {</span>
+<span class="line" id="L719"><a class="ln" href="#L719">719</a>			racenotify(c, c.recvx, nil)</span>
+<span class="line" id="L720"><a class="ln" href="#L720">720</a>			racenotify(c, c.recvx, sg)</span>
+<span class="line" id="L721"><a class="ln" href="#L721">721</a>		}</span>
+<span class="line" id="L722"><a class="ln" href="#L722">722</a>		// copy data from queue to receiver</span>
+<span class="line" id="L723"><a class="ln" href="#L723">723</a>		if ep != nil {</span>
+<span class="line" id="L724"><a class="ln" href="#L724">724</a>			typedmemmove(c.elemtype, ep, qp)</span>
+<span class="line" id="L725"><a class="ln" href="#L725">725</a>		}</span>
+<span class="line" id="L726"><a class="ln" href="#L726">726</a>		// copy data from sender to queue</span>
+<span class="line" id="L727"><a class="ln" href="#L727">727</a>		typedmemmove(c.elemtype, qp, sg.elem)</span>
+<span class="line" id="L728"><a class="ln" href="#L728">728</a>		c.recvx++</span>
+<span class="line" id="L729"><a class="ln" href="#L729">729</a>		if c.recvx == c.dataqsiz {</span>
+<span class="line" id="L730"><a class="ln" href="#L730">730</a>			c.recvx = 0</span>
+<span class="line" id="L731"><a class="ln" href="#L731">731</a>		}</span>
+<span class="line" id="L732"><a class="ln" href="#L732">732</a>		c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz</span>
+<span class="line" id="L733"><a class="ln" href="#L733">733</a>	}</span>
+<span class="line" id="L734"><a class="ln" href="#L734">734</a>	sg.elem = nil</span>
+<span class="line" id="L735"><a class="ln" href="#L735">735</a>	gp := sg.g</span>
+<span class="line" id="L736"><a class="ln" href="#L736">736</a>	unlockf()</span>
+<span class="line" id="L737"><a class="ln" href="#L737">737</a>	gp.param = unsafe.Pointer(sg)</span>
+<span class="line" id="L738"><a class="ln" href="#L738">738</a>	sg.success = true</span>
+<span class="line" id="L739"><a class="ln" href="#L739">739</a>	if sg.releasetime != 0 {</span>
+<span class="line" id="L740"><a class="ln" href="#L740">740</a>		sg.releasetime = cputicks()</span>
+<span class="line" id="L741"><a class="ln" href="#L741">741</a>	}</span>
+<span class="line" id="L742"><a class="ln" href="#L742">742</a>	goready(gp, skip+1)</span>
+<span class="line" id="L743"><a class="ln" href="#L743">743</a>}</span>
+<span class="line" id="L744"><a class="ln" href="#L744">744</a></span>
+<span class="line" id="L745"><a class="ln" href="#L745">745</a>func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {</span>
+<span class="line" id="L746"><a class="ln" href="#L746">746</a>	// There are unlocked sudogs that point into gp&#x27;s stack. Stack</span>
+<span class="line" id="L747"><a class="ln" href="#L747">747</a>	// copying must lock the channels of those sudogs.</span>
+<span class="line" id="L748"><a class="ln" href="#L748">748</a>	// Set activeStackChans here instead of before we try parking</span>
+<span class="line" id="L749"><a class="ln" href="#L749">749</a>	// because we could self-deadlock in stack growth on the</span>
+<span class="line" id="L750"><a class="ln" href="#L750">750</a>	// channel lock.</span>
+<span class="line" id="L751"><a class="ln" href="#L751">751</a>	gp.activeStackChans = true</span>
+<span class="line" id="L752"><a class="ln" href="#L752">752</a>	// Mark that it&#x27;s safe for stack shrinking to occur now,</span>
+<span class="line" id="L753"><a class="ln" href="#L753">753</a>	// because any thread acquiring this G&#x27;s stack for shrinking</span>
+<span class="line" id="L754"><a class="ln" href="#L754">754</a>	// is guaranteed to observe activeStackChans after this store.</span>
+<span class="line" id="L755"><a class="ln" href="#L755">755</a>	gp.parkingOnChan.Store(false)</span>
+<span class="line" id="L756"><a class="ln" href="#L756">756</a>	// Make sure we unlock after setting activeStackChans and</span>
+<span class="line" id="L757"><a class="ln" href="#L757">757</a>	// unsetting parkingOnChan. The moment we unlock chanLock</span>
+<span class="line" id="L758"><a class="ln" href="#L758">758</a>	// we risk gp getting readied by a channel operation and</span>
+<span class="line" id="L759"><a class="ln" href="#L759">759</a>	// so gp could continue running before everything before</span>
+<span class="line" id="L760"><a class="ln" href="#L760">760</a>	// the unlock is visible (even to gp itself).</span>
+<span class="line" id="L761"><a class="ln" href="#L761">761</a>	unlock((*mutex)(chanLock))</span>
+<span class="line" id="L762"><a class="ln" href="#L762">762</a>	return true</span>
+<span class="line" id="L763"><a class="ln" href="#L763">763</a>}</span>
+<span class="line" id="L764"><a class="ln" href="#L764">764</a></span>
+<span class="line" id="L765"><a class="ln" href="#L765">765</a>// compiler implements</span>
+<span class="line" id="L766"><a class="ln" href="#L766">766</a>//</span>
+<span class="line" id="L767"><a class="ln" href="#L767">767</a>//	select {</span>
+<span class="line" id="L768"><a class="ln" href="#L768">768</a>//	case c &lt;- v:</span>
+<span class="line" id="L769"><a class="ln" href="#L769">769</a>//		... foo</span>
+<span class="line" id="L770"><a class="ln" href="#L770">770</a>//	default:</span>
+<span class="line" id="L771"><a class="ln" href="#L771">771</a>//		... bar</span>
+<span class="line" id="L772"><a class="ln" href="#L772">772</a>//	}</span>
+<span class="line" id="L773"><a class="ln" href="#L773">773</a>//</span>
+<span class="line" id="L774"><a class="ln" href="#L774">774</a>// as</span>
+<span class="line" id="L775"><a class="ln" href="#L775">775</a>//</span>
+<span class="line" id="L776"><a class="ln" href="#L776">776</a>//	if selectnbsend(c, v) {</span>
+<span class="line" id="L777"><a class="ln" href="#L777">777</a>//		... foo</span>
+<span class="line" id="L778"><a class="ln" href="#L778">778</a>//	} else {</span>
+<span class="line" id="L779"><a class="ln" href="#L779">779</a>//		... bar</span>
+<span class="line" id="L780"><a class="ln" href="#L780">780</a>//	}</span>
+<span class="line" id="L781"><a class="ln" href="#L781">781</a>func selectnbsend(c *hchan, elem unsafe.Pointer) (selected bool) {</span>
+<span class="line" id="L782"><a class="ln" href="#L782">782</a>	return chansend(c, elem, false, sys.GetCallerPC())</span>
+<span class="line" id="L783"><a class="ln" href="#L783">783</a>}</span>
+<span class="line" id="L784"><a class="ln" href="#L784">784</a></span>
+<span class="line" id="L785"><a class="ln" href="#L785">785</a>// compiler implements</span>
+<span class="line" id="L786"><a class="ln" href="#L786">786</a>//</span>
+<span class="line" id="L787"><a class="ln" href="#L787">787</a>//	select {</span>
+<span class="line" id="L788"><a class="ln" href="#L788">788</a>//	case v, ok = &lt;-c:</span>
+<span class="line" id="L789"><a class="ln" href="#L789">789</a>//		... foo</span>
+<span class="line" id="L790"><a class="ln" href="#L790">790</a>//	default:</span>
+<span class="line" id="L791"><a class="ln" href="#L791">791</a>//		... bar</span>
+<span class="line" id="L792"><a class="ln" href="#L792">792</a>//	}</span>
+<span class="line" id="L793"><a class="ln" href="#L793">793</a>//</span>
+<span class="line" id="L794"><a class="ln" href="#L794">794</a>// as</span>
+<span class="line" id="L795"><a class="ln" href="#L795">795</a>//</span>
+<span class="line" id="L796"><a class="ln" href="#L796">796</a>//	if selected, ok = selectnbrecv(&amp;v, c); selected {</span>
+<span class="line" id="L797"><a class="ln" href="#L797">797</a>//		... foo</span>
+<span class="line" id="L798"><a class="ln" href="#L798">798</a>//	} else {</span>
+<span class="line" id="L799"><a class="ln" href="#L799">799</a>//		... bar</span>
+<span class="line" id="L800"><a class="ln" href="#L800">800</a>//	}</span>
+<span class="line" id="L801"><a class="ln" href="#L801">801</a>func selectnbrecv(elem unsafe.Pointer, c *hchan) (selected, received bool) {</span>
+<span class="line" id="L802"><a class="ln" href="#L802">802</a>	return chanrecv(c, elem, false)</span>
+<span class="line" id="L803"><a class="ln" href="#L803">803</a>}</span>
+<span class="line" id="L804"><a class="ln" href="#L804">804</a></span>
+<span class="line" id="L805"><a class="ln" href="#L805">805</a>//go:linkname reflect_chansend reflect.chansend0</span>
+<span class="line" id="L806"><a class="ln" href="#L806">806</a>func reflect_chansend(c *hchan, elem unsafe.Pointer, nb bool) (selected bool) {</span>
+<span class="line" id="L807"><a class="ln" href="#L807">807</a>	return chansend(c, elem, !nb, sys.GetCallerPC())</span>
+<span class="line" id="L808"><a class="ln" href="#L808">808</a>}</span>
+<span class="line" id="L809"><a class="ln" href="#L809">809</a></span>
+<span class="line" id="L810"><a class="ln" href="#L810">810</a>//go:linkname reflect_chanrecv reflect.chanrecv</span>
+<span class="line" id="L811"><a class="ln" href="#L811">811</a>func reflect_chanrecv(c *hchan, nb bool, elem unsafe.Pointer) (selected bool, received bool) {</span>
+<span class="line" id="L812"><a class="ln" href="#L812">812</a>	return chanrecv(c, elem, !nb)</span>
+<span class="line" id="L813"><a class="ln" href="#L813">813</a>}</span>
+<span class="line" id="L814"><a class="ln" href="#L814">814</a></span>
+<span class="line" id="L815"><a class="ln" href="#L815">815</a>func chanlen(c *hchan) int {</span>
+<span class="line" id="L816"><a class="ln" href="#L816">816</a>	if c == nil {</span>
+<span class="line" id="L817"><a class="ln" href="#L817">817</a>		return 0</span>
+<span class="line" id="L818"><a class="ln" href="#L818">818</a>	}</span>
+<span class="line" id="L819"><a class="ln" href="#L819">819</a>	async := debug.asynctimerchan.Load() != 0</span>
+<span class="line" id="L820"><a class="ln" href="#L820">820</a>	if c.timer != nil &amp;&amp; async {</span>
+<span class="line" id="L821"><a class="ln" href="#L821">821</a>		c.timer.maybeRunChan()</span>
+<span class="line" id="L822"><a class="ln" href="#L822">822</a>	}</span>
+<span class="line" id="L823"><a class="ln" href="#L823">823</a>	if c.timer != nil &amp;&amp; !async {</span>
+<span class="line" id="L824"><a class="ln" href="#L824">824</a>		// timer channels have a buffered implementation</span>
+<span class="line" id="L825"><a class="ln" href="#L825">825</a>		// but present to users as unbuffered, so that we can</span>
+<span class="line" id="L826"><a class="ln" href="#L826">826</a>		// undo sends without users noticing.</span>
+<span class="line" id="L827"><a class="ln" href="#L827">827</a>		return 0</span>
+<span class="line" id="L828"><a class="ln" href="#L828">828</a>	}</span>
+<span class="line" id="L829"><a class="ln" href="#L829">829</a>	return int(c.qcount)</span>
+<span class="line" id="L830"><a class="ln" href="#L830">830</a>}</span>
+<span class="line" id="L831"><a class="ln" href="#L831">831</a></span>
+<span class="line" id="L832"><a class="ln" href="#L832">832</a>func chancap(c *hchan) int {</span>
+<span class="line" id="L833"><a class="ln" href="#L833">833</a>	if c == nil {</span>
+<span class="line" id="L834"><a class="ln" href="#L834">834</a>		return 0</span>
+<span class="line" id="L835"><a class="ln" href="#L835">835</a>	}</span>
+<span class="line" id="L836"><a class="ln" href="#L836">836</a>	if c.timer != nil {</span>
+<span class="line" id="L837"><a class="ln" href="#L837">837</a>		async := debug.asynctimerchan.Load() != 0</span>
+<span class="line" id="L838"><a class="ln" href="#L838">838</a>		if async {</span>
+<span class="line" id="L839"><a class="ln" href="#L839">839</a>			return int(c.dataqsiz)</span>
+<span class="line" id="L840"><a class="ln" href="#L840">840</a>		}</span>
+<span class="line" id="L841"><a class="ln" href="#L841">841</a>		// timer channels have a buffered implementation</span>
+<span class="line" id="L842"><a class="ln" href="#L842">842</a>		// but present to users as unbuffered, so that we can</span>
+<span class="line" id="L843"><a class="ln" href="#L843">843</a>		// undo sends without users noticing.</span>
+<span class="line" id="L844"><a class="ln" href="#L844">844</a>		return 0</span>
+<span class="line" id="L845"><a class="ln" href="#L845">845</a>	}</span>
+<span class="line" id="L846"><a class="ln" href="#L846">846</a>	return int(c.dataqsiz)</span>
+<span class="line" id="L847"><a class="ln" href="#L847">847</a>}</span>
+<span class="line" id="L848"><a class="ln" href="#L848">848</a></span>
+<span class="line" id="L849"><a class="ln" href="#L849">849</a>//go:linkname reflect_chanlen reflect.chanlen</span>
+<span class="line" id="L850"><a class="ln" href="#L850">850</a>func reflect_chanlen(c *hchan) int {</span>
+<span class="line" id="L851"><a class="ln" href="#L851">851</a>	return chanlen(c)</span>
+<span class="line" id="L852"><a class="ln" href="#L852">852</a>}</span>
+<span class="line" id="L853"><a class="ln" href="#L853">853</a></span>
+<span class="line" id="L854"><a class="ln" href="#L854">854</a>//go:linkname reflectlite_chanlen internal/reflectlite.chanlen</span>
+<span class="line" id="L855"><a class="ln" href="#L855">855</a>func reflectlite_chanlen(c *hchan) int {</span>
+<span class="line" id="L856"><a class="ln" href="#L856">856</a>	return chanlen(c)</span>
+<span class="line" id="L857"><a class="ln" href="#L857">857</a>}</span>
+<span class="line" id="L858"><a class="ln" href="#L858">858</a></span>
+<span class="line" id="L859"><a class="ln" href="#L859">859</a>//go:linkname reflect_chancap reflect.chancap</span>
+<span class="line" id="L860"><a class="ln" href="#L860">860</a>func reflect_chancap(c *hchan) int {</span>
+<span class="line" id="L861"><a class="ln" href="#L861">861</a>	return chancap(c)</span>
+<span class="line" id="L862"><a class="ln" href="#L862">862</a>}</span>
+<span class="line" id="L863"><a class="ln" href="#L863">863</a></span>
+<span class="line" id="L864"><a class="ln" href="#L864">864</a>//go:linkname reflect_chanclose reflect.chanclose</span>
+<span class="line" id="L865"><a class="ln" href="#L865">865</a>func reflect_chanclose(c *hchan) {</span>
+<span class="line" id="L866"><a class="ln" href="#L866">866</a>	closechan(c)</span>
+<span class="line" id="L867"><a class="ln" href="#L867">867</a>}</span>
+<span class="line" id="L868"><a class="ln" href="#L868">868</a></span>
+<span class="line" id="L869"><a class="ln" href="#L869">869</a>func (q *waitq) enqueue(sgp *sudog) {</span>
+<span class="line" id="L870"><a class="ln" href="#L870">870</a>	sgp.next = nil</span>
+<span class="line" id="L871"><a class="ln" href="#L871">871</a>	x := q.last</span>
+<span class="line" id="L872"><a class="ln" href="#L872">872</a>	if x == nil {</span>
+<span class="line" id="L873"><a class="ln" href="#L873">873</a>		sgp.prev = nil</span>
+<span class="line" id="L874"><a class="ln" href="#L874">874</a>		q.first = sgp</span>
+<span class="line" id="L875"><a class="ln" href="#L875">875</a>		q.last = sgp</span>
+<span class="line" id="L876"><a class="ln" href="#L876">876</a>		return</span>
+<span class="line" id="L877"><a class="ln" href="#L877">877</a>	}</span>
+<span class="line" id="L878"><a class="ln" href="#L878">878</a>	sgp.prev = x</span>
+<span class="line" id="L879"><a class="ln" href="#L879">879</a>	x.next = sgp</span>
+<span class="line" id="L880"><a class="ln" href="#L880">880</a>	q.last = sgp</span>
+<span class="line" id="L881"><a class="ln" href="#L881">881</a>}</span>
+<span class="line" id="L882"><a class="ln" href="#L882">882</a></span>
+<span class="line" id="L883"><a class="ln" href="#L883">883</a>func (q *waitq) dequeue() *sudog {</span>
+<span class="line" id="L884"><a class="ln" href="#L884">884</a>	for {</span>
+<span class="line" id="L885"><a class="ln" href="#L885">885</a>		sgp := q.first</span>
+<span class="line" id="L886"><a class="ln" href="#L886">886</a>		if sgp == nil {</span>
+<span class="line" id="L887"><a class="ln" href="#L887">887</a>			return nil</span>
+<span class="line" id="L888"><a class="ln" href="#L888">888</a>		}</span>
+<span class="line" id="L889"><a class="ln" href="#L889">889</a>		y := sgp.next</span>
+<span class="line" id="L890"><a class="ln" href="#L890">890</a>		if y == nil {</span>
+<span class="line" id="L891"><a class="ln" href="#L891">891</a>			q.first = nil</span>
+<span class="line" id="L892"><a class="ln" href="#L892">892</a>			q.last = nil</span>
+<span class="line" id="L893"><a class="ln" href="#L893">893</a>		} else {</span>
+<span class="line" id="L894"><a class="ln" href="#L894">894</a>			y.prev = nil</span>
+<span class="line" id="L895"><a class="ln" href="#L895">895</a>			q.first = y</span>
+<span class="line" id="L896"><a class="ln" href="#L896">896</a>			sgp.next = nil // mark as removed (see dequeueSudoG)</span>
+<span class="line" id="L897"><a class="ln" href="#L897">897</a>		}</span>
+<span class="line" id="L898"><a class="ln" href="#L898">898</a></span>
+<span class="line" id="L899"><a class="ln" href="#L899">899</a>		// if a goroutine was put on this queue because of a</span>
+<span class="line" id="L900"><a class="ln" href="#L900">900</a>		// select, there is a small window between the goroutine</span>
+<span class="line" id="L901"><a class="ln" href="#L901">901</a>		// being woken up by a different case and it grabbing the</span>
+<span class="line" id="L902"><a class="ln" href="#L902">902</a>		// channel locks. Once it has the lock</span>
+<span class="line" id="L903"><a class="ln" href="#L903">903</a>		// it removes itself from the queue, so we won&#x27;t see it after that.</span>
+<span class="line" id="L904"><a class="ln" href="#L904">904</a>		// We use a flag in the G struct to tell us when someone</span>
+<span class="line" id="L905"><a class="ln" href="#L905">905</a>		// else has won the race to signal this goroutine but the goroutine</span>
+<span class="line" id="L906"><a class="ln" href="#L906">906</a>		// hasn&#x27;t removed itself from the queue yet.</span>
+<span class="line" id="L907"><a class="ln" href="#L907">907</a>		if sgp.isSelect {</span>
+<span class="line" id="L908"><a class="ln" href="#L908">908</a>			if !sgp.g.selectDone.CompareAndSwap(0, 1) {</span>
+<span class="line" id="L909"><a class="ln" href="#L909">909</a>				// We lost the race to wake this goroutine.</span>
+<span class="line" id="L910"><a class="ln" href="#L910">910</a>				continue</span>
+<span class="line" id="L911"><a class="ln" href="#L911">911</a>			}</span>
+<span class="line" id="L912"><a class="ln" href="#L912">912</a>		}</span>
+<span class="line" id="L913"><a class="ln" href="#L913">913</a></span>
+<span class="line" id="L914"><a class="ln" href="#L914">914</a>		return sgp</span>
+<span class="line" id="L915"><a class="ln" href="#L915">915</a>	}</span>
+<span class="line" id="L916"><a class="ln" href="#L916">916</a>}</span>
+<span class="line" id="L917"><a class="ln" href="#L917">917</a></span>
+<span class="line" id="L918"><a class="ln" href="#L918">918</a>func (c *hchan) raceaddr() unsafe.Pointer {</span>
+<span class="line" id="L919"><a class="ln" href="#L919">919</a>	// Treat read-like and write-like operations on the channel to</span>
+<span class="line" id="L920"><a class="ln" href="#L920">920</a>	// happen at this address. Avoid using the address of qcount</span>
+<span class="line" id="L921"><a class="ln" href="#L921">921</a>	// or dataqsiz, because the len() and cap() builtins read</span>
+<span class="line" id="L922"><a class="ln" href="#L922">922</a>	// those addresses, and we don&#x27;t want them racing with</span>
+<span class="line" id="L923"><a class="ln" href="#L923">923</a>	// operations like close().</span>
+<span class="line" id="L924"><a class="ln" href="#L924">924</a>	return unsafe.Pointer(&amp;c.buf)</span>
+<span class="line" id="L925"><a class="ln" href="#L925">925</a>}</span>
+<span class="line" id="L926"><a class="ln" href="#L926">926</a></span>
+<span class="line" id="L927"><a class="ln" href="#L927">927</a>func racesync(c *hchan, sg *sudog) {</span>
+<span class="line" id="L928"><a class="ln" href="#L928">928</a>	racerelease(chanbuf(c, 0))</span>
+<span class="line" id="L929"><a class="ln" href="#L929">929</a>	raceacquireg(sg.g, chanbuf(c, 0))</span>
+<span class="line" id="L930"><a class="ln" href="#L930">930</a>	racereleaseg(sg.g, chanbuf(c, 0))</span>
+<span class="line" id="L931"><a class="ln" href="#L931">931</a>	raceacquire(chanbuf(c, 0))</span>
+<span class="line" id="L932"><a class="ln" href="#L932">932</a>}</span>
+<span class="line" id="L933"><a class="ln" href="#L933">933</a></span>
+<span class="line" id="L934"><a class="ln" href="#L934">934</a>// Notify the race detector of a send or receive involving buffer entry idx</span>
+<span class="line" id="L935"><a class="ln" href="#L935">935</a>// and a channel c or its communicating partner sg.</span>
+<span class="line" id="L936"><a class="ln" href="#L936">936</a>// This function handles the special case of c.elemsize==0.</span>
+<span class="line" id="L937"><a class="ln" href="#L937">937</a>func racenotify(c *hchan, idx uint, sg *sudog) {</span>
+<span class="line" id="L938"><a class="ln" href="#L938">938</a>	// We could have passed the unsafe.Pointer corresponding to entry idx</span>
+<span class="line" id="L939"><a class="ln" href="#L939">939</a>	// instead of idx itself.  However, in a future version of this function,</span>
+<span class="line" id="L940"><a class="ln" href="#L940">940</a>	// we can use idx to better handle the case of elemsize==0.</span>
+<span class="line" id="L941"><a class="ln" href="#L941">941</a>	// A future improvement to the detector is to call TSan with c and idx:</span>
+<span class="line" id="L942"><a class="ln" href="#L942">942</a>	// this way, Go will continue to not allocating buffer entries for channels</span>
+<span class="line" id="L943"><a class="ln" href="#L943">943</a>	// of elemsize==0, yet the race detector can be made to handle multiple</span>
+<span class="line" id="L944"><a class="ln" href="#L944">944</a>	// sync objects underneath the hood (one sync object per idx)</span>
+<span class="line" id="L945"><a class="ln" href="#L945">945</a>	qp := chanbuf(c, idx)</span>
+<span class="line" id="L946"><a class="ln" href="#L946">946</a>	// When elemsize==0, we don&#x27;t allocate a full buffer for the channel.</span>
+<span class="line" id="L947"><a class="ln" href="#L947">947</a>	// Instead of individual buffer entries, the race detector uses the</span>
+<span class="line" id="L948"><a class="ln" href="#L948">948</a>	// c.buf as the only buffer entry.  This simplification prevents us from</span>
+<span class="line" id="L949"><a class="ln" href="#L949">949</a>	// following the memory model&#x27;s happens-before rules (rules that are</span>
+<span class="line" id="L950"><a class="ln" href="#L950">950</a>	// implemented in racereleaseacquire).  Instead, we accumulate happens-before</span>
+<span class="line" id="L951"><a class="ln" href="#L951">951</a>	// information in the synchronization object associated with c.buf.</span>
+<span class="line" id="L952"><a class="ln" href="#L952">952</a>	if c.elemsize == 0 {</span>
+<span class="line" id="L953"><a class="ln" href="#L953">953</a>		if sg == nil {</span>
+<span class="line" id="L954"><a class="ln" href="#L954">954</a>			raceacquire(qp)</span>
+<span class="line" id="L955"><a class="ln" href="#L955">955</a>			racerelease(qp)</span>
+<span class="line" id="L956"><a class="ln" href="#L956">956</a>		} else {</span>
+<span class="line" id="L957"><a class="ln" href="#L957">957</a>			raceacquireg(sg.g, qp)</span>
+<span class="line" id="L958"><a class="ln" href="#L958">958</a>			racereleaseg(sg.g, qp)</span>
+<span class="line" id="L959"><a class="ln" href="#L959">959</a>		}</span>
+<span class="line" id="L960"><a class="ln" href="#L960">960</a>	} else {</span>
+<span class="line" id="L961"><a class="ln" href="#L961">961</a>		if sg == nil {</span>
+<span class="line" id="L962"><a class="ln" href="#L962">962</a>			racereleaseacquire(qp)</span>
+<span class="line" id="L963"><a class="ln" href="#L963">963</a>		} else {</span>
+<span class="line" id="L964"><a class="ln" href="#L964">964</a>			racereleaseacquireg(sg.g, qp)</span>
+<span class="line" id="L965"><a class="ln" href="#L965">965</a>		}</span>
+<span class="line" id="L966"><a class="ln" href="#L966">966</a>	}</span>
+<span class="line" id="L967"><a class="ln" href="#L967">967</a>}</span></pre></html>

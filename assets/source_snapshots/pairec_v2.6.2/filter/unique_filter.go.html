@@ -1,0 +1,54 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/filter/unique_filter.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/filter/unique_filter.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v2.6.2</code><br>原文件 SHA256：<code>4034e50d5c36c3b25db249d36bc67bbbc1f4d4b5ad346f4c09190c35d85cd1f6</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package filter</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;errors&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a></span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;github.com/alibaba/pairec/v2/module&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>)</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>// remove duplicate item</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>type UniqueFilter struct {</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>}</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>func NewUniqueFilter() *UniqueFilter {</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	filter := UniqueFilter{}</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	return &amp;filter</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>}</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>func (f *UniqueFilter) Filter(filterData *FilterData) error {</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	if _, ok := filterData.Data.([]*module.Item); !ok {</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>		return errors.New(&quot;filter data type error&quot;)</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	}</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	return f.doFilter(filterData)</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>}</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>func (f *UniqueFilter) doFilter(filterData *FilterData) error {</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>	items := filterData.Data.([]*module.Item)</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	newItems := make([]*module.Item, 0, len(items))</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	uniq := make(map[module.ItemId]*module.Item, len(items))</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	for _, item := range items {</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>		if exist, ok := uniq[item.Id]; !ok {</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>			uniq[item.Id] = item</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>			newItems = append(newItems, item)</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>		} else {</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>			algoScores := item.GetAlgoScores()</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>			for name, score := range algoScores {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>				exist.AddAlgoScore(name, score)</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>			}</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>			if exist.RecallScores == nil {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>				exist.RecallScores = map[string]float64{exist.RetrieveId: exist.Score}</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>			}</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>			exist.RecallScores[item.RetrieveId] = item.Score</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>		}</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	}</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a></span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>	filterData.Data = newItems</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	return nil</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>}</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a></span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>func (f *UniqueFilter) MatchTag(tag string) bool {</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	// default filter, so filter all tag</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	return true</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>}</span></pre></html>

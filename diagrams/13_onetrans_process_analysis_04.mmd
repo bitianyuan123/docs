@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant B as 攒批线程
+    participant C as C++计算池线程
+    participant Y as Python桥线程
+    participant R as Response回调对象
+    alt 桥可用且接收
+        B-)Y: batch入桥队列并notify
+        Y->>Y: 重新争锁取批；锁外获取GIL
+        Y->>Y: bytes转换、score_batch、输出转CPU
+        Y->>Y: 复制结果，正常释放GIL
+        Y->>R: on_ok → fill_outcomes → done
+        R->>R: sigmoid、JSON、send/close
+        R-->>Y: 当前桥线程继续；才能取下一批
+    else 未启用、不可用或拒绝提交
+        B-)C: compute_pool.add(hits)
+        C->>C: 解码、拼接、score_ns_batch
+        C->>R: fill_outcomes → done
+        R->>R: sigmoid、JSON、send/close
+        R-->>C: 当前计算线程结束任务
+    end

@@ -1,0 +1,189 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/onetrans/serving/serialize.py</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/onetrans/serving/serialize.py</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>b4ae71dbc00fffa2b9197ff8d3ebcade96c0658c89d44544411497a2e5f4ab7c</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>&quot;&quot;&quot;UserKV payload 序列化（零拷贝数据面）：tensor &lt;-&gt; 连续字节 blob。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>遵循设计文档 §2.3 的内存布局：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>    &lt;magic:12B&gt; &lt;header_len:4B&gt; &lt;header_json&gt; &lt;raw_bytes&gt;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>    raw_bytes = concat(K_s^0, V_s^0, K_s^1, V_s^1, ..., K_s^{L-1}, V_s^{L-1})  # 均 bshd 连续</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>零拷贝要点（P1：消除 UserKV 数据面的冗余拷贝）：</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>- **读侧**：``deserialize`` 用 ``torch.frombuffer(buf, offset=...)`` 直接视图底层字节</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>  （``bytes`` / ``bytearray`` / ``memoryview`` / ``mmap``），不再 ``bytearray(buf)`` 切出副本。</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>  对 mmap 后端，反序列化的 K/V 张量直接指向共享内存，无 CPU RAM 二次拷贝。</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>- **写侧**：``serialize`` 预分配单一 ``bytearray``，用 ``ctypes.memmove`` 从张量</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>  ``data_ptr`` 一次拷贝到底层缓冲，避免逐层 ``+`` 拼接的 O(n²) 与中间 ``bytes`` 对象。</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a></span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>禁止 pickle 任意对象；仅写 dtype/形状元信息 + 连续字节。</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>&quot;&quot;&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a></span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>from __future__ import annotations</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a></span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>import ctypes</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>import json</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>import struct</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>from typing import Iterable, Sequence</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>import torch</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>from torch import Tensor</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>_MAGIC = b&quot;ONETRANSKV\x01&quot;</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>_HEADER_FMT = &quot;&lt;I&quot;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>def _nbytes(shape: Sequence[int], dtype: torch.dtype) -&gt; int:</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    n = 1</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    for s in shape:</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>        n *= s</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    return n * dtype.itemsize</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a></span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>def serialize(</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>    per_layer: Sequence[tuple[Tensor, Tensor]],</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>    s_len: int | None = None,</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    per_layer_len: Sequence[int] | None = None,</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>) -&gt; bytes:</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>    &quot;&quot;&quot;把逐层 ``(K_s^l, V_s^l)`` 序列化为单个连续字节 blob。</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a></span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    预分配总字节数，一次 memmove 拷贝每张量底层字节，避免重复分配。</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    ``s_len``/``per_layer_len`` 为**有效长度元数据**（左 padding 语义下 ``K_s`` 的</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    shape[1] 是 pyramid 该层满宽 ``dims[l]``，需显式区分有效 token 数，见</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    ``docs/gap_analysis.md`` G1）。不传时回退为满宽（兼容无 padding 场景与旧调用）。</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    &quot;&quot;&quot;</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    if per_layer_len is None:</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>        per_layer_len = [k.shape[1] for k, _ in per_layer]</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    s_len = s_len if s_len is not None else (per_layer_len[0] if per_layer_len else 0)</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    flat: list[Tensor] = []</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    meta: list[tuple[int, str]] = []  # (element_size, dtype_str)</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    for k, v in per_layer:</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>        k = k.detach().to(&quot;cpu&quot;).contiguous()</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>        v = v.detach().to(&quot;cpu&quot;).contiguous()</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>        assert k.dtype == v.dtype, &quot;每层 K/V dtype 必须一致&quot;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>        flat.append(k)</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>        flat.append(v)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>        meta.append((k.element_size(), str(k.dtype).replace(&quot;torch.&quot;, &quot;&quot;)))</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        meta.append((v.element_size(), str(v.dtype).replace(&quot;torch.&quot;, &quot;&quot;)))</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a></span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    header = {</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>        &quot;dtype&quot;: meta[0][1] if meta else &quot;float32&quot;,</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        &quot;n_layers&quot;: len(per_layer),</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        &quot;s_len&quot;: s_len,</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>        &quot;layers&quot;: [</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>            {&quot;l&quot;: i, &quot;k_shape&quot;: list(k.shape), &quot;v_shape&quot;: list(v.shape), &quot;len&quot;: per_layer_len[i]}</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>            for i, (k, v) in enumerate(per_layer)</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>        ],</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    }</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    header_bytes = json.dumps(header).encode(&quot;utf-8&quot;)</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    body_bytes = sum(t.numel() * t.element_size() for t in flat)</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    total = len(_MAGIC) + 4 + len(header_bytes) + body_bytes</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    buf = bytearray(total)</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    pos = 0</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    buf[pos : pos + len(_MAGIC)] = _MAGIC</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    pos += len(_MAGIC)</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    struct.pack_into(_HEADER_FMT, buf, pos, len(header_bytes))</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    pos += 4</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    buf[pos : pos + len(header_bytes)] = header_bytes</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    pos += len(header_bytes)</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a></span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    # 单次 memmove 拷贝每张量底层字节到预分配缓冲</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    carr = (ctypes.c_char * len(buf)).from_buffer(buf)</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    dst_base = ctypes.addressof(carr)</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    for t in flat:</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>        n = t.numel() * t.element_size()</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>        ctypes.memmove(dst_base + pos, t.data_ptr(), n)</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>        pos += n</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    return bytes(buf)</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a></span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a></span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>def _parse_header(payload: bytes | bytearray | memoryview) -&gt; tuple[dict, int]:</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    &quot;&quot;&quot;解析并校验 ``&lt;magic&gt;&lt;header_len&gt;&lt;header_json&gt;``，返回 ``(header, 其后偏移)``。&quot;&quot;&quot;</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    if bytes(payload[: len(_MAGIC)]) != _MAGIC:</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>        raise ValueError(&quot;未知 payload 魔数&quot;)</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    pos = len(_MAGIC)</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    (hlen,) = struct.unpack_from(_HEADER_FMT, payload, pos)</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    pos += 4</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>    header = json.loads(bytes(payload[pos : pos + hlen]).decode(&quot;utf-8&quot;))</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>    pos += hlen</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    return header, pos</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a></span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a></span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>def read_header(payload: bytes | bytearray | memoryview) -&gt; dict:</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>    &quot;&quot;&quot;仅解析 header，返回 ``dict``（含 ``s_len`` 与各层 ``layers[].len``）。</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>    供读侧只需有效长度元数据、而不反序列化整对象张量的场景（如 datasystem</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>    ``get``/``append``，见 ``docs/gap_analysis.md`` G1）。</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>    &quot;&quot;&quot;</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>    header, _ = _parse_header(payload)</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>    return header</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a></span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a></span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>def deserialize_with_meta(</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>    payload: bytes | bytearray | memoryview,</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>) -&gt; tuple[list[tuple[Tensor, Tensor]], int, list[int]]:</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    &quot;&quot;&quot;反序列化并返回 ``(per_layer, s_len, per_layer_len)``。</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a></span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    有效长度来自 header（``s_len`` / ``layers[].len``）；旧数据（无这些字段）回退为</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>    「满宽有效」，与旧语义一致（向后兼容，见 ``docs/gap_analysis.md`` G1）。</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>    &quot;&quot;&quot;</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>    header, _ = _parse_header(payload)</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    per_layer = deserialize(payload)</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>    s_len = header.get(&quot;s_len&quot;)</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>    if s_len is None:</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>        s_len = per_layer[0][0].shape[1] if per_layer else 0</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>    per_layer_len = [m.get(&quot;len&quot;, m[&quot;k_shape&quot;][1]) for m in header[&quot;layers&quot;]]</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>    return per_layer, s_len, per_layer_len</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a></span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a></span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>def deserialize(payload: bytes | bytearray | memoryview) -&gt; list[tuple[Tensor, Tensor]]:</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>    &quot;&quot;&quot;把字节 blob 还原为逐层 ``(K_s^l, V_s^l)``（零拷贝视图）。</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a></span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>    :param payload: 底层缓冲；``bytes`` 得到只读视图，``bytearray``/``memoryview``/``mmap``</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>        得到可直接写回的视图（零拷贝）。返回张量与底层缓冲共享存储。</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>    &quot;&quot;&quot;</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>    header, pos = _parse_header(payload)</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>    dtype = getattr(torch, header[&quot;dtype&quot;])</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>    out: list[tuple[Tensor, Tensor]] = []</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>    for meta in header[&quot;layers&quot;]:</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>        k = _view_tensor(payload, pos, meta[&quot;k_shape&quot;], dtype)</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>        pos += _nbytes(meta[&quot;k_shape&quot;], dtype)</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>        v = _view_tensor(payload, pos, meta[&quot;v_shape&quot;], dtype)</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>        pos += _nbytes(meta[&quot;v_shape&quot;], dtype)</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>        out.append((k, v))</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>    return out</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a></span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a></span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>def _view_tensor(</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>    payload: bytes | bytearray | memoryview,</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>    pos: int,</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>    shape: Sequence[int],</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>    dtype: torch.dtype,</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>) -&gt; Tensor:</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>    numel = 1</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>    for s in shape:</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>        numel *= s</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>    # frombuffer 直接视图底层缓冲（offset 指向各层偏移），无需副本</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>    return torch.frombuffer(payload, dtype=dtype, count=numel, offset=pos).reshape(shape)</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a></span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>def per_layer_offsets(payload: bytes | bytearray | memoryview) -&gt; list[tuple[int, int]]:</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>    &quot;&quot;&quot;返回每层 ``(K 偏移, V 偏移)``（用于按层抽取而不反序列化整对象，见设计文档 §2.3）。&quot;&quot;&quot;</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>    header, pos = _parse_header(payload)</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    dtype = getattr(torch, header[&quot;dtype&quot;])</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>    offsets: list[tuple[int, int]] = []</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>    for meta in header[&quot;layers&quot;]:</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>        k_pos = pos</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>        pos += _nbytes(meta[&quot;k_shape&quot;], dtype)</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>        v_pos = pos</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>        pos += _nbytes(meta[&quot;v_shape&quot;], dtype)</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>        offsets.append((k_pos, v_pos))</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>    return offsets</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a></span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a></span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>def iterate_tensors(</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>    payload: bytes | bytearray | memoryview,</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>) -&gt; Iterable[Tensor]:</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>    &quot;&quot;&quot;惰性迭代全部逐层张量（零拷贝视图），供逐层处理用。&quot;&quot;&quot;</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>    yield from (t for pair in deserialize(payload) for t in pair)</span></pre></html>

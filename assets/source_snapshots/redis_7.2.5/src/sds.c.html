@@ -1,0 +1,1496 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>redis_7.2.5/src/sds.c</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>redis_7.2.5/src/sds.c</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>7.2.5</code><br>原文件 SHA256：<code>f234153cb7247e00d915428e74785132e4f1d9fe3973fef377f6a638fcc86bdb</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>/* SDSLib 2.0 -- A C dynamic strings library</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a> *</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a> * Copyright (c) 2006-2015, Salvatore Sanfilippo &lt;antirez at gmail dot com&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a> * Copyright (c) 2015, Oran Agra</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a> * Copyright (c) 2015, Redis Labs, Inc</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a> * All rights reserved.</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a> *</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a> * Redistribution and use in source and binary forms, with or without</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a> * modification, are permitted provided that the following conditions are met:</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a> *</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a> *   * Redistributions of source code must retain the above copyright notice,</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a> *     this list of conditions and the following disclaimer.</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a> *   * Redistributions in binary form must reproduce the above copyright</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a> *     notice, this list of conditions and the following disclaimer in the</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a> *     documentation and/or other materials provided with the distribution.</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a> *   * Neither the name of Redis nor the names of its contributors may be used</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a> *     to endorse or promote products derived from this software without</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a> *     specific prior written permission.</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a> *</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a> * POSSIBILITY OF SUCH DAMAGE.</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a> */</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>#include &lt;stdio.h&gt;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>#include &lt;stdlib.h&gt;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>#include &lt;string.h&gt;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>#include &lt;ctype.h&gt;</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>#include &lt;assert.h&gt;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>#include &lt;limits.h&gt;</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>#include &quot;sds.h&quot;</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>#include &quot;sdsalloc.h&quot;</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>#include &quot;util.h&quot;</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>const char *SDS_NOINIT = &quot;SDS_NOINIT&quot;;</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>static inline int sdsHdrSize(char type) {</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>    switch(type&amp;SDS_TYPE_MASK) {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>        case SDS_TYPE_5:</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>            return sizeof(struct sdshdr5);</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>        case SDS_TYPE_8:</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>            return sizeof(struct sdshdr8);</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>        case SDS_TYPE_16:</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>            return sizeof(struct sdshdr16);</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>        case SDS_TYPE_32:</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>            return sizeof(struct sdshdr32);</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>        case SDS_TYPE_64:</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>            return sizeof(struct sdshdr64);</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    }</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    return 0;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>static inline char sdsReqType(size_t string_size) {</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    if (string_size &lt; 1&lt;&lt;5)</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>        return SDS_TYPE_5;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    if (string_size &lt; 1&lt;&lt;8)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>        return SDS_TYPE_8;</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    if (string_size &lt; 1&lt;&lt;16)</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>        return SDS_TYPE_16;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>#if (LONG_MAX == LLONG_MAX)</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    if (string_size &lt; 1ll&lt;&lt;32)</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        return SDS_TYPE_32;</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    return SDS_TYPE_64;</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>#else</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    return SDS_TYPE_32;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>#endif</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>}</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a></span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>static inline size_t sdsTypeMaxSize(char type) {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    if (type == SDS_TYPE_5)</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>        return (1&lt;&lt;5) - 1;</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    if (type == SDS_TYPE_8)</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>        return (1&lt;&lt;8) - 1;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    if (type == SDS_TYPE_16)</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>        return (1&lt;&lt;16) - 1;</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>#if (LONG_MAX == LLONG_MAX)</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    if (type == SDS_TYPE_32)</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>        return (1ll&lt;&lt;32) - 1;</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>#endif</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    return -1; /* this is equivalent to the max SDS_TYPE_64 or SDS_TYPE_32 */</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>}</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a></span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>/* Create a new sds string with the content specified by the &#x27;init&#x27; pointer</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a> * and &#x27;initlen&#x27;.</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a> * If NULL is used for &#x27;init&#x27; the string is initialized with zero bytes.</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a> * If SDS_NOINIT is used, the buffer is left uninitialized;</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a> *</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a> * The string is always null-terminated (all the sds strings are, always) so</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a> * even if you create an sds string with:</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a> *</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a> * mystring = sdsnewlen(&quot;abc&quot;,3);</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a> *</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a> * You can print the string with printf() as there is an implicit \0 at the</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a> * end of the string. However the string is binary safe and can contain</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a> * \0 characters in the middle, as the length is stored in the sds header. */</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    void *sh;</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    sds s;</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    char type = sdsReqType(initlen);</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>    /* Empty strings are usually created in order to append. Use type 8</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>     * since type 5 is not good at this. */</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    if (type == SDS_TYPE_5 &amp;&amp; initlen == 0) type = SDS_TYPE_8;</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>    int hdrlen = sdsHdrSize(type);</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>    unsigned char *fp; /* flags pointer. */</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>    size_t usable;</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a></span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>    assert(initlen + hdrlen + 1 &gt; initlen); /* Catch size_t overflow */</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>    sh = trymalloc?</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>        s_trymalloc_usable(hdrlen+initlen+1, &amp;usable) :</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>        s_malloc_usable(hdrlen+initlen+1, &amp;usable);</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>    if (sh == NULL) return NULL;</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>    if (init==SDS_NOINIT)</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>        init = NULL;</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>    else if (!init)</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>        memset(sh, 0, hdrlen+initlen+1);</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>    s = (char*)sh+hdrlen;</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>    fp = ((unsigned char*)s)-1;</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    usable = usable-hdrlen-1;</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>    if (usable &gt; sdsTypeMaxSize(type))</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>        usable = sdsTypeMaxSize(type);</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>    switch(type) {</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>        case SDS_TYPE_5: {</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>            *fp = type | (initlen &lt;&lt; SDS_TYPE_BITS);</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>            break;</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>        }</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>        case SDS_TYPE_8: {</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>            SDS_HDR_VAR(8,s);</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>            sh-&gt;len = initlen;</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>            sh-&gt;alloc = usable;</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>            *fp = type;</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>            break;</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>        }</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>        case SDS_TYPE_16: {</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>            SDS_HDR_VAR(16,s);</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>            sh-&gt;len = initlen;</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>            sh-&gt;alloc = usable;</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>            *fp = type;</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>            break;</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>        }</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>        case SDS_TYPE_32: {</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>            SDS_HDR_VAR(32,s);</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>            sh-&gt;len = initlen;</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>            sh-&gt;alloc = usable;</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>            *fp = type;</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>            break;</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>        }</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>        case SDS_TYPE_64: {</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>            SDS_HDR_VAR(64,s);</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>            sh-&gt;len = initlen;</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>            sh-&gt;alloc = usable;</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>            *fp = type;</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>            break;</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>        }</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>    }</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>    if (initlen &amp;&amp; init)</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>        memcpy(s, init, initlen);</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>    s[initlen] = &#x27;\0&#x27;;</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>    return s;</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>}</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a></span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>sds sdsnewlen(const void *init, size_t initlen) {</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>    return _sdsnewlen(init, initlen, 0);</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>}</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a></span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>sds sdstrynewlen(const void *init, size_t initlen) {</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    return _sdsnewlen(init, initlen, 1);</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>}</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a></span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>/* Create an empty (zero length) sds string. Even in this case the string</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a> * always has an implicit null term. */</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>sds sdsempty(void) {</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>    return sdsnewlen(&quot;&quot;,0);</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>}</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a></span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>/* Create a new sds string starting from a null terminated C string. */</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>sds sdsnew(const char *init) {</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>    size_t initlen = (init == NULL) ? 0 : strlen(init);</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>    return sdsnewlen(init, initlen);</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>}</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a></span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>/* Duplicate an sds string. */</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>sds sdsdup(const sds s) {</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>    return sdsnewlen(s, sdslen(s));</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>}</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a></span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>/* Free an sds string. No operation is performed if &#x27;s&#x27; is NULL. */</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>void sdsfree(sds s) {</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>    if (s == NULL) return;</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>    s_free((char*)s-sdsHdrSize(s[-1]));</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>}</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a></span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>/* Set the sds string length to the length as obtained with strlen(), so</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a> * considering as content only up to the first null term character.</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a> *</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a> * This function is useful when the sds string is hacked manually in some</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a> * way, like in the following example:</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a> *</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a> * s = sdsnew(&quot;foobar&quot;);</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a> * s[2] = &#x27;\0&#x27;;</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a> * sdsupdatelen(s);</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a> * printf(&quot;%d\n&quot;, sdslen(s));</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a> *</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a> * The output will be &quot;2&quot;, but if we comment out the call to sdsupdatelen()</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a> * the output will be &quot;6&quot; as the string was modified but the logical length</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a> * remains 6 bytes. */</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>void sdsupdatelen(sds s) {</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>    size_t reallen = strlen(s);</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>    sdssetlen(s, reallen);</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>}</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a></span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>/* Modify an sds string in-place to make it empty (zero length).</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a> * However all the existing buffer is not discarded but set as free space</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a> * so that next append operations will not require allocations up to the</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a> * number of bytes previously available. */</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>void sdsclear(sds s) {</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>    sdssetlen(s, 0);</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>    s[0] = &#x27;\0&#x27;;</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>}</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a></span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>/* Enlarge the free space at the end of the sds string so that the caller</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a> * is sure that after calling this function can overwrite up to addlen</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a> * bytes after the end of the string, plus one more byte for nul term.</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a> * If there&#x27;s already sufficient free space, this function returns without any</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a> * action, if there isn&#x27;t sufficient free space, it&#x27;ll allocate what&#x27;s missing,</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a> * and possibly more:</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a> * When greedy is 1, enlarge more than needed, to avoid need for future reallocs</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a> * on incremental growth.</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a> * When greedy is 0, enlarge just enough so that there&#x27;s free space for &#x27;addlen&#x27;.</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a> *</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a> * Note: this does not change the *length* of the sds string as returned</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a> * by sdslen(), but only the free buffer space we have. */</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>    void *sh, *newsh;</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>    size_t avail = sdsavail(s);</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>    size_t len, newlen, reqlen;</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>    char type, oldtype = s[-1] &amp; SDS_TYPE_MASK;</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>    int hdrlen;</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>    size_t usable;</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a></span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>    /* Return ASAP if there is enough space left. */</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>    if (avail &gt;= addlen) return s;</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a></span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>    len = sdslen(s);</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>    sh = (char*)s-sdsHdrSize(oldtype);</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>    reqlen = newlen = (len+addlen);</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>    assert(newlen &gt; len);   /* Catch size_t overflow */</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>    if (greedy == 1) {</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>        if (newlen &lt; SDS_MAX_PREALLOC)</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>            newlen *= 2;</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>        else</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>            newlen += SDS_MAX_PREALLOC;</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>    }</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a></span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>    type = sdsReqType(newlen);</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a></span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>    /* Don&#x27;t use type 5: the user is appending to the string and type 5 is</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>     * not able to remember empty space, so sdsMakeRoomFor() must be called</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>     * at every appending operation. */</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>    if (type == SDS_TYPE_5) type = SDS_TYPE_8;</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a></span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>    hdrlen = sdsHdrSize(type);</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>    assert(hdrlen + newlen + 1 &gt; reqlen);  /* Catch size_t overflow */</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>    if (oldtype==type) {</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>        newsh = s_realloc_usable(sh, hdrlen+newlen+1, &amp;usable);</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>        if (newsh == NULL) return NULL;</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>        s = (char*)newsh+hdrlen;</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>    } else {</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>        /* Since the header size changes, need to move the string forward,</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>         * and can&#x27;t use realloc */</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>        newsh = s_malloc_usable(hdrlen+newlen+1, &amp;usable);</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>        if (newsh == NULL) return NULL;</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>        memcpy((char*)newsh+hdrlen, s, len+1);</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>        s_free(sh);</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>        s = (char*)newsh+hdrlen;</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>        s[-1] = type;</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>        sdssetlen(s, len);</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>    }</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>    usable = usable-hdrlen-1;</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>    if (usable &gt; sdsTypeMaxSize(type))</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>        usable = sdsTypeMaxSize(type);</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>    sdssetalloc(s, usable);</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>    return s;</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>}</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a></span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>/* Enlarge the free space at the end of the sds string more than needed,</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a> * This is useful to avoid repeated re-allocations when repeatedly appending to the sds. */</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>sds sdsMakeRoomFor(sds s, size_t addlen) {</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>    return _sdsMakeRoomFor(s, addlen, 1);</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>}</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a></span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>/* Unlike sdsMakeRoomFor(), this one just grows to the necessary size. */</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>sds sdsMakeRoomForNonGreedy(sds s, size_t addlen) {</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>    return _sdsMakeRoomFor(s, addlen, 0);</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>}</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a></span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>/* Reallocate the sds string so that it has no free space at the end. The</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a> * contained string remains not altered, but next concatenation operations</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a> * will require a reallocation.</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a> *</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a> * After the call, the passed sds string is no longer valid and all the</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a> * references must be substituted with the new pointer returned by the call. */</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>sds sdsRemoveFreeSpace(sds s, int would_regrow) {</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>    return sdsResize(s, sdslen(s), would_regrow);</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>}</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a></span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>/* Resize the allocation, this can make the allocation bigger or smaller,</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a> * if the size is smaller than currently used len, the data will be truncated.</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a> *</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a> * The when the would_regrow argument is set to 1, it prevents the use of</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a> * SDS_TYPE_5, which is desired when the sds is likely to be changed again.</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a> *</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a> * The sdsAlloc size will be set to the requested size regardless of the actual</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a> * allocation size, this is done in order to avoid repeated calls to this</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a> * function when the caller detects that it has excess space. */</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>sds sdsResize(sds s, size_t size, int would_regrow) {</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>    void *sh, *newsh;</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>    char type, oldtype = s[-1] &amp; SDS_TYPE_MASK;</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>    int hdrlen, oldhdrlen = sdsHdrSize(oldtype);</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>    size_t len = sdslen(s);</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>    sh = (char*)s-oldhdrlen;</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a></span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>    /* Return ASAP if the size is already good. */</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>    if (sdsalloc(s) == size) return s;</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a></span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>    /* Truncate len if needed. */</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>    if (size &lt; len) len = size;</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a></span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>    /* Check what would be the minimum SDS header that is just good enough to</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>     * fit this string. */</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>    type = sdsReqType(size);</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>    if (would_regrow) {</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>        /* Don&#x27;t use type 5, it is not good for strings that are expected to grow back. */</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>        if (type == SDS_TYPE_5) type = SDS_TYPE_8;</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>    }</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>    hdrlen = sdsHdrSize(type);</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a></span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>    /* If the type is the same, or can hold the size in it with low overhead</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>     * (larger than SDS_TYPE_8), we just realloc(), letting the allocator</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>     * to do the copy only if really needed. Otherwise if the change is</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>     * huge, we manually reallocate the string to use the different header</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>     * type. */</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>    int use_realloc = (oldtype==type || (type &lt; oldtype &amp;&amp; type &gt; SDS_TYPE_8));</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>    size_t newlen = use_realloc ? oldhdrlen+size+1 : hdrlen+size+1;</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a></span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>    if (use_realloc) {</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>        int alloc_already_optimal = 0;</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>        #if defined(USE_JEMALLOC)</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>            /* je_nallocx returns the expected allocation size for the newlen.</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>             * We aim to avoid calling realloc() when using Jemalloc if there is no</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>             * change in the allocation size, as it incurs a cost even if the</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>             * allocation size stays the same. */</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>            alloc_already_optimal = (je_nallocx(newlen, 0) == zmalloc_size(sh));</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>        #endif</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>        if (!alloc_already_optimal) {</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>            newsh = s_realloc(sh, newlen);</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>            if (newsh == NULL) return NULL;</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>            s = (char*)newsh+oldhdrlen;</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>        }</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>    } else {</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>        newsh = s_malloc(newlen);</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>        if (newsh == NULL) return NULL;</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>        memcpy((char*)newsh+hdrlen, s, len);</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>        s_free(sh);</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>        s = (char*)newsh+hdrlen;</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>        s[-1] = type;</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>    }</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>    s[len] = 0;</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>    sdssetlen(s, len);</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>    sdssetalloc(s, size);</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>    return s;</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>}</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a></span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>/* Return the total size of the allocation of the specified sds string,</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a> * including:</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a> * 1) The sds header before the pointer.</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a> * 2) The string.</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a> * 3) The free buffer at the end if any.</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a> * 4) The implicit null term.</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a> */</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>size_t sdsAllocSize(sds s) {</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>    size_t alloc = sdsalloc(s);</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>    return sdsHdrSize(s[-1])+alloc+1;</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>}</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a></span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>/* Return the pointer of the actual SDS allocation (normally SDS strings</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a> * are referenced by the start of the string buffer). */</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>void *sdsAllocPtr(sds s) {</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>    return (void*) (s-sdsHdrSize(s[-1]));</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>}</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a></span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>/* Increment the sds length and decrements the left free space at the</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a> * end of the string according to &#x27;incr&#x27;. Also set the null term</span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a> * in the new end of the string.</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a> *</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a> * This function is used in order to fix the string length after the</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a> * user calls sdsMakeRoomFor(), writes something after the end of</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a> * the current string, and finally needs to set the new length.</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a> *</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a> * Note: it is possible to use a negative increment in order to</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a> * right-trim the string.</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a> *</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a> * Usage example:</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a> *</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a> * Using sdsIncrLen() and sdsMakeRoomFor() it is possible to mount the</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a> * following schema, to cat bytes coming from the kernel to the end of an</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a> * sds string without copying into an intermediate buffer:</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a> *</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a> * oldlen = sdslen(s);</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a> * s = sdsMakeRoomFor(s, BUFFER_SIZE);</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a> * nread = read(fd, s+oldlen, BUFFER_SIZE);</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a> * ... check for nread &lt;= 0 and handle it ...</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a> * sdsIncrLen(s, nread);</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a> */</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>void sdsIncrLen(sds s, ssize_t incr) {</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>    unsigned char flags = s[-1];</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>    size_t len;</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>    switch(flags&amp;SDS_TYPE_MASK) {</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>        case SDS_TYPE_5: {</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>            unsigned char *fp = ((unsigned char*)s)-1;</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a>            unsigned char oldlen = SDS_TYPE_5_LEN(flags);</span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>            assert((incr &gt; 0 &amp;&amp; oldlen+incr &lt; 32) || (incr &lt; 0 &amp;&amp; oldlen &gt;= (unsigned int)(-incr)));</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a>            *fp = SDS_TYPE_5 | ((oldlen+incr) &lt;&lt; SDS_TYPE_BITS);</span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>            len = oldlen+incr;</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>            break;</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>        }</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>        case SDS_TYPE_8: {</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>            SDS_HDR_VAR(8,s);</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>            assert((incr &gt;= 0 &amp;&amp; sh-&gt;alloc-sh-&gt;len &gt;= incr) || (incr &lt; 0 &amp;&amp; sh-&gt;len &gt;= (unsigned int)(-incr)));</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>            len = (sh-&gt;len += incr);</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>            break;</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>        }</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>        case SDS_TYPE_16: {</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>            SDS_HDR_VAR(16,s);</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>            assert((incr &gt;= 0 &amp;&amp; sh-&gt;alloc-sh-&gt;len &gt;= incr) || (incr &lt; 0 &amp;&amp; sh-&gt;len &gt;= (unsigned int)(-incr)));</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>            len = (sh-&gt;len += incr);</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>            break;</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>        }</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>        case SDS_TYPE_32: {</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>            SDS_HDR_VAR(32,s);</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a>            assert((incr &gt;= 0 &amp;&amp; sh-&gt;alloc-sh-&gt;len &gt;= (unsigned int)incr) || (incr &lt; 0 &amp;&amp; sh-&gt;len &gt;= (unsigned int)(-incr)));</span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>            len = (sh-&gt;len += incr);</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>            break;</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>        }</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>        case SDS_TYPE_64: {</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>            SDS_HDR_VAR(64,s);</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>            assert((incr &gt;= 0 &amp;&amp; sh-&gt;alloc-sh-&gt;len &gt;= (uint64_t)incr) || (incr &lt; 0 &amp;&amp; sh-&gt;len &gt;= (uint64_t)(-incr)));</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>            len = (sh-&gt;len += incr);</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>            break;</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>        }</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>        default: len = 0; /* Just to avoid compilation warnings. */</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>    }</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>    s[len] = &#x27;\0&#x27;;</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>}</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a></span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>/* Grow the sds to have the specified length. Bytes that were not part of</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a> * the original length of the sds will be set to zero.</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a> *</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a> * if the specified length is smaller than the current length, no operation</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a> * is performed. */</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>sds sdsgrowzero(sds s, size_t len) {</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>    size_t curlen = sdslen(s);</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a></span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a>    if (len &lt;= curlen) return s;</span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a>    s = sdsMakeRoomFor(s,len-curlen);</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>    if (s == NULL) return NULL;</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a></span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>    /* Make sure added region doesn&#x27;t contain garbage */</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a>    memset(s+curlen,0,(len-curlen+1)); /* also set trailing \0 byte */</span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>    sdssetlen(s, len);</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>    return s;</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>}</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a></span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>/* Append the specified binary-safe string pointed by &#x27;t&#x27; of &#x27;len&#x27; bytes to the</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a> * end of the specified sds string &#x27;s&#x27;.</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a> *</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a> * After the call, the passed sds string is no longer valid and all the</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a> * references must be substituted with the new pointer returned by the call. */</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>sds sdscatlen(sds s, const void *t, size_t len) {</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>    size_t curlen = sdslen(s);</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a></span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>    s = sdsMakeRoomFor(s,len);</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a>    if (s == NULL) return NULL;</span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>    memcpy(s+curlen, t, len);</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>    sdssetlen(s, curlen+len);</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>    s[curlen+len] = &#x27;\0&#x27;;</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>    return s;</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>}</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a></span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>/* Append the specified null terminated C string to the sds string &#x27;s&#x27;.</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a> *</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a> * After the call, the passed sds string is no longer valid and all the</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a> * references must be substituted with the new pointer returned by the call. */</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a>sds sdscat(sds s, const char *t) {</span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>    return sdscatlen(s, t, strlen(t));</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>}</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a></span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>/* Append the specified sds &#x27;t&#x27; to the existing sds &#x27;s&#x27;.</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a> *</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a> * After the call, the modified sds string is no longer valid and all the</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a> * references must be substituted with the new pointer returned by the call. */</span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>sds sdscatsds(sds s, const sds t) {</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>    return sdscatlen(s, t, sdslen(t));</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>}</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a></span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>/* Destructively modify the sds string &#x27;s&#x27; to hold the specified binary</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a> * safe string pointed by &#x27;t&#x27; of length &#x27;len&#x27; bytes. */</span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>sds sdscpylen(sds s, const char *t, size_t len) {</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>    if (sdsalloc(s) &lt; len) {</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>        s = sdsMakeRoomFor(s,len-sdslen(s));</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>        if (s == NULL) return NULL;</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>    }</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>    memcpy(s, t, len);</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>    s[len] = &#x27;\0&#x27;;</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>    sdssetlen(s, len);</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>    return s;</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a>}</span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a></span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>/* Like sdscpylen() but &#x27;t&#x27; must be a null-terminated string so that the length</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a> * of the string is obtained with strlen(). */</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a>sds sdscpy(sds s, const char *t) {</span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>    return sdscpylen(s, t, strlen(t));</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>}</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a></span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>/* Create an sds string from a long long value. It is much faster than:</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a> *</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a> * sdscatprintf(sdsempty(),&quot;%lld\n&quot;, value);</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a> */</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a>sds sdsfromlonglong(long long value) {</span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>    char buf[LONG_STR_SIZE];</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>    int len = ll2string(buf,sizeof(buf),value);</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a></span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>    return sdsnewlen(buf,len);</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>}</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a></span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>/* Like sdscatprintf() but gets va_list instead of being variadic. */</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a>sds sdscatvprintf(sds s, const char *fmt, va_list ap) {</span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a>    va_list cpy;</span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>    char staticbuf[1024], *buf = staticbuf, *t;</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a>    size_t buflen = strlen(fmt)*2;</span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>    int bufstrlen;</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a></span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a>    /* We try to start using a static buffer for speed.</span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>     * If not possible we revert to heap allocation. */</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>    if (buflen &gt; sizeof(staticbuf)) {</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a>        buf = s_malloc(buflen);</span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>        if (buf == NULL) return NULL;</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>    } else {</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>        buflen = sizeof(staticbuf);</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>    }</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a></span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>    /* Alloc enough space for buffer and \0 after failing to</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a>     * fit the string in the current buffer size. */</span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a>    while(1) {</span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>        va_copy(cpy,ap);</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a>        bufstrlen = vsnprintf(buf, buflen, fmt, cpy);</span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>        va_end(cpy);</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>        if (bufstrlen &lt; 0) {</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>            if (buf != staticbuf) s_free(buf);</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a>            return NULL;</span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a>        }</span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>        if (((size_t)bufstrlen) &gt;= buflen) {</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a>            if (buf != staticbuf) s_free(buf);</span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a>            buflen = ((size_t)bufstrlen) + 1;</span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>            buf = s_malloc(buflen);</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>            if (buf == NULL) return NULL;</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a>            continue;</span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>        }</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>        break;</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a>    }</span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a></span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a>    /* Finally concat the obtained string to the SDS string and return it. */</span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a>    t = sdscatlen(s, buf, bufstrlen);</span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a>    if (buf != staticbuf) s_free(buf);</span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a>    return t;</span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a>}</span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a></span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>/* Append to the sds string &#x27;s&#x27; a string obtained using printf-alike format</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a> * specifier.</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a> *</span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a> * After the call, the modified sds string is no longer valid and all the</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a> * references must be substituted with the new pointer returned by the call.</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a> *</span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a> * Example:</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a> *</span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a> * s = sdsnew(&quot;Sum is: &quot;);</span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a> * s = sdscatprintf(s,&quot;%d+%d = %d&quot;,a,b,a+b).</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a> *</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a> * Often you need to create a string from scratch with the printf-alike</span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a> * format. When this is the need, just use sdsempty() as the target string:</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a> *</span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a> * s = sdscatprintf(sdsempty(), &quot;... your format ...&quot;, args);</span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a> */</span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>sds sdscatprintf(sds s, const char *fmt, ...) {</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>    va_list ap;</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a>    char *t;</span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a>    va_start(ap, fmt);</span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>    t = sdscatvprintf(s,fmt,ap);</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a>    va_end(ap);</span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>    return t;</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a>}</span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a></span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>/* This function is similar to sdscatprintf, but much faster as it does</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a> * not rely on sprintf() family functions implemented by the libc that</span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a> * are often very slow. Moreover directly handling the sds string as</span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a> * new data is concatenated provides a performance improvement.</span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a> *</span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a> * However this function only handles an incompatible subset of printf-alike</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a> * format specifiers:</span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a> *</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a> * %s - C String</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a> * %S - SDS string</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a> * %i - signed int</span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a> * %I - 64 bit signed integer (long long, int64_t)</span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a> * %u - unsigned int</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a> * %U - 64 bit unsigned integer (unsigned long long, uint64_t)</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a> * %% - Verbatim &quot;%&quot; character.</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a> */</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>sds sdscatfmt(sds s, char const *fmt, ...) {</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a>    size_t initlen = sdslen(s);</span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a>    const char *f = fmt;</span>
+<span class="line" id="L629"><a class="ln" href="#L629">629</a>    long i;</span>
+<span class="line" id="L630"><a class="ln" href="#L630">630</a>    va_list ap;</span>
+<span class="line" id="L631"><a class="ln" href="#L631">631</a></span>
+<span class="line" id="L632"><a class="ln" href="#L632">632</a>    /* To avoid continuous reallocations, let&#x27;s start with a buffer that</span>
+<span class="line" id="L633"><a class="ln" href="#L633">633</a>     * can hold at least two times the format string itself. It&#x27;s not the</span>
+<span class="line" id="L634"><a class="ln" href="#L634">634</a>     * best heuristic but seems to work in practice. */</span>
+<span class="line" id="L635"><a class="ln" href="#L635">635</a>    s = sdsMakeRoomFor(s, strlen(fmt)*2);</span>
+<span class="line" id="L636"><a class="ln" href="#L636">636</a>    va_start(ap,fmt);</span>
+<span class="line" id="L637"><a class="ln" href="#L637">637</a>    f = fmt;    /* Next format specifier byte to process. */</span>
+<span class="line" id="L638"><a class="ln" href="#L638">638</a>    i = initlen; /* Position of the next byte to write to dest str. */</span>
+<span class="line" id="L639"><a class="ln" href="#L639">639</a>    while(*f) {</span>
+<span class="line" id="L640"><a class="ln" href="#L640">640</a>        char next, *str;</span>
+<span class="line" id="L641"><a class="ln" href="#L641">641</a>        size_t l;</span>
+<span class="line" id="L642"><a class="ln" href="#L642">642</a>        long long num;</span>
+<span class="line" id="L643"><a class="ln" href="#L643">643</a>        unsigned long long unum;</span>
+<span class="line" id="L644"><a class="ln" href="#L644">644</a></span>
+<span class="line" id="L645"><a class="ln" href="#L645">645</a>        /* Make sure there is always space for at least 1 char. */</span>
+<span class="line" id="L646"><a class="ln" href="#L646">646</a>        if (sdsavail(s)==0) {</span>
+<span class="line" id="L647"><a class="ln" href="#L647">647</a>            s = sdsMakeRoomFor(s,1);</span>
+<span class="line" id="L648"><a class="ln" href="#L648">648</a>        }</span>
+<span class="line" id="L649"><a class="ln" href="#L649">649</a></span>
+<span class="line" id="L650"><a class="ln" href="#L650">650</a>        switch(*f) {</span>
+<span class="line" id="L651"><a class="ln" href="#L651">651</a>        case &#x27;%&#x27;:</span>
+<span class="line" id="L652"><a class="ln" href="#L652">652</a>            next = *(f+1);</span>
+<span class="line" id="L653"><a class="ln" href="#L653">653</a>            if (next == &#x27;\0&#x27;) break;</span>
+<span class="line" id="L654"><a class="ln" href="#L654">654</a>            f++;</span>
+<span class="line" id="L655"><a class="ln" href="#L655">655</a>            switch(next) {</span>
+<span class="line" id="L656"><a class="ln" href="#L656">656</a>            case &#x27;s&#x27;:</span>
+<span class="line" id="L657"><a class="ln" href="#L657">657</a>            case &#x27;S&#x27;:</span>
+<span class="line" id="L658"><a class="ln" href="#L658">658</a>                str = va_arg(ap,char*);</span>
+<span class="line" id="L659"><a class="ln" href="#L659">659</a>                l = (next == &#x27;s&#x27;) ? strlen(str) : sdslen(str);</span>
+<span class="line" id="L660"><a class="ln" href="#L660">660</a>                if (sdsavail(s) &lt; l) {</span>
+<span class="line" id="L661"><a class="ln" href="#L661">661</a>                    s = sdsMakeRoomFor(s,l);</span>
+<span class="line" id="L662"><a class="ln" href="#L662">662</a>                }</span>
+<span class="line" id="L663"><a class="ln" href="#L663">663</a>                memcpy(s+i,str,l);</span>
+<span class="line" id="L664"><a class="ln" href="#L664">664</a>                sdsinclen(s,l);</span>
+<span class="line" id="L665"><a class="ln" href="#L665">665</a>                i += l;</span>
+<span class="line" id="L666"><a class="ln" href="#L666">666</a>                break;</span>
+<span class="line" id="L667"><a class="ln" href="#L667">667</a>            case &#x27;i&#x27;:</span>
+<span class="line" id="L668"><a class="ln" href="#L668">668</a>            case &#x27;I&#x27;:</span>
+<span class="line" id="L669"><a class="ln" href="#L669">669</a>                if (next == &#x27;i&#x27;)</span>
+<span class="line" id="L670"><a class="ln" href="#L670">670</a>                    num = va_arg(ap,int);</span>
+<span class="line" id="L671"><a class="ln" href="#L671">671</a>                else</span>
+<span class="line" id="L672"><a class="ln" href="#L672">672</a>                    num = va_arg(ap,long long);</span>
+<span class="line" id="L673"><a class="ln" href="#L673">673</a>                {</span>
+<span class="line" id="L674"><a class="ln" href="#L674">674</a>                    char buf[LONG_STR_SIZE];</span>
+<span class="line" id="L675"><a class="ln" href="#L675">675</a>                    l = ll2string(buf,sizeof(buf),num);</span>
+<span class="line" id="L676"><a class="ln" href="#L676">676</a>                    if (sdsavail(s) &lt; l) {</span>
+<span class="line" id="L677"><a class="ln" href="#L677">677</a>                        s = sdsMakeRoomFor(s,l);</span>
+<span class="line" id="L678"><a class="ln" href="#L678">678</a>                    }</span>
+<span class="line" id="L679"><a class="ln" href="#L679">679</a>                    memcpy(s+i,buf,l);</span>
+<span class="line" id="L680"><a class="ln" href="#L680">680</a>                    sdsinclen(s,l);</span>
+<span class="line" id="L681"><a class="ln" href="#L681">681</a>                    i += l;</span>
+<span class="line" id="L682"><a class="ln" href="#L682">682</a>                }</span>
+<span class="line" id="L683"><a class="ln" href="#L683">683</a>                break;</span>
+<span class="line" id="L684"><a class="ln" href="#L684">684</a>            case &#x27;u&#x27;:</span>
+<span class="line" id="L685"><a class="ln" href="#L685">685</a>            case &#x27;U&#x27;:</span>
+<span class="line" id="L686"><a class="ln" href="#L686">686</a>                if (next == &#x27;u&#x27;)</span>
+<span class="line" id="L687"><a class="ln" href="#L687">687</a>                    unum = va_arg(ap,unsigned int);</span>
+<span class="line" id="L688"><a class="ln" href="#L688">688</a>                else</span>
+<span class="line" id="L689"><a class="ln" href="#L689">689</a>                    unum = va_arg(ap,unsigned long long);</span>
+<span class="line" id="L690"><a class="ln" href="#L690">690</a>                {</span>
+<span class="line" id="L691"><a class="ln" href="#L691">691</a>                    char buf[LONG_STR_SIZE];</span>
+<span class="line" id="L692"><a class="ln" href="#L692">692</a>                    l = ull2string(buf,sizeof(buf),unum);</span>
+<span class="line" id="L693"><a class="ln" href="#L693">693</a>                    if (sdsavail(s) &lt; l) {</span>
+<span class="line" id="L694"><a class="ln" href="#L694">694</a>                        s = sdsMakeRoomFor(s,l);</span>
+<span class="line" id="L695"><a class="ln" href="#L695">695</a>                    }</span>
+<span class="line" id="L696"><a class="ln" href="#L696">696</a>                    memcpy(s+i,buf,l);</span>
+<span class="line" id="L697"><a class="ln" href="#L697">697</a>                    sdsinclen(s,l);</span>
+<span class="line" id="L698"><a class="ln" href="#L698">698</a>                    i += l;</span>
+<span class="line" id="L699"><a class="ln" href="#L699">699</a>                }</span>
+<span class="line" id="L700"><a class="ln" href="#L700">700</a>                break;</span>
+<span class="line" id="L701"><a class="ln" href="#L701">701</a>            default: /* Handle %% and generally %&lt;unknown&gt;. */</span>
+<span class="line" id="L702"><a class="ln" href="#L702">702</a>                s[i++] = next;</span>
+<span class="line" id="L703"><a class="ln" href="#L703">703</a>                sdsinclen(s,1);</span>
+<span class="line" id="L704"><a class="ln" href="#L704">704</a>                break;</span>
+<span class="line" id="L705"><a class="ln" href="#L705">705</a>            }</span>
+<span class="line" id="L706"><a class="ln" href="#L706">706</a>            break;</span>
+<span class="line" id="L707"><a class="ln" href="#L707">707</a>        default:</span>
+<span class="line" id="L708"><a class="ln" href="#L708">708</a>            s[i++] = *f;</span>
+<span class="line" id="L709"><a class="ln" href="#L709">709</a>            sdsinclen(s,1);</span>
+<span class="line" id="L710"><a class="ln" href="#L710">710</a>            break;</span>
+<span class="line" id="L711"><a class="ln" href="#L711">711</a>        }</span>
+<span class="line" id="L712"><a class="ln" href="#L712">712</a>        f++;</span>
+<span class="line" id="L713"><a class="ln" href="#L713">713</a>    }</span>
+<span class="line" id="L714"><a class="ln" href="#L714">714</a>    va_end(ap);</span>
+<span class="line" id="L715"><a class="ln" href="#L715">715</a></span>
+<span class="line" id="L716"><a class="ln" href="#L716">716</a>    /* Add null-term */</span>
+<span class="line" id="L717"><a class="ln" href="#L717">717</a>    s[i] = &#x27;\0&#x27;;</span>
+<span class="line" id="L718"><a class="ln" href="#L718">718</a>    return s;</span>
+<span class="line" id="L719"><a class="ln" href="#L719">719</a>}</span>
+<span class="line" id="L720"><a class="ln" href="#L720">720</a></span>
+<span class="line" id="L721"><a class="ln" href="#L721">721</a>/* Remove the part of the string from left and from right composed just of</span>
+<span class="line" id="L722"><a class="ln" href="#L722">722</a> * contiguous characters found in &#x27;cset&#x27;, that is a null terminated C string.</span>
+<span class="line" id="L723"><a class="ln" href="#L723">723</a> *</span>
+<span class="line" id="L724"><a class="ln" href="#L724">724</a> * After the call, the modified sds string is no longer valid and all the</span>
+<span class="line" id="L725"><a class="ln" href="#L725">725</a> * references must be substituted with the new pointer returned by the call.</span>
+<span class="line" id="L726"><a class="ln" href="#L726">726</a> *</span>
+<span class="line" id="L727"><a class="ln" href="#L727">727</a> * Example:</span>
+<span class="line" id="L728"><a class="ln" href="#L728">728</a> *</span>
+<span class="line" id="L729"><a class="ln" href="#L729">729</a> * s = sdsnew(&quot;AA...AA.a.aa.aHelloWorld     :::&quot;);</span>
+<span class="line" id="L730"><a class="ln" href="#L730">730</a> * s = sdstrim(s,&quot;Aa. :&quot;);</span>
+<span class="line" id="L731"><a class="ln" href="#L731">731</a> * printf(&quot;%s\n&quot;, s);</span>
+<span class="line" id="L732"><a class="ln" href="#L732">732</a> *</span>
+<span class="line" id="L733"><a class="ln" href="#L733">733</a> * Output will be just &quot;HelloWorld&quot;.</span>
+<span class="line" id="L734"><a class="ln" href="#L734">734</a> */</span>
+<span class="line" id="L735"><a class="ln" href="#L735">735</a>sds sdstrim(sds s, const char *cset) {</span>
+<span class="line" id="L736"><a class="ln" href="#L736">736</a>    char *end, *sp, *ep;</span>
+<span class="line" id="L737"><a class="ln" href="#L737">737</a>    size_t len;</span>
+<span class="line" id="L738"><a class="ln" href="#L738">738</a></span>
+<span class="line" id="L739"><a class="ln" href="#L739">739</a>    sp = s;</span>
+<span class="line" id="L740"><a class="ln" href="#L740">740</a>    ep = end = s+sdslen(s)-1;</span>
+<span class="line" id="L741"><a class="ln" href="#L741">741</a>    while(sp &lt;= end &amp;&amp; strchr(cset, *sp)) sp++;</span>
+<span class="line" id="L742"><a class="ln" href="#L742">742</a>    while(ep &gt; sp &amp;&amp; strchr(cset, *ep)) ep--;</span>
+<span class="line" id="L743"><a class="ln" href="#L743">743</a>    len = (ep-sp)+1;</span>
+<span class="line" id="L744"><a class="ln" href="#L744">744</a>    if (s != sp) memmove(s, sp, len);</span>
+<span class="line" id="L745"><a class="ln" href="#L745">745</a>    s[len] = &#x27;\0&#x27;;</span>
+<span class="line" id="L746"><a class="ln" href="#L746">746</a>    sdssetlen(s,len);</span>
+<span class="line" id="L747"><a class="ln" href="#L747">747</a>    return s;</span>
+<span class="line" id="L748"><a class="ln" href="#L748">748</a>}</span>
+<span class="line" id="L749"><a class="ln" href="#L749">749</a></span>
+<span class="line" id="L750"><a class="ln" href="#L750">750</a>/* Changes the input string to be a subset of the original.</span>
+<span class="line" id="L751"><a class="ln" href="#L751">751</a> * It does not release the free space in the string, so a call to</span>
+<span class="line" id="L752"><a class="ln" href="#L752">752</a> * sdsRemoveFreeSpace may be wise after. */</span>
+<span class="line" id="L753"><a class="ln" href="#L753">753</a>void sdssubstr(sds s, size_t start, size_t len) {</span>
+<span class="line" id="L754"><a class="ln" href="#L754">754</a>    /* Clamp out of range input */</span>
+<span class="line" id="L755"><a class="ln" href="#L755">755</a>    size_t oldlen = sdslen(s);</span>
+<span class="line" id="L756"><a class="ln" href="#L756">756</a>    if (start &gt;= oldlen) start = len = 0;</span>
+<span class="line" id="L757"><a class="ln" href="#L757">757</a>    if (len &gt; oldlen-start) len = oldlen-start;</span>
+<span class="line" id="L758"><a class="ln" href="#L758">758</a></span>
+<span class="line" id="L759"><a class="ln" href="#L759">759</a>    /* Move the data */</span>
+<span class="line" id="L760"><a class="ln" href="#L760">760</a>    if (len) memmove(s, s+start, len);</span>
+<span class="line" id="L761"><a class="ln" href="#L761">761</a>    s[len] = 0;</span>
+<span class="line" id="L762"><a class="ln" href="#L762">762</a>    sdssetlen(s,len);</span>
+<span class="line" id="L763"><a class="ln" href="#L763">763</a>}</span>
+<span class="line" id="L764"><a class="ln" href="#L764">764</a></span>
+<span class="line" id="L765"><a class="ln" href="#L765">765</a>/* Turn the string into a smaller (or equal) string containing only the</span>
+<span class="line" id="L766"><a class="ln" href="#L766">766</a> * substring specified by the &#x27;start&#x27; and &#x27;end&#x27; indexes.</span>
+<span class="line" id="L767"><a class="ln" href="#L767">767</a> *</span>
+<span class="line" id="L768"><a class="ln" href="#L768">768</a> * start and end can be negative, where -1 means the last character of the</span>
+<span class="line" id="L769"><a class="ln" href="#L769">769</a> * string, -2 the penultimate character, and so forth.</span>
+<span class="line" id="L770"><a class="ln" href="#L770">770</a> *</span>
+<span class="line" id="L771"><a class="ln" href="#L771">771</a> * The interval is inclusive, so the start and end characters will be part</span>
+<span class="line" id="L772"><a class="ln" href="#L772">772</a> * of the resulting string.</span>
+<span class="line" id="L773"><a class="ln" href="#L773">773</a> *</span>
+<span class="line" id="L774"><a class="ln" href="#L774">774</a> * The string is modified in-place.</span>
+<span class="line" id="L775"><a class="ln" href="#L775">775</a> *</span>
+<span class="line" id="L776"><a class="ln" href="#L776">776</a> * NOTE: this function can be misleading and can have unexpected behaviour,</span>
+<span class="line" id="L777"><a class="ln" href="#L777">777</a> * specifically when you want the length of the new string to be 0.</span>
+<span class="line" id="L778"><a class="ln" href="#L778">778</a> * Having start==end will result in a string with one character.</span>
+<span class="line" id="L779"><a class="ln" href="#L779">779</a> * please consider using sdssubstr instead.</span>
+<span class="line" id="L780"><a class="ln" href="#L780">780</a> *</span>
+<span class="line" id="L781"><a class="ln" href="#L781">781</a> * Example:</span>
+<span class="line" id="L782"><a class="ln" href="#L782">782</a> *</span>
+<span class="line" id="L783"><a class="ln" href="#L783">783</a> * s = sdsnew(&quot;Hello World&quot;);</span>
+<span class="line" id="L784"><a class="ln" href="#L784">784</a> * sdsrange(s,1,-1); =&gt; &quot;ello World&quot;</span>
+<span class="line" id="L785"><a class="ln" href="#L785">785</a> */</span>
+<span class="line" id="L786"><a class="ln" href="#L786">786</a>void sdsrange(sds s, ssize_t start, ssize_t end) {</span>
+<span class="line" id="L787"><a class="ln" href="#L787">787</a>    size_t newlen, len = sdslen(s);</span>
+<span class="line" id="L788"><a class="ln" href="#L788">788</a>    if (len == 0) return;</span>
+<span class="line" id="L789"><a class="ln" href="#L789">789</a>    if (start &lt; 0)</span>
+<span class="line" id="L790"><a class="ln" href="#L790">790</a>        start = len + start;</span>
+<span class="line" id="L791"><a class="ln" href="#L791">791</a>    if (end &lt; 0)</span>
+<span class="line" id="L792"><a class="ln" href="#L792">792</a>        end = len + end;</span>
+<span class="line" id="L793"><a class="ln" href="#L793">793</a>    newlen = (start &gt; end) ? 0 : (end-start)+1;</span>
+<span class="line" id="L794"><a class="ln" href="#L794">794</a>    sdssubstr(s, start, newlen);</span>
+<span class="line" id="L795"><a class="ln" href="#L795">795</a>}</span>
+<span class="line" id="L796"><a class="ln" href="#L796">796</a></span>
+<span class="line" id="L797"><a class="ln" href="#L797">797</a>/* Apply tolower() to every character of the sds string &#x27;s&#x27;. */</span>
+<span class="line" id="L798"><a class="ln" href="#L798">798</a>void sdstolower(sds s) {</span>
+<span class="line" id="L799"><a class="ln" href="#L799">799</a>    size_t len = sdslen(s), j;</span>
+<span class="line" id="L800"><a class="ln" href="#L800">800</a></span>
+<span class="line" id="L801"><a class="ln" href="#L801">801</a>    for (j = 0; j &lt; len; j++) s[j] = tolower(s[j]);</span>
+<span class="line" id="L802"><a class="ln" href="#L802">802</a>}</span>
+<span class="line" id="L803"><a class="ln" href="#L803">803</a></span>
+<span class="line" id="L804"><a class="ln" href="#L804">804</a>/* Apply toupper() to every character of the sds string &#x27;s&#x27;. */</span>
+<span class="line" id="L805"><a class="ln" href="#L805">805</a>void sdstoupper(sds s) {</span>
+<span class="line" id="L806"><a class="ln" href="#L806">806</a>    size_t len = sdslen(s), j;</span>
+<span class="line" id="L807"><a class="ln" href="#L807">807</a></span>
+<span class="line" id="L808"><a class="ln" href="#L808">808</a>    for (j = 0; j &lt; len; j++) s[j] = toupper(s[j]);</span>
+<span class="line" id="L809"><a class="ln" href="#L809">809</a>}</span>
+<span class="line" id="L810"><a class="ln" href="#L810">810</a></span>
+<span class="line" id="L811"><a class="ln" href="#L811">811</a>/* Compare two sds strings s1 and s2 with memcmp().</span>
+<span class="line" id="L812"><a class="ln" href="#L812">812</a> *</span>
+<span class="line" id="L813"><a class="ln" href="#L813">813</a> * Return value:</span>
+<span class="line" id="L814"><a class="ln" href="#L814">814</a> *</span>
+<span class="line" id="L815"><a class="ln" href="#L815">815</a> *     positive if s1 &gt; s2.</span>
+<span class="line" id="L816"><a class="ln" href="#L816">816</a> *     negative if s1 &lt; s2.</span>
+<span class="line" id="L817"><a class="ln" href="#L817">817</a> *     0 if s1 and s2 are exactly the same binary string.</span>
+<span class="line" id="L818"><a class="ln" href="#L818">818</a> *</span>
+<span class="line" id="L819"><a class="ln" href="#L819">819</a> * If two strings share exactly the same prefix, but one of the two has</span>
+<span class="line" id="L820"><a class="ln" href="#L820">820</a> * additional characters, the longer string is considered to be greater than</span>
+<span class="line" id="L821"><a class="ln" href="#L821">821</a> * the smaller one. */</span>
+<span class="line" id="L822"><a class="ln" href="#L822">822</a>int sdscmp(const sds s1, const sds s2) {</span>
+<span class="line" id="L823"><a class="ln" href="#L823">823</a>    size_t l1, l2, minlen;</span>
+<span class="line" id="L824"><a class="ln" href="#L824">824</a>    int cmp;</span>
+<span class="line" id="L825"><a class="ln" href="#L825">825</a></span>
+<span class="line" id="L826"><a class="ln" href="#L826">826</a>    l1 = sdslen(s1);</span>
+<span class="line" id="L827"><a class="ln" href="#L827">827</a>    l2 = sdslen(s2);</span>
+<span class="line" id="L828"><a class="ln" href="#L828">828</a>    minlen = (l1 &lt; l2) ? l1 : l2;</span>
+<span class="line" id="L829"><a class="ln" href="#L829">829</a>    cmp = memcmp(s1,s2,minlen);</span>
+<span class="line" id="L830"><a class="ln" href="#L830">830</a>    if (cmp == 0) return l1&gt;l2? 1: (l1&lt;l2? -1: 0);</span>
+<span class="line" id="L831"><a class="ln" href="#L831">831</a>    return cmp;</span>
+<span class="line" id="L832"><a class="ln" href="#L832">832</a>}</span>
+<span class="line" id="L833"><a class="ln" href="#L833">833</a></span>
+<span class="line" id="L834"><a class="ln" href="#L834">834</a>/* Split &#x27;s&#x27; with separator in &#x27;sep&#x27;. An array</span>
+<span class="line" id="L835"><a class="ln" href="#L835">835</a> * of sds strings is returned. *count will be set</span>
+<span class="line" id="L836"><a class="ln" href="#L836">836</a> * by reference to the number of tokens returned.</span>
+<span class="line" id="L837"><a class="ln" href="#L837">837</a> *</span>
+<span class="line" id="L838"><a class="ln" href="#L838">838</a> * On out of memory, zero length string, zero length</span>
+<span class="line" id="L839"><a class="ln" href="#L839">839</a> * separator, NULL is returned.</span>
+<span class="line" id="L840"><a class="ln" href="#L840">840</a> *</span>
+<span class="line" id="L841"><a class="ln" href="#L841">841</a> * Note that &#x27;sep&#x27; is able to split a string using</span>
+<span class="line" id="L842"><a class="ln" href="#L842">842</a> * a multi-character separator. For example</span>
+<span class="line" id="L843"><a class="ln" href="#L843">843</a> * sdssplit(&quot;foo_-_bar&quot;,&quot;_-_&quot;); will return two</span>
+<span class="line" id="L844"><a class="ln" href="#L844">844</a> * elements &quot;foo&quot; and &quot;bar&quot;.</span>
+<span class="line" id="L845"><a class="ln" href="#L845">845</a> *</span>
+<span class="line" id="L846"><a class="ln" href="#L846">846</a> * This version of the function is binary-safe but</span>
+<span class="line" id="L847"><a class="ln" href="#L847">847</a> * requires length arguments. sdssplit() is just the</span>
+<span class="line" id="L848"><a class="ln" href="#L848">848</a> * same function but for zero-terminated strings.</span>
+<span class="line" id="L849"><a class="ln" href="#L849">849</a> */</span>
+<span class="line" id="L850"><a class="ln" href="#L850">850</a>sds *sdssplitlen(const char *s, ssize_t len, const char *sep, int seplen, int *count) {</span>
+<span class="line" id="L851"><a class="ln" href="#L851">851</a>    int elements = 0, slots = 5;</span>
+<span class="line" id="L852"><a class="ln" href="#L852">852</a>    long start = 0, j;</span>
+<span class="line" id="L853"><a class="ln" href="#L853">853</a>    sds *tokens;</span>
+<span class="line" id="L854"><a class="ln" href="#L854">854</a></span>
+<span class="line" id="L855"><a class="ln" href="#L855">855</a>    if (seplen &lt; 1 || len &lt;= 0) {</span>
+<span class="line" id="L856"><a class="ln" href="#L856">856</a>        *count = 0;</span>
+<span class="line" id="L857"><a class="ln" href="#L857">857</a>        return NULL;</span>
+<span class="line" id="L858"><a class="ln" href="#L858">858</a>    }</span>
+<span class="line" id="L859"><a class="ln" href="#L859">859</a>    tokens = s_malloc(sizeof(sds)*slots);</span>
+<span class="line" id="L860"><a class="ln" href="#L860">860</a>    if (tokens == NULL) return NULL;</span>
+<span class="line" id="L861"><a class="ln" href="#L861">861</a></span>
+<span class="line" id="L862"><a class="ln" href="#L862">862</a>    for (j = 0; j &lt; (len-(seplen-1)); j++) {</span>
+<span class="line" id="L863"><a class="ln" href="#L863">863</a>        /* make sure there is room for the next element and the final one */</span>
+<span class="line" id="L864"><a class="ln" href="#L864">864</a>        if (slots &lt; elements+2) {</span>
+<span class="line" id="L865"><a class="ln" href="#L865">865</a>            sds *newtokens;</span>
+<span class="line" id="L866"><a class="ln" href="#L866">866</a></span>
+<span class="line" id="L867"><a class="ln" href="#L867">867</a>            slots *= 2;</span>
+<span class="line" id="L868"><a class="ln" href="#L868">868</a>            newtokens = s_realloc(tokens,sizeof(sds)*slots);</span>
+<span class="line" id="L869"><a class="ln" href="#L869">869</a>            if (newtokens == NULL) goto cleanup;</span>
+<span class="line" id="L870"><a class="ln" href="#L870">870</a>            tokens = newtokens;</span>
+<span class="line" id="L871"><a class="ln" href="#L871">871</a>        }</span>
+<span class="line" id="L872"><a class="ln" href="#L872">872</a>        /* search the separator */</span>
+<span class="line" id="L873"><a class="ln" href="#L873">873</a>        if ((seplen == 1 &amp;&amp; *(s+j) == sep[0]) || (memcmp(s+j,sep,seplen) == 0)) {</span>
+<span class="line" id="L874"><a class="ln" href="#L874">874</a>            tokens[elements] = sdsnewlen(s+start,j-start);</span>
+<span class="line" id="L875"><a class="ln" href="#L875">875</a>            if (tokens[elements] == NULL) goto cleanup;</span>
+<span class="line" id="L876"><a class="ln" href="#L876">876</a>            elements++;</span>
+<span class="line" id="L877"><a class="ln" href="#L877">877</a>            start = j+seplen;</span>
+<span class="line" id="L878"><a class="ln" href="#L878">878</a>            j = j+seplen-1; /* skip the separator */</span>
+<span class="line" id="L879"><a class="ln" href="#L879">879</a>        }</span>
+<span class="line" id="L880"><a class="ln" href="#L880">880</a>    }</span>
+<span class="line" id="L881"><a class="ln" href="#L881">881</a>    /* Add the final element. We are sure there is room in the tokens array. */</span>
+<span class="line" id="L882"><a class="ln" href="#L882">882</a>    tokens[elements] = sdsnewlen(s+start,len-start);</span>
+<span class="line" id="L883"><a class="ln" href="#L883">883</a>    if (tokens[elements] == NULL) goto cleanup;</span>
+<span class="line" id="L884"><a class="ln" href="#L884">884</a>    elements++;</span>
+<span class="line" id="L885"><a class="ln" href="#L885">885</a>    *count = elements;</span>
+<span class="line" id="L886"><a class="ln" href="#L886">886</a>    return tokens;</span>
+<span class="line" id="L887"><a class="ln" href="#L887">887</a></span>
+<span class="line" id="L888"><a class="ln" href="#L888">888</a>cleanup:</span>
+<span class="line" id="L889"><a class="ln" href="#L889">889</a>    {</span>
+<span class="line" id="L890"><a class="ln" href="#L890">890</a>        int i;</span>
+<span class="line" id="L891"><a class="ln" href="#L891">891</a>        for (i = 0; i &lt; elements; i++) sdsfree(tokens[i]);</span>
+<span class="line" id="L892"><a class="ln" href="#L892">892</a>        s_free(tokens);</span>
+<span class="line" id="L893"><a class="ln" href="#L893">893</a>        *count = 0;</span>
+<span class="line" id="L894"><a class="ln" href="#L894">894</a>        return NULL;</span>
+<span class="line" id="L895"><a class="ln" href="#L895">895</a>    }</span>
+<span class="line" id="L896"><a class="ln" href="#L896">896</a>}</span>
+<span class="line" id="L897"><a class="ln" href="#L897">897</a></span>
+<span class="line" id="L898"><a class="ln" href="#L898">898</a>/* Free the result returned by sdssplitlen(), or do nothing if &#x27;tokens&#x27; is NULL. */</span>
+<span class="line" id="L899"><a class="ln" href="#L899">899</a>void sdsfreesplitres(sds *tokens, int count) {</span>
+<span class="line" id="L900"><a class="ln" href="#L900">900</a>    if (!tokens) return;</span>
+<span class="line" id="L901"><a class="ln" href="#L901">901</a>    while(count--)</span>
+<span class="line" id="L902"><a class="ln" href="#L902">902</a>        sdsfree(tokens[count]);</span>
+<span class="line" id="L903"><a class="ln" href="#L903">903</a>    s_free(tokens);</span>
+<span class="line" id="L904"><a class="ln" href="#L904">904</a>}</span>
+<span class="line" id="L905"><a class="ln" href="#L905">905</a></span>
+<span class="line" id="L906"><a class="ln" href="#L906">906</a>/* Append to the sds string &quot;s&quot; an escaped string representation where</span>
+<span class="line" id="L907"><a class="ln" href="#L907">907</a> * all the non-printable characters (tested with isprint()) are turned into</span>
+<span class="line" id="L908"><a class="ln" href="#L908">908</a> * escapes in the form &quot;\n\r\a....&quot; or &quot;\x&lt;hex-number&gt;&quot;.</span>
+<span class="line" id="L909"><a class="ln" href="#L909">909</a> *</span>
+<span class="line" id="L910"><a class="ln" href="#L910">910</a> * After the call, the modified sds string is no longer valid and all the</span>
+<span class="line" id="L911"><a class="ln" href="#L911">911</a> * references must be substituted with the new pointer returned by the call. */</span>
+<span class="line" id="L912"><a class="ln" href="#L912">912</a>sds sdscatrepr(sds s, const char *p, size_t len) {</span>
+<span class="line" id="L913"><a class="ln" href="#L913">913</a>    s = sdsMakeRoomFor(s, len + 2);</span>
+<span class="line" id="L914"><a class="ln" href="#L914">914</a>    s = sdscatlen(s,&quot;\&quot;&quot;,1);</span>
+<span class="line" id="L915"><a class="ln" href="#L915">915</a>    while(len--) {</span>
+<span class="line" id="L916"><a class="ln" href="#L916">916</a>        switch(*p) {</span>
+<span class="line" id="L917"><a class="ln" href="#L917">917</a>        case &#x27;\\&#x27;:</span>
+<span class="line" id="L918"><a class="ln" href="#L918">918</a>        case &#x27;&quot;&#x27;:</span>
+<span class="line" id="L919"><a class="ln" href="#L919">919</a>            s = sdscatprintf(s,&quot;\\%c&quot;,*p);</span>
+<span class="line" id="L920"><a class="ln" href="#L920">920</a>            break;</span>
+<span class="line" id="L921"><a class="ln" href="#L921">921</a>        case &#x27;\n&#x27;: s = sdscatlen(s,&quot;\\n&quot;,2); break;</span>
+<span class="line" id="L922"><a class="ln" href="#L922">922</a>        case &#x27;\r&#x27;: s = sdscatlen(s,&quot;\\r&quot;,2); break;</span>
+<span class="line" id="L923"><a class="ln" href="#L923">923</a>        case &#x27;\t&#x27;: s = sdscatlen(s,&quot;\\t&quot;,2); break;</span>
+<span class="line" id="L924"><a class="ln" href="#L924">924</a>        case &#x27;\a&#x27;: s = sdscatlen(s,&quot;\\a&quot;,2); break;</span>
+<span class="line" id="L925"><a class="ln" href="#L925">925</a>        case &#x27;\b&#x27;: s = sdscatlen(s,&quot;\\b&quot;,2); break;</span>
+<span class="line" id="L926"><a class="ln" href="#L926">926</a>        default:</span>
+<span class="line" id="L927"><a class="ln" href="#L927">927</a>            if (isprint(*p))</span>
+<span class="line" id="L928"><a class="ln" href="#L928">928</a>                s = sdscatlen(s, p, 1);</span>
+<span class="line" id="L929"><a class="ln" href="#L929">929</a>            else</span>
+<span class="line" id="L930"><a class="ln" href="#L930">930</a>                s = sdscatprintf(s,&quot;\\x%02x&quot;,(unsigned char)*p);</span>
+<span class="line" id="L931"><a class="ln" href="#L931">931</a>            break;</span>
+<span class="line" id="L932"><a class="ln" href="#L932">932</a>        }</span>
+<span class="line" id="L933"><a class="ln" href="#L933">933</a>        p++;</span>
+<span class="line" id="L934"><a class="ln" href="#L934">934</a>    }</span>
+<span class="line" id="L935"><a class="ln" href="#L935">935</a>    return sdscatlen(s,&quot;\&quot;&quot;,1);</span>
+<span class="line" id="L936"><a class="ln" href="#L936">936</a>}</span>
+<span class="line" id="L937"><a class="ln" href="#L937">937</a></span>
+<span class="line" id="L938"><a class="ln" href="#L938">938</a>/* Returns one if the string contains characters to be escaped</span>
+<span class="line" id="L939"><a class="ln" href="#L939">939</a> * by sdscatrepr(), zero otherwise.</span>
+<span class="line" id="L940"><a class="ln" href="#L940">940</a> *</span>
+<span class="line" id="L941"><a class="ln" href="#L941">941</a> * Typically, this should be used to help protect aggregated strings in a way</span>
+<span class="line" id="L942"><a class="ln" href="#L942">942</a> * that is compatible with sdssplitargs(). For this reason, also spaces will be</span>
+<span class="line" id="L943"><a class="ln" href="#L943">943</a> * treated as needing an escape.</span>
+<span class="line" id="L944"><a class="ln" href="#L944">944</a> */</span>
+<span class="line" id="L945"><a class="ln" href="#L945">945</a>int sdsneedsrepr(const sds s) {</span>
+<span class="line" id="L946"><a class="ln" href="#L946">946</a>    size_t len = sdslen(s);</span>
+<span class="line" id="L947"><a class="ln" href="#L947">947</a>    const char *p = s;</span>
+<span class="line" id="L948"><a class="ln" href="#L948">948</a></span>
+<span class="line" id="L949"><a class="ln" href="#L949">949</a>    while (len--) {</span>
+<span class="line" id="L950"><a class="ln" href="#L950">950</a>        if (*p == &#x27;\\&#x27; || *p == &#x27;&quot;&#x27; || *p == &#x27;\n&#x27; || *p == &#x27;\r&#x27; ||</span>
+<span class="line" id="L951"><a class="ln" href="#L951">951</a>            *p == &#x27;\t&#x27; || *p == &#x27;\a&#x27; || *p == &#x27;\b&#x27; || !isprint(*p) || isspace(*p)) return 1;</span>
+<span class="line" id="L952"><a class="ln" href="#L952">952</a>        p++;</span>
+<span class="line" id="L953"><a class="ln" href="#L953">953</a>    }</span>
+<span class="line" id="L954"><a class="ln" href="#L954">954</a></span>
+<span class="line" id="L955"><a class="ln" href="#L955">955</a>    return 0;</span>
+<span class="line" id="L956"><a class="ln" href="#L956">956</a>}</span>
+<span class="line" id="L957"><a class="ln" href="#L957">957</a></span>
+<span class="line" id="L958"><a class="ln" href="#L958">958</a>/* Helper function for sdssplitargs() that returns non zero if &#x27;c&#x27;</span>
+<span class="line" id="L959"><a class="ln" href="#L959">959</a> * is a valid hex digit. */</span>
+<span class="line" id="L960"><a class="ln" href="#L960">960</a>int is_hex_digit(char c) {</span>
+<span class="line" id="L961"><a class="ln" href="#L961">961</a>    return (c &gt;= &#x27;0&#x27; &amp;&amp; c &lt;= &#x27;9&#x27;) || (c &gt;= &#x27;a&#x27; &amp;&amp; c &lt;= &#x27;f&#x27;) ||</span>
+<span class="line" id="L962"><a class="ln" href="#L962">962</a>           (c &gt;= &#x27;A&#x27; &amp;&amp; c &lt;= &#x27;F&#x27;);</span>
+<span class="line" id="L963"><a class="ln" href="#L963">963</a>}</span>
+<span class="line" id="L964"><a class="ln" href="#L964">964</a></span>
+<span class="line" id="L965"><a class="ln" href="#L965">965</a>/* Helper function for sdssplitargs() that converts a hex digit into an</span>
+<span class="line" id="L966"><a class="ln" href="#L966">966</a> * integer from 0 to 15 */</span>
+<span class="line" id="L967"><a class="ln" href="#L967">967</a>int hex_digit_to_int(char c) {</span>
+<span class="line" id="L968"><a class="ln" href="#L968">968</a>    switch(c) {</span>
+<span class="line" id="L969"><a class="ln" href="#L969">969</a>    case &#x27;0&#x27;: return 0;</span>
+<span class="line" id="L970"><a class="ln" href="#L970">970</a>    case &#x27;1&#x27;: return 1;</span>
+<span class="line" id="L971"><a class="ln" href="#L971">971</a>    case &#x27;2&#x27;: return 2;</span>
+<span class="line" id="L972"><a class="ln" href="#L972">972</a>    case &#x27;3&#x27;: return 3;</span>
+<span class="line" id="L973"><a class="ln" href="#L973">973</a>    case &#x27;4&#x27;: return 4;</span>
+<span class="line" id="L974"><a class="ln" href="#L974">974</a>    case &#x27;5&#x27;: return 5;</span>
+<span class="line" id="L975"><a class="ln" href="#L975">975</a>    case &#x27;6&#x27;: return 6;</span>
+<span class="line" id="L976"><a class="ln" href="#L976">976</a>    case &#x27;7&#x27;: return 7;</span>
+<span class="line" id="L977"><a class="ln" href="#L977">977</a>    case &#x27;8&#x27;: return 8;</span>
+<span class="line" id="L978"><a class="ln" href="#L978">978</a>    case &#x27;9&#x27;: return 9;</span>
+<span class="line" id="L979"><a class="ln" href="#L979">979</a>    case &#x27;a&#x27;: case &#x27;A&#x27;: return 10;</span>
+<span class="line" id="L980"><a class="ln" href="#L980">980</a>    case &#x27;b&#x27;: case &#x27;B&#x27;: return 11;</span>
+<span class="line" id="L981"><a class="ln" href="#L981">981</a>    case &#x27;c&#x27;: case &#x27;C&#x27;: return 12;</span>
+<span class="line" id="L982"><a class="ln" href="#L982">982</a>    case &#x27;d&#x27;: case &#x27;D&#x27;: return 13;</span>
+<span class="line" id="L983"><a class="ln" href="#L983">983</a>    case &#x27;e&#x27;: case &#x27;E&#x27;: return 14;</span>
+<span class="line" id="L984"><a class="ln" href="#L984">984</a>    case &#x27;f&#x27;: case &#x27;F&#x27;: return 15;</span>
+<span class="line" id="L985"><a class="ln" href="#L985">985</a>    default: return 0;</span>
+<span class="line" id="L986"><a class="ln" href="#L986">986</a>    }</span>
+<span class="line" id="L987"><a class="ln" href="#L987">987</a>}</span>
+<span class="line" id="L988"><a class="ln" href="#L988">988</a></span>
+<span class="line" id="L989"><a class="ln" href="#L989">989</a>/* Split a line into arguments, where every argument can be in the</span>
+<span class="line" id="L990"><a class="ln" href="#L990">990</a> * following programming-language REPL-alike form:</span>
+<span class="line" id="L991"><a class="ln" href="#L991">991</a> *</span>
+<span class="line" id="L992"><a class="ln" href="#L992">992</a> * foo bar &quot;newline are supported\n&quot; and &quot;\xff\x00otherstuff&quot;</span>
+<span class="line" id="L993"><a class="ln" href="#L993">993</a> *</span>
+<span class="line" id="L994"><a class="ln" href="#L994">994</a> * The number of arguments is stored into *argc, and an array</span>
+<span class="line" id="L995"><a class="ln" href="#L995">995</a> * of sds is returned.</span>
+<span class="line" id="L996"><a class="ln" href="#L996">996</a> *</span>
+<span class="line" id="L997"><a class="ln" href="#L997">997</a> * The caller should free the resulting array of sds strings with</span>
+<span class="line" id="L998"><a class="ln" href="#L998">998</a> * sdsfreesplitres().</span>
+<span class="line" id="L999"><a class="ln" href="#L999">999</a> *</span>
+<span class="line" id="L1000"><a class="ln" href="#L1000">1000</a> * Note that sdscatrepr() is able to convert back a string into</span>
+<span class="line" id="L1001"><a class="ln" href="#L1001">1001</a> * a quoted string in the same format sdssplitargs() is able to parse.</span>
+<span class="line" id="L1002"><a class="ln" href="#L1002">1002</a> *</span>
+<span class="line" id="L1003"><a class="ln" href="#L1003">1003</a> * The function returns the allocated tokens on success, even when the</span>
+<span class="line" id="L1004"><a class="ln" href="#L1004">1004</a> * input string is empty, or NULL if the input contains unbalanced</span>
+<span class="line" id="L1005"><a class="ln" href="#L1005">1005</a> * quotes or closed quotes followed by non space characters</span>
+<span class="line" id="L1006"><a class="ln" href="#L1006">1006</a> * as in: &quot;foo&quot;bar or &quot;foo&#x27;</span>
+<span class="line" id="L1007"><a class="ln" href="#L1007">1007</a> */</span>
+<span class="line" id="L1008"><a class="ln" href="#L1008">1008</a>sds *sdssplitargs(const char *line, int *argc) {</span>
+<span class="line" id="L1009"><a class="ln" href="#L1009">1009</a>    const char *p = line;</span>
+<span class="line" id="L1010"><a class="ln" href="#L1010">1010</a>    char *current = NULL;</span>
+<span class="line" id="L1011"><a class="ln" href="#L1011">1011</a>    char **vector = NULL;</span>
+<span class="line" id="L1012"><a class="ln" href="#L1012">1012</a></span>
+<span class="line" id="L1013"><a class="ln" href="#L1013">1013</a>    *argc = 0;</span>
+<span class="line" id="L1014"><a class="ln" href="#L1014">1014</a>    while(1) {</span>
+<span class="line" id="L1015"><a class="ln" href="#L1015">1015</a>        /* skip blanks */</span>
+<span class="line" id="L1016"><a class="ln" href="#L1016">1016</a>        while(*p &amp;&amp; isspace(*p)) p++;</span>
+<span class="line" id="L1017"><a class="ln" href="#L1017">1017</a>        if (*p) {</span>
+<span class="line" id="L1018"><a class="ln" href="#L1018">1018</a>            /* get a token */</span>
+<span class="line" id="L1019"><a class="ln" href="#L1019">1019</a>            int inq=0;  /* set to 1 if we are in &quot;quotes&quot; */</span>
+<span class="line" id="L1020"><a class="ln" href="#L1020">1020</a>            int insq=0; /* set to 1 if we are in &#x27;single quotes&#x27; */</span>
+<span class="line" id="L1021"><a class="ln" href="#L1021">1021</a>            int done=0;</span>
+<span class="line" id="L1022"><a class="ln" href="#L1022">1022</a></span>
+<span class="line" id="L1023"><a class="ln" href="#L1023">1023</a>            if (current == NULL) current = sdsempty();</span>
+<span class="line" id="L1024"><a class="ln" href="#L1024">1024</a>            while(!done) {</span>
+<span class="line" id="L1025"><a class="ln" href="#L1025">1025</a>                if (inq) {</span>
+<span class="line" id="L1026"><a class="ln" href="#L1026">1026</a>                    if (*p == &#x27;\\&#x27; &amp;&amp; *(p+1) == &#x27;x&#x27; &amp;&amp;</span>
+<span class="line" id="L1027"><a class="ln" href="#L1027">1027</a>                                             is_hex_digit(*(p+2)) &amp;&amp;</span>
+<span class="line" id="L1028"><a class="ln" href="#L1028">1028</a>                                             is_hex_digit(*(p+3)))</span>
+<span class="line" id="L1029"><a class="ln" href="#L1029">1029</a>                    {</span>
+<span class="line" id="L1030"><a class="ln" href="#L1030">1030</a>                        unsigned char byte;</span>
+<span class="line" id="L1031"><a class="ln" href="#L1031">1031</a></span>
+<span class="line" id="L1032"><a class="ln" href="#L1032">1032</a>                        byte = (hex_digit_to_int(*(p+2))*16)+</span>
+<span class="line" id="L1033"><a class="ln" href="#L1033">1033</a>                                hex_digit_to_int(*(p+3));</span>
+<span class="line" id="L1034"><a class="ln" href="#L1034">1034</a>                        current = sdscatlen(current,(char*)&amp;byte,1);</span>
+<span class="line" id="L1035"><a class="ln" href="#L1035">1035</a>                        p += 3;</span>
+<span class="line" id="L1036"><a class="ln" href="#L1036">1036</a>                    } else if (*p == &#x27;\\&#x27; &amp;&amp; *(p+1)) {</span>
+<span class="line" id="L1037"><a class="ln" href="#L1037">1037</a>                        char c;</span>
+<span class="line" id="L1038"><a class="ln" href="#L1038">1038</a></span>
+<span class="line" id="L1039"><a class="ln" href="#L1039">1039</a>                        p++;</span>
+<span class="line" id="L1040"><a class="ln" href="#L1040">1040</a>                        switch(*p) {</span>
+<span class="line" id="L1041"><a class="ln" href="#L1041">1041</a>                        case &#x27;n&#x27;: c = &#x27;\n&#x27;; break;</span>
+<span class="line" id="L1042"><a class="ln" href="#L1042">1042</a>                        case &#x27;r&#x27;: c = &#x27;\r&#x27;; break;</span>
+<span class="line" id="L1043"><a class="ln" href="#L1043">1043</a>                        case &#x27;t&#x27;: c = &#x27;\t&#x27;; break;</span>
+<span class="line" id="L1044"><a class="ln" href="#L1044">1044</a>                        case &#x27;b&#x27;: c = &#x27;\b&#x27;; break;</span>
+<span class="line" id="L1045"><a class="ln" href="#L1045">1045</a>                        case &#x27;a&#x27;: c = &#x27;\a&#x27;; break;</span>
+<span class="line" id="L1046"><a class="ln" href="#L1046">1046</a>                        default: c = *p; break;</span>
+<span class="line" id="L1047"><a class="ln" href="#L1047">1047</a>                        }</span>
+<span class="line" id="L1048"><a class="ln" href="#L1048">1048</a>                        current = sdscatlen(current,&amp;c,1);</span>
+<span class="line" id="L1049"><a class="ln" href="#L1049">1049</a>                    } else if (*p == &#x27;&quot;&#x27;) {</span>
+<span class="line" id="L1050"><a class="ln" href="#L1050">1050</a>                        /* closing quote must be followed by a space or</span>
+<span class="line" id="L1051"><a class="ln" href="#L1051">1051</a>                         * nothing at all. */</span>
+<span class="line" id="L1052"><a class="ln" href="#L1052">1052</a>                        if (*(p+1) &amp;&amp; !isspace(*(p+1))) goto err;</span>
+<span class="line" id="L1053"><a class="ln" href="#L1053">1053</a>                        done=1;</span>
+<span class="line" id="L1054"><a class="ln" href="#L1054">1054</a>                    } else if (!*p) {</span>
+<span class="line" id="L1055"><a class="ln" href="#L1055">1055</a>                        /* unterminated quotes */</span>
+<span class="line" id="L1056"><a class="ln" href="#L1056">1056</a>                        goto err;</span>
+<span class="line" id="L1057"><a class="ln" href="#L1057">1057</a>                    } else {</span>
+<span class="line" id="L1058"><a class="ln" href="#L1058">1058</a>                        current = sdscatlen(current,p,1);</span>
+<span class="line" id="L1059"><a class="ln" href="#L1059">1059</a>                    }</span>
+<span class="line" id="L1060"><a class="ln" href="#L1060">1060</a>                } else if (insq) {</span>
+<span class="line" id="L1061"><a class="ln" href="#L1061">1061</a>                    if (*p == &#x27;\\&#x27; &amp;&amp; *(p+1) == &#x27;\&#x27;&#x27;) {</span>
+<span class="line" id="L1062"><a class="ln" href="#L1062">1062</a>                        p++;</span>
+<span class="line" id="L1063"><a class="ln" href="#L1063">1063</a>                        current = sdscatlen(current,&quot;&#x27;&quot;,1);</span>
+<span class="line" id="L1064"><a class="ln" href="#L1064">1064</a>                    } else if (*p == &#x27;\&#x27;&#x27;) {</span>
+<span class="line" id="L1065"><a class="ln" href="#L1065">1065</a>                        /* closing quote must be followed by a space or</span>
+<span class="line" id="L1066"><a class="ln" href="#L1066">1066</a>                         * nothing at all. */</span>
+<span class="line" id="L1067"><a class="ln" href="#L1067">1067</a>                        if (*(p+1) &amp;&amp; !isspace(*(p+1))) goto err;</span>
+<span class="line" id="L1068"><a class="ln" href="#L1068">1068</a>                        done=1;</span>
+<span class="line" id="L1069"><a class="ln" href="#L1069">1069</a>                    } else if (!*p) {</span>
+<span class="line" id="L1070"><a class="ln" href="#L1070">1070</a>                        /* unterminated quotes */</span>
+<span class="line" id="L1071"><a class="ln" href="#L1071">1071</a>                        goto err;</span>
+<span class="line" id="L1072"><a class="ln" href="#L1072">1072</a>                    } else {</span>
+<span class="line" id="L1073"><a class="ln" href="#L1073">1073</a>                        current = sdscatlen(current,p,1);</span>
+<span class="line" id="L1074"><a class="ln" href="#L1074">1074</a>                    }</span>
+<span class="line" id="L1075"><a class="ln" href="#L1075">1075</a>                } else {</span>
+<span class="line" id="L1076"><a class="ln" href="#L1076">1076</a>                    switch(*p) {</span>
+<span class="line" id="L1077"><a class="ln" href="#L1077">1077</a>                    case &#x27; &#x27;:</span>
+<span class="line" id="L1078"><a class="ln" href="#L1078">1078</a>                    case &#x27;\n&#x27;:</span>
+<span class="line" id="L1079"><a class="ln" href="#L1079">1079</a>                    case &#x27;\r&#x27;:</span>
+<span class="line" id="L1080"><a class="ln" href="#L1080">1080</a>                    case &#x27;\t&#x27;:</span>
+<span class="line" id="L1081"><a class="ln" href="#L1081">1081</a>                    case &#x27;\0&#x27;:</span>
+<span class="line" id="L1082"><a class="ln" href="#L1082">1082</a>                        done=1;</span>
+<span class="line" id="L1083"><a class="ln" href="#L1083">1083</a>                        break;</span>
+<span class="line" id="L1084"><a class="ln" href="#L1084">1084</a>                    case &#x27;&quot;&#x27;:</span>
+<span class="line" id="L1085"><a class="ln" href="#L1085">1085</a>                        inq=1;</span>
+<span class="line" id="L1086"><a class="ln" href="#L1086">1086</a>                        break;</span>
+<span class="line" id="L1087"><a class="ln" href="#L1087">1087</a>                    case &#x27;\&#x27;&#x27;:</span>
+<span class="line" id="L1088"><a class="ln" href="#L1088">1088</a>                        insq=1;</span>
+<span class="line" id="L1089"><a class="ln" href="#L1089">1089</a>                        break;</span>
+<span class="line" id="L1090"><a class="ln" href="#L1090">1090</a>                    default:</span>
+<span class="line" id="L1091"><a class="ln" href="#L1091">1091</a>                        current = sdscatlen(current,p,1);</span>
+<span class="line" id="L1092"><a class="ln" href="#L1092">1092</a>                        break;</span>
+<span class="line" id="L1093"><a class="ln" href="#L1093">1093</a>                    }</span>
+<span class="line" id="L1094"><a class="ln" href="#L1094">1094</a>                }</span>
+<span class="line" id="L1095"><a class="ln" href="#L1095">1095</a>                if (*p) p++;</span>
+<span class="line" id="L1096"><a class="ln" href="#L1096">1096</a>            }</span>
+<span class="line" id="L1097"><a class="ln" href="#L1097">1097</a>            /* add the token to the vector */</span>
+<span class="line" id="L1098"><a class="ln" href="#L1098">1098</a>            vector = s_realloc(vector,((*argc)+1)*sizeof(char*));</span>
+<span class="line" id="L1099"><a class="ln" href="#L1099">1099</a>            vector[*argc] = current;</span>
+<span class="line" id="L1100"><a class="ln" href="#L1100">1100</a>            (*argc)++;</span>
+<span class="line" id="L1101"><a class="ln" href="#L1101">1101</a>            current = NULL;</span>
+<span class="line" id="L1102"><a class="ln" href="#L1102">1102</a>        } else {</span>
+<span class="line" id="L1103"><a class="ln" href="#L1103">1103</a>            /* Even on empty input string return something not NULL. */</span>
+<span class="line" id="L1104"><a class="ln" href="#L1104">1104</a>            if (vector == NULL) vector = s_malloc(sizeof(void*));</span>
+<span class="line" id="L1105"><a class="ln" href="#L1105">1105</a>            return vector;</span>
+<span class="line" id="L1106"><a class="ln" href="#L1106">1106</a>        }</span>
+<span class="line" id="L1107"><a class="ln" href="#L1107">1107</a>    }</span>
+<span class="line" id="L1108"><a class="ln" href="#L1108">1108</a></span>
+<span class="line" id="L1109"><a class="ln" href="#L1109">1109</a>err:</span>
+<span class="line" id="L1110"><a class="ln" href="#L1110">1110</a>    while((*argc)--)</span>
+<span class="line" id="L1111"><a class="ln" href="#L1111">1111</a>        sdsfree(vector[*argc]);</span>
+<span class="line" id="L1112"><a class="ln" href="#L1112">1112</a>    s_free(vector);</span>
+<span class="line" id="L1113"><a class="ln" href="#L1113">1113</a>    if (current) sdsfree(current);</span>
+<span class="line" id="L1114"><a class="ln" href="#L1114">1114</a>    *argc = 0;</span>
+<span class="line" id="L1115"><a class="ln" href="#L1115">1115</a>    return NULL;</span>
+<span class="line" id="L1116"><a class="ln" href="#L1116">1116</a>}</span>
+<span class="line" id="L1117"><a class="ln" href="#L1117">1117</a></span>
+<span class="line" id="L1118"><a class="ln" href="#L1118">1118</a>/* Modify the string substituting all the occurrences of the set of</span>
+<span class="line" id="L1119"><a class="ln" href="#L1119">1119</a> * characters specified in the &#x27;from&#x27; string to the corresponding character</span>
+<span class="line" id="L1120"><a class="ln" href="#L1120">1120</a> * in the &#x27;to&#x27; array.</span>
+<span class="line" id="L1121"><a class="ln" href="#L1121">1121</a> *</span>
+<span class="line" id="L1122"><a class="ln" href="#L1122">1122</a> * For instance: sdsmapchars(mystring, &quot;ho&quot;, &quot;01&quot;, 2)</span>
+<span class="line" id="L1123"><a class="ln" href="#L1123">1123</a> * will have the effect of turning the string &quot;hello&quot; into &quot;0ell1&quot;.</span>
+<span class="line" id="L1124"><a class="ln" href="#L1124">1124</a> *</span>
+<span class="line" id="L1125"><a class="ln" href="#L1125">1125</a> * The function returns the sds string pointer, that is always the same</span>
+<span class="line" id="L1126"><a class="ln" href="#L1126">1126</a> * as the input pointer since no resize is needed. */</span>
+<span class="line" id="L1127"><a class="ln" href="#L1127">1127</a>sds sdsmapchars(sds s, const char *from, const char *to, size_t setlen) {</span>
+<span class="line" id="L1128"><a class="ln" href="#L1128">1128</a>    size_t j, i, l = sdslen(s);</span>
+<span class="line" id="L1129"><a class="ln" href="#L1129">1129</a></span>
+<span class="line" id="L1130"><a class="ln" href="#L1130">1130</a>    for (j = 0; j &lt; l; j++) {</span>
+<span class="line" id="L1131"><a class="ln" href="#L1131">1131</a>        for (i = 0; i &lt; setlen; i++) {</span>
+<span class="line" id="L1132"><a class="ln" href="#L1132">1132</a>            if (s[j] == from[i]) {</span>
+<span class="line" id="L1133"><a class="ln" href="#L1133">1133</a>                s[j] = to[i];</span>
+<span class="line" id="L1134"><a class="ln" href="#L1134">1134</a>                break;</span>
+<span class="line" id="L1135"><a class="ln" href="#L1135">1135</a>            }</span>
+<span class="line" id="L1136"><a class="ln" href="#L1136">1136</a>        }</span>
+<span class="line" id="L1137"><a class="ln" href="#L1137">1137</a>    }</span>
+<span class="line" id="L1138"><a class="ln" href="#L1138">1138</a>    return s;</span>
+<span class="line" id="L1139"><a class="ln" href="#L1139">1139</a>}</span>
+<span class="line" id="L1140"><a class="ln" href="#L1140">1140</a></span>
+<span class="line" id="L1141"><a class="ln" href="#L1141">1141</a>/* Join an array of C strings using the specified separator (also a C string).</span>
+<span class="line" id="L1142"><a class="ln" href="#L1142">1142</a> * Returns the result as an sds string. */</span>
+<span class="line" id="L1143"><a class="ln" href="#L1143">1143</a>sds sdsjoin(char **argv, int argc, char *sep) {</span>
+<span class="line" id="L1144"><a class="ln" href="#L1144">1144</a>    sds join = sdsempty();</span>
+<span class="line" id="L1145"><a class="ln" href="#L1145">1145</a>    int j;</span>
+<span class="line" id="L1146"><a class="ln" href="#L1146">1146</a></span>
+<span class="line" id="L1147"><a class="ln" href="#L1147">1147</a>    for (j = 0; j &lt; argc; j++) {</span>
+<span class="line" id="L1148"><a class="ln" href="#L1148">1148</a>        join = sdscat(join, argv[j]);</span>
+<span class="line" id="L1149"><a class="ln" href="#L1149">1149</a>        if (j != argc-1) join = sdscat(join,sep);</span>
+<span class="line" id="L1150"><a class="ln" href="#L1150">1150</a>    }</span>
+<span class="line" id="L1151"><a class="ln" href="#L1151">1151</a>    return join;</span>
+<span class="line" id="L1152"><a class="ln" href="#L1152">1152</a>}</span>
+<span class="line" id="L1153"><a class="ln" href="#L1153">1153</a></span>
+<span class="line" id="L1154"><a class="ln" href="#L1154">1154</a>/* Like sdsjoin, but joins an array of SDS strings. */</span>
+<span class="line" id="L1155"><a class="ln" href="#L1155">1155</a>sds sdsjoinsds(sds *argv, int argc, const char *sep, size_t seplen) {</span>
+<span class="line" id="L1156"><a class="ln" href="#L1156">1156</a>    sds join = sdsempty();</span>
+<span class="line" id="L1157"><a class="ln" href="#L1157">1157</a>    int j;</span>
+<span class="line" id="L1158"><a class="ln" href="#L1158">1158</a></span>
+<span class="line" id="L1159"><a class="ln" href="#L1159">1159</a>    for (j = 0; j &lt; argc; j++) {</span>
+<span class="line" id="L1160"><a class="ln" href="#L1160">1160</a>        join = sdscatsds(join, argv[j]);</span>
+<span class="line" id="L1161"><a class="ln" href="#L1161">1161</a>        if (j != argc-1) join = sdscatlen(join,sep,seplen);</span>
+<span class="line" id="L1162"><a class="ln" href="#L1162">1162</a>    }</span>
+<span class="line" id="L1163"><a class="ln" href="#L1163">1163</a>    return join;</span>
+<span class="line" id="L1164"><a class="ln" href="#L1164">1164</a>}</span>
+<span class="line" id="L1165"><a class="ln" href="#L1165">1165</a></span>
+<span class="line" id="L1166"><a class="ln" href="#L1166">1166</a>/* Wrappers to the allocators used by SDS. Note that SDS will actually</span>
+<span class="line" id="L1167"><a class="ln" href="#L1167">1167</a> * just use the macros defined into sdsalloc.h in order to avoid to pay</span>
+<span class="line" id="L1168"><a class="ln" href="#L1168">1168</a> * the overhead of function calls. Here we define these wrappers only for</span>
+<span class="line" id="L1169"><a class="ln" href="#L1169">1169</a> * the programs SDS is linked to, if they want to touch the SDS internals</span>
+<span class="line" id="L1170"><a class="ln" href="#L1170">1170</a> * even if they use a different allocator. */</span>
+<span class="line" id="L1171"><a class="ln" href="#L1171">1171</a>void *sds_malloc(size_t size) { return s_malloc(size); }</span>
+<span class="line" id="L1172"><a class="ln" href="#L1172">1172</a>void *sds_realloc(void *ptr, size_t size) { return s_realloc(ptr,size); }</span>
+<span class="line" id="L1173"><a class="ln" href="#L1173">1173</a>void sds_free(void *ptr) { s_free(ptr); }</span>
+<span class="line" id="L1174"><a class="ln" href="#L1174">1174</a></span>
+<span class="line" id="L1175"><a class="ln" href="#L1175">1175</a>/* Perform expansion of a template string and return the result as a newly</span>
+<span class="line" id="L1176"><a class="ln" href="#L1176">1176</a> * allocated sds.</span>
+<span class="line" id="L1177"><a class="ln" href="#L1177">1177</a> *</span>
+<span class="line" id="L1178"><a class="ln" href="#L1178">1178</a> * Template variables are specified using curly brackets, e.g. {variable}.</span>
+<span class="line" id="L1179"><a class="ln" href="#L1179">1179</a> * An opening bracket can be quoted by repeating it twice.</span>
+<span class="line" id="L1180"><a class="ln" href="#L1180">1180</a> */</span>
+<span class="line" id="L1181"><a class="ln" href="#L1181">1181</a>sds sdstemplate(const char *template, sdstemplate_callback_t cb_func, void *cb_arg)</span>
+<span class="line" id="L1182"><a class="ln" href="#L1182">1182</a>{</span>
+<span class="line" id="L1183"><a class="ln" href="#L1183">1183</a>    sds res = sdsempty();</span>
+<span class="line" id="L1184"><a class="ln" href="#L1184">1184</a>    const char *p = template;</span>
+<span class="line" id="L1185"><a class="ln" href="#L1185">1185</a></span>
+<span class="line" id="L1186"><a class="ln" href="#L1186">1186</a>    while (*p) {</span>
+<span class="line" id="L1187"><a class="ln" href="#L1187">1187</a>        /* Find next variable, copy everything until there */</span>
+<span class="line" id="L1188"><a class="ln" href="#L1188">1188</a>        const char *sv = strchr(p, &#x27;{&#x27;);</span>
+<span class="line" id="L1189"><a class="ln" href="#L1189">1189</a>        if (!sv) {</span>
+<span class="line" id="L1190"><a class="ln" href="#L1190">1190</a>            /* Not found: copy till rest of template and stop */</span>
+<span class="line" id="L1191"><a class="ln" href="#L1191">1191</a>            res = sdscat(res, p);</span>
+<span class="line" id="L1192"><a class="ln" href="#L1192">1192</a>            break;</span>
+<span class="line" id="L1193"><a class="ln" href="#L1193">1193</a>        } else if (sv &gt; p) {</span>
+<span class="line" id="L1194"><a class="ln" href="#L1194">1194</a>            /* Found: copy anything up to the beginning of the variable */</span>
+<span class="line" id="L1195"><a class="ln" href="#L1195">1195</a>            res = sdscatlen(res, p, sv - p);</span>
+<span class="line" id="L1196"><a class="ln" href="#L1196">1196</a>        }</span>
+<span class="line" id="L1197"><a class="ln" href="#L1197">1197</a></span>
+<span class="line" id="L1198"><a class="ln" href="#L1198">1198</a>        /* Skip into variable name, handle premature end or quoting */</span>
+<span class="line" id="L1199"><a class="ln" href="#L1199">1199</a>        sv++;</span>
+<span class="line" id="L1200"><a class="ln" href="#L1200">1200</a>        if (!*sv) goto error;       /* Premature end of template */</span>
+<span class="line" id="L1201"><a class="ln" href="#L1201">1201</a>        if (*sv == &#x27;{&#x27;) {</span>
+<span class="line" id="L1202"><a class="ln" href="#L1202">1202</a>            /* Quoted &#x27;{&#x27; */</span>
+<span class="line" id="L1203"><a class="ln" href="#L1203">1203</a>            p = sv + 1;</span>
+<span class="line" id="L1204"><a class="ln" href="#L1204">1204</a>            res = sdscat(res, &quot;{&quot;);</span>
+<span class="line" id="L1205"><a class="ln" href="#L1205">1205</a>            continue;</span>
+<span class="line" id="L1206"><a class="ln" href="#L1206">1206</a>        }</span>
+<span class="line" id="L1207"><a class="ln" href="#L1207">1207</a></span>
+<span class="line" id="L1208"><a class="ln" href="#L1208">1208</a>        /* Find end of variable name, handle premature end of template */</span>
+<span class="line" id="L1209"><a class="ln" href="#L1209">1209</a>        const char *ev = strchr(sv, &#x27;}&#x27;);</span>
+<span class="line" id="L1210"><a class="ln" href="#L1210">1210</a>        if (!ev) goto error;</span>
+<span class="line" id="L1211"><a class="ln" href="#L1211">1211</a></span>
+<span class="line" id="L1212"><a class="ln" href="#L1212">1212</a>        /* Pass variable name to callback and obtain value. If callback failed,</span>
+<span class="line" id="L1213"><a class="ln" href="#L1213">1213</a>         * abort. */</span>
+<span class="line" id="L1214"><a class="ln" href="#L1214">1214</a>        sds varname = sdsnewlen(sv, ev - sv);</span>
+<span class="line" id="L1215"><a class="ln" href="#L1215">1215</a>        sds value = cb_func(varname, cb_arg);</span>
+<span class="line" id="L1216"><a class="ln" href="#L1216">1216</a>        sdsfree(varname);</span>
+<span class="line" id="L1217"><a class="ln" href="#L1217">1217</a>        if (!value) goto error;</span>
+<span class="line" id="L1218"><a class="ln" href="#L1218">1218</a></span>
+<span class="line" id="L1219"><a class="ln" href="#L1219">1219</a>        /* Append value to result and continue */</span>
+<span class="line" id="L1220"><a class="ln" href="#L1220">1220</a>        res = sdscat(res, value);</span>
+<span class="line" id="L1221"><a class="ln" href="#L1221">1221</a>        sdsfree(value);</span>
+<span class="line" id="L1222"><a class="ln" href="#L1222">1222</a>        p = ev + 1;</span>
+<span class="line" id="L1223"><a class="ln" href="#L1223">1223</a>    }</span>
+<span class="line" id="L1224"><a class="ln" href="#L1224">1224</a></span>
+<span class="line" id="L1225"><a class="ln" href="#L1225">1225</a>    return res;</span>
+<span class="line" id="L1226"><a class="ln" href="#L1226">1226</a></span>
+<span class="line" id="L1227"><a class="ln" href="#L1227">1227</a>error:</span>
+<span class="line" id="L1228"><a class="ln" href="#L1228">1228</a>    sdsfree(res);</span>
+<span class="line" id="L1229"><a class="ln" href="#L1229">1229</a>    return NULL;</span>
+<span class="line" id="L1230"><a class="ln" href="#L1230">1230</a>}</span>
+<span class="line" id="L1231"><a class="ln" href="#L1231">1231</a></span>
+<span class="line" id="L1232"><a class="ln" href="#L1232">1232</a>#ifdef REDIS_TEST</span>
+<span class="line" id="L1233"><a class="ln" href="#L1233">1233</a>#include &lt;stdio.h&gt;</span>
+<span class="line" id="L1234"><a class="ln" href="#L1234">1234</a>#include &lt;limits.h&gt;</span>
+<span class="line" id="L1235"><a class="ln" href="#L1235">1235</a>#include &quot;testhelp.h&quot;</span>
+<span class="line" id="L1236"><a class="ln" href="#L1236">1236</a></span>
+<span class="line" id="L1237"><a class="ln" href="#L1237">1237</a>#define UNUSED(x) (void)(x)</span>
+<span class="line" id="L1238"><a class="ln" href="#L1238">1238</a></span>
+<span class="line" id="L1239"><a class="ln" href="#L1239">1239</a>static sds sdsTestTemplateCallback(sds varname, void *arg) {</span>
+<span class="line" id="L1240"><a class="ln" href="#L1240">1240</a>    UNUSED(arg);</span>
+<span class="line" id="L1241"><a class="ln" href="#L1241">1241</a>    static const char *_var1 = &quot;variable1&quot;;</span>
+<span class="line" id="L1242"><a class="ln" href="#L1242">1242</a>    static const char *_var2 = &quot;variable2&quot;;</span>
+<span class="line" id="L1243"><a class="ln" href="#L1243">1243</a></span>
+<span class="line" id="L1244"><a class="ln" href="#L1244">1244</a>    if (!strcmp(varname, _var1)) return sdsnew(&quot;value1&quot;);</span>
+<span class="line" id="L1245"><a class="ln" href="#L1245">1245</a>    else if (!strcmp(varname, _var2)) return sdsnew(&quot;value2&quot;);</span>
+<span class="line" id="L1246"><a class="ln" href="#L1246">1246</a>    else return NULL;</span>
+<span class="line" id="L1247"><a class="ln" href="#L1247">1247</a>}</span>
+<span class="line" id="L1248"><a class="ln" href="#L1248">1248</a></span>
+<span class="line" id="L1249"><a class="ln" href="#L1249">1249</a>int sdsTest(int argc, char **argv, int flags) {</span>
+<span class="line" id="L1250"><a class="ln" href="#L1250">1250</a>    UNUSED(argc);</span>
+<span class="line" id="L1251"><a class="ln" href="#L1251">1251</a>    UNUSED(argv);</span>
+<span class="line" id="L1252"><a class="ln" href="#L1252">1252</a>    UNUSED(flags);</span>
+<span class="line" id="L1253"><a class="ln" href="#L1253">1253</a></span>
+<span class="line" id="L1254"><a class="ln" href="#L1254">1254</a>    {</span>
+<span class="line" id="L1255"><a class="ln" href="#L1255">1255</a>        sds x = sdsnew(&quot;foo&quot;), y;</span>
+<span class="line" id="L1256"><a class="ln" href="#L1256">1256</a></span>
+<span class="line" id="L1257"><a class="ln" href="#L1257">1257</a>        test_cond(&quot;Create a string and obtain the length&quot;,</span>
+<span class="line" id="L1258"><a class="ln" href="#L1258">1258</a>            sdslen(x) == 3 &amp;&amp; memcmp(x,&quot;foo\0&quot;,4) == 0);</span>
+<span class="line" id="L1259"><a class="ln" href="#L1259">1259</a></span>
+<span class="line" id="L1260"><a class="ln" href="#L1260">1260</a>        sdsfree(x);</span>
+<span class="line" id="L1261"><a class="ln" href="#L1261">1261</a>        x = sdsnewlen(&quot;foo&quot;,2);</span>
+<span class="line" id="L1262"><a class="ln" href="#L1262">1262</a>        test_cond(&quot;Create a string with specified length&quot;,</span>
+<span class="line" id="L1263"><a class="ln" href="#L1263">1263</a>            sdslen(x) == 2 &amp;&amp; memcmp(x,&quot;fo\0&quot;,3) == 0);</span>
+<span class="line" id="L1264"><a class="ln" href="#L1264">1264</a></span>
+<span class="line" id="L1265"><a class="ln" href="#L1265">1265</a>        x = sdscat(x,&quot;bar&quot;);</span>
+<span class="line" id="L1266"><a class="ln" href="#L1266">1266</a>        test_cond(&quot;Strings concatenation&quot;,</span>
+<span class="line" id="L1267"><a class="ln" href="#L1267">1267</a>            sdslen(x) == 5 &amp;&amp; memcmp(x,&quot;fobar\0&quot;,6) == 0);</span>
+<span class="line" id="L1268"><a class="ln" href="#L1268">1268</a></span>
+<span class="line" id="L1269"><a class="ln" href="#L1269">1269</a>        x = sdscpy(x,&quot;a&quot;);</span>
+<span class="line" id="L1270"><a class="ln" href="#L1270">1270</a>        test_cond(&quot;sdscpy() against an originally longer string&quot;,</span>
+<span class="line" id="L1271"><a class="ln" href="#L1271">1271</a>            sdslen(x) == 1 &amp;&amp; memcmp(x,&quot;a\0&quot;,2) == 0);</span>
+<span class="line" id="L1272"><a class="ln" href="#L1272">1272</a></span>
+<span class="line" id="L1273"><a class="ln" href="#L1273">1273</a>        x = sdscpy(x,&quot;xyzxxxxxxxxxxyyyyyyyyyykkkkkkkkkk&quot;);</span>
+<span class="line" id="L1274"><a class="ln" href="#L1274">1274</a>        test_cond(&quot;sdscpy() against an originally shorter string&quot;,</span>
+<span class="line" id="L1275"><a class="ln" href="#L1275">1275</a>            sdslen(x) == 33 &amp;&amp;</span>
+<span class="line" id="L1276"><a class="ln" href="#L1276">1276</a>            memcmp(x,&quot;xyzxxxxxxxxxxyyyyyyyyyykkkkkkkkkk\0&quot;,33) == 0);</span>
+<span class="line" id="L1277"><a class="ln" href="#L1277">1277</a></span>
+<span class="line" id="L1278"><a class="ln" href="#L1278">1278</a>        sdsfree(x);</span>
+<span class="line" id="L1279"><a class="ln" href="#L1279">1279</a>        x = sdscatprintf(sdsempty(),&quot;%d&quot;,123);</span>
+<span class="line" id="L1280"><a class="ln" href="#L1280">1280</a>        test_cond(&quot;sdscatprintf() seems working in the base case&quot;,</span>
+<span class="line" id="L1281"><a class="ln" href="#L1281">1281</a>            sdslen(x) == 3 &amp;&amp; memcmp(x,&quot;123\0&quot;,4) == 0);</span>
+<span class="line" id="L1282"><a class="ln" href="#L1282">1282</a></span>
+<span class="line" id="L1283"><a class="ln" href="#L1283">1283</a>        sdsfree(x);</span>
+<span class="line" id="L1284"><a class="ln" href="#L1284">1284</a>        x = sdscatprintf(sdsempty(),&quot;a%cb&quot;,0);</span>
+<span class="line" id="L1285"><a class="ln" href="#L1285">1285</a>        test_cond(&quot;sdscatprintf() seems working with \\0 inside of result&quot;,</span>
+<span class="line" id="L1286"><a class="ln" href="#L1286">1286</a>            sdslen(x) == 3 &amp;&amp; memcmp(x,&quot;a\0&quot;&quot;b\0&quot;,4) == 0);</span>
+<span class="line" id="L1287"><a class="ln" href="#L1287">1287</a></span>
+<span class="line" id="L1288"><a class="ln" href="#L1288">1288</a>        {</span>
+<span class="line" id="L1289"><a class="ln" href="#L1289">1289</a>            sdsfree(x);</span>
+<span class="line" id="L1290"><a class="ln" href="#L1290">1290</a>            char etalon[1024*1024];</span>
+<span class="line" id="L1291"><a class="ln" href="#L1291">1291</a>            for (size_t i = 0; i &lt; sizeof(etalon); i++) {</span>
+<span class="line" id="L1292"><a class="ln" href="#L1292">1292</a>                etalon[i] = &#x27;0&#x27;;</span>
+<span class="line" id="L1293"><a class="ln" href="#L1293">1293</a>            }</span>
+<span class="line" id="L1294"><a class="ln" href="#L1294">1294</a>            x = sdscatprintf(sdsempty(),&quot;%0*d&quot;,(int)sizeof(etalon),0);</span>
+<span class="line" id="L1295"><a class="ln" href="#L1295">1295</a>            test_cond(&quot;sdscatprintf() can print 1MB&quot;,</span>
+<span class="line" id="L1296"><a class="ln" href="#L1296">1296</a>                sdslen(x) == sizeof(etalon) &amp;&amp; memcmp(x,etalon,sizeof(etalon)) == 0);</span>
+<span class="line" id="L1297"><a class="ln" href="#L1297">1297</a>        }</span>
+<span class="line" id="L1298"><a class="ln" href="#L1298">1298</a></span>
+<span class="line" id="L1299"><a class="ln" href="#L1299">1299</a>        sdsfree(x);</span>
+<span class="line" id="L1300"><a class="ln" href="#L1300">1300</a>        x = sdsnew(&quot;--&quot;);</span>
+<span class="line" id="L1301"><a class="ln" href="#L1301">1301</a>        x = sdscatfmt(x, &quot;Hello %s World %I,%I--&quot;, &quot;Hi!&quot;, LLONG_MIN,LLONG_MAX);</span>
+<span class="line" id="L1302"><a class="ln" href="#L1302">1302</a>        test_cond(&quot;sdscatfmt() seems working in the base case&quot;,</span>
+<span class="line" id="L1303"><a class="ln" href="#L1303">1303</a>            sdslen(x) == 60 &amp;&amp;</span>
+<span class="line" id="L1304"><a class="ln" href="#L1304">1304</a>            memcmp(x,&quot;--Hello Hi! World -9223372036854775808,&quot;</span>
+<span class="line" id="L1305"><a class="ln" href="#L1305">1305</a>                     &quot;9223372036854775807--&quot;,60) == 0);</span>
+<span class="line" id="L1306"><a class="ln" href="#L1306">1306</a>        printf(&quot;[%s]\n&quot;,x);</span>
+<span class="line" id="L1307"><a class="ln" href="#L1307">1307</a></span>
+<span class="line" id="L1308"><a class="ln" href="#L1308">1308</a>        sdsfree(x);</span>
+<span class="line" id="L1309"><a class="ln" href="#L1309">1309</a>        x = sdsnew(&quot;--&quot;);</span>
+<span class="line" id="L1310"><a class="ln" href="#L1310">1310</a>        x = sdscatfmt(x, &quot;%u,%U--&quot;, UINT_MAX, ULLONG_MAX);</span>
+<span class="line" id="L1311"><a class="ln" href="#L1311">1311</a>        test_cond(&quot;sdscatfmt() seems working with unsigned numbers&quot;,</span>
+<span class="line" id="L1312"><a class="ln" href="#L1312">1312</a>            sdslen(x) == 35 &amp;&amp;</span>
+<span class="line" id="L1313"><a class="ln" href="#L1313">1313</a>            memcmp(x,&quot;--4294967295,18446744073709551615--&quot;,35) == 0);</span>
+<span class="line" id="L1314"><a class="ln" href="#L1314">1314</a></span>
+<span class="line" id="L1315"><a class="ln" href="#L1315">1315</a>        sdsfree(x);</span>
+<span class="line" id="L1316"><a class="ln" href="#L1316">1316</a>        x = sdsnew(&quot; x &quot;);</span>
+<span class="line" id="L1317"><a class="ln" href="#L1317">1317</a>        sdstrim(x,&quot; x&quot;);</span>
+<span class="line" id="L1318"><a class="ln" href="#L1318">1318</a>        test_cond(&quot;sdstrim() works when all chars match&quot;,</span>
+<span class="line" id="L1319"><a class="ln" href="#L1319">1319</a>            sdslen(x) == 0);</span>
+<span class="line" id="L1320"><a class="ln" href="#L1320">1320</a></span>
+<span class="line" id="L1321"><a class="ln" href="#L1321">1321</a>        sdsfree(x);</span>
+<span class="line" id="L1322"><a class="ln" href="#L1322">1322</a>        x = sdsnew(&quot; x &quot;);</span>
+<span class="line" id="L1323"><a class="ln" href="#L1323">1323</a>        sdstrim(x,&quot; &quot;);</span>
+<span class="line" id="L1324"><a class="ln" href="#L1324">1324</a>        test_cond(&quot;sdstrim() works when a single char remains&quot;,</span>
+<span class="line" id="L1325"><a class="ln" href="#L1325">1325</a>            sdslen(x) == 1 &amp;&amp; x[0] == &#x27;x&#x27;);</span>
+<span class="line" id="L1326"><a class="ln" href="#L1326">1326</a></span>
+<span class="line" id="L1327"><a class="ln" href="#L1327">1327</a>        sdsfree(x);</span>
+<span class="line" id="L1328"><a class="ln" href="#L1328">1328</a>        x = sdsnew(&quot;xxciaoyyy&quot;);</span>
+<span class="line" id="L1329"><a class="ln" href="#L1329">1329</a>        sdstrim(x,&quot;xy&quot;);</span>
+<span class="line" id="L1330"><a class="ln" href="#L1330">1330</a>        test_cond(&quot;sdstrim() correctly trims characters&quot;,</span>
+<span class="line" id="L1331"><a class="ln" href="#L1331">1331</a>            sdslen(x) == 4 &amp;&amp; memcmp(x,&quot;ciao\0&quot;,5) == 0);</span>
+<span class="line" id="L1332"><a class="ln" href="#L1332">1332</a></span>
+<span class="line" id="L1333"><a class="ln" href="#L1333">1333</a>        y = sdsdup(x);</span>
+<span class="line" id="L1334"><a class="ln" href="#L1334">1334</a>        sdsrange(y,1,1);</span>
+<span class="line" id="L1335"><a class="ln" href="#L1335">1335</a>        test_cond(&quot;sdsrange(...,1,1)&quot;,</span>
+<span class="line" id="L1336"><a class="ln" href="#L1336">1336</a>            sdslen(y) == 1 &amp;&amp; memcmp(y,&quot;i\0&quot;,2) == 0);</span>
+<span class="line" id="L1337"><a class="ln" href="#L1337">1337</a></span>
+<span class="line" id="L1338"><a class="ln" href="#L1338">1338</a>        sdsfree(y);</span>
+<span class="line" id="L1339"><a class="ln" href="#L1339">1339</a>        y = sdsdup(x);</span>
+<span class="line" id="L1340"><a class="ln" href="#L1340">1340</a>        sdsrange(y,1,-1);</span>
+<span class="line" id="L1341"><a class="ln" href="#L1341">1341</a>        test_cond(&quot;sdsrange(...,1,-1)&quot;,</span>
+<span class="line" id="L1342"><a class="ln" href="#L1342">1342</a>            sdslen(y) == 3 &amp;&amp; memcmp(y,&quot;iao\0&quot;,4) == 0);</span>
+<span class="line" id="L1343"><a class="ln" href="#L1343">1343</a></span>
+<span class="line" id="L1344"><a class="ln" href="#L1344">1344</a>        sdsfree(y);</span>
+<span class="line" id="L1345"><a class="ln" href="#L1345">1345</a>        y = sdsdup(x);</span>
+<span class="line" id="L1346"><a class="ln" href="#L1346">1346</a>        sdsrange(y,-2,-1);</span>
+<span class="line" id="L1347"><a class="ln" href="#L1347">1347</a>        test_cond(&quot;sdsrange(...,-2,-1)&quot;,</span>
+<span class="line" id="L1348"><a class="ln" href="#L1348">1348</a>            sdslen(y) == 2 &amp;&amp; memcmp(y,&quot;ao\0&quot;,3) == 0);</span>
+<span class="line" id="L1349"><a class="ln" href="#L1349">1349</a></span>
+<span class="line" id="L1350"><a class="ln" href="#L1350">1350</a>        sdsfree(y);</span>
+<span class="line" id="L1351"><a class="ln" href="#L1351">1351</a>        y = sdsdup(x);</span>
+<span class="line" id="L1352"><a class="ln" href="#L1352">1352</a>        sdsrange(y,2,1);</span>
+<span class="line" id="L1353"><a class="ln" href="#L1353">1353</a>        test_cond(&quot;sdsrange(...,2,1)&quot;,</span>
+<span class="line" id="L1354"><a class="ln" href="#L1354">1354</a>            sdslen(y) == 0 &amp;&amp; memcmp(y,&quot;\0&quot;,1) == 0);</span>
+<span class="line" id="L1355"><a class="ln" href="#L1355">1355</a></span>
+<span class="line" id="L1356"><a class="ln" href="#L1356">1356</a>        sdsfree(y);</span>
+<span class="line" id="L1357"><a class="ln" href="#L1357">1357</a>        y = sdsdup(x);</span>
+<span class="line" id="L1358"><a class="ln" href="#L1358">1358</a>        sdsrange(y,1,100);</span>
+<span class="line" id="L1359"><a class="ln" href="#L1359">1359</a>        test_cond(&quot;sdsrange(...,1,100)&quot;,</span>
+<span class="line" id="L1360"><a class="ln" href="#L1360">1360</a>            sdslen(y) == 3 &amp;&amp; memcmp(y,&quot;iao\0&quot;,4) == 0);</span>
+<span class="line" id="L1361"><a class="ln" href="#L1361">1361</a></span>
+<span class="line" id="L1362"><a class="ln" href="#L1362">1362</a>        sdsfree(y);</span>
+<span class="line" id="L1363"><a class="ln" href="#L1363">1363</a>        y = sdsdup(x);</span>
+<span class="line" id="L1364"><a class="ln" href="#L1364">1364</a>        sdsrange(y,100,100);</span>
+<span class="line" id="L1365"><a class="ln" href="#L1365">1365</a>        test_cond(&quot;sdsrange(...,100,100)&quot;,</span>
+<span class="line" id="L1366"><a class="ln" href="#L1366">1366</a>            sdslen(y) == 0 &amp;&amp; memcmp(y,&quot;\0&quot;,1) == 0);</span>
+<span class="line" id="L1367"><a class="ln" href="#L1367">1367</a></span>
+<span class="line" id="L1368"><a class="ln" href="#L1368">1368</a>        sdsfree(y);</span>
+<span class="line" id="L1369"><a class="ln" href="#L1369">1369</a>        y = sdsdup(x);</span>
+<span class="line" id="L1370"><a class="ln" href="#L1370">1370</a>        sdsrange(y,4,6);</span>
+<span class="line" id="L1371"><a class="ln" href="#L1371">1371</a>        test_cond(&quot;sdsrange(...,4,6)&quot;,</span>
+<span class="line" id="L1372"><a class="ln" href="#L1372">1372</a>            sdslen(y) == 0 &amp;&amp; memcmp(y,&quot;\0&quot;,1) == 0);</span>
+<span class="line" id="L1373"><a class="ln" href="#L1373">1373</a></span>
+<span class="line" id="L1374"><a class="ln" href="#L1374">1374</a>        sdsfree(y);</span>
+<span class="line" id="L1375"><a class="ln" href="#L1375">1375</a>        y = sdsdup(x);</span>
+<span class="line" id="L1376"><a class="ln" href="#L1376">1376</a>        sdsrange(y,3,6);</span>
+<span class="line" id="L1377"><a class="ln" href="#L1377">1377</a>        test_cond(&quot;sdsrange(...,3,6)&quot;,</span>
+<span class="line" id="L1378"><a class="ln" href="#L1378">1378</a>            sdslen(y) == 1 &amp;&amp; memcmp(y,&quot;o\0&quot;,2) == 0);</span>
+<span class="line" id="L1379"><a class="ln" href="#L1379">1379</a></span>
+<span class="line" id="L1380"><a class="ln" href="#L1380">1380</a>        sdsfree(y);</span>
+<span class="line" id="L1381"><a class="ln" href="#L1381">1381</a>        sdsfree(x);</span>
+<span class="line" id="L1382"><a class="ln" href="#L1382">1382</a>        x = sdsnew(&quot;foo&quot;);</span>
+<span class="line" id="L1383"><a class="ln" href="#L1383">1383</a>        y = sdsnew(&quot;foa&quot;);</span>
+<span class="line" id="L1384"><a class="ln" href="#L1384">1384</a>        test_cond(&quot;sdscmp(foo,foa)&quot;, sdscmp(x,y) &gt; 0);</span>
+<span class="line" id="L1385"><a class="ln" href="#L1385">1385</a></span>
+<span class="line" id="L1386"><a class="ln" href="#L1386">1386</a>        sdsfree(y);</span>
+<span class="line" id="L1387"><a class="ln" href="#L1387">1387</a>        sdsfree(x);</span>
+<span class="line" id="L1388"><a class="ln" href="#L1388">1388</a>        x = sdsnew(&quot;bar&quot;);</span>
+<span class="line" id="L1389"><a class="ln" href="#L1389">1389</a>        y = sdsnew(&quot;bar&quot;);</span>
+<span class="line" id="L1390"><a class="ln" href="#L1390">1390</a>        test_cond(&quot;sdscmp(bar,bar)&quot;, sdscmp(x,y) == 0);</span>
+<span class="line" id="L1391"><a class="ln" href="#L1391">1391</a></span>
+<span class="line" id="L1392"><a class="ln" href="#L1392">1392</a>        sdsfree(y);</span>
+<span class="line" id="L1393"><a class="ln" href="#L1393">1393</a>        sdsfree(x);</span>
+<span class="line" id="L1394"><a class="ln" href="#L1394">1394</a>        x = sdsnew(&quot;aar&quot;);</span>
+<span class="line" id="L1395"><a class="ln" href="#L1395">1395</a>        y = sdsnew(&quot;bar&quot;);</span>
+<span class="line" id="L1396"><a class="ln" href="#L1396">1396</a>        test_cond(&quot;sdscmp(bar,bar)&quot;, sdscmp(x,y) &lt; 0);</span>
+<span class="line" id="L1397"><a class="ln" href="#L1397">1397</a></span>
+<span class="line" id="L1398"><a class="ln" href="#L1398">1398</a>        sdsfree(y);</span>
+<span class="line" id="L1399"><a class="ln" href="#L1399">1399</a>        sdsfree(x);</span>
+<span class="line" id="L1400"><a class="ln" href="#L1400">1400</a>        x = sdsnewlen(&quot;\a\n\0foo\r&quot;,7);</span>
+<span class="line" id="L1401"><a class="ln" href="#L1401">1401</a>        y = sdscatrepr(sdsempty(),x,sdslen(x));</span>
+<span class="line" id="L1402"><a class="ln" href="#L1402">1402</a>        test_cond(&quot;sdscatrepr(...data...)&quot;,</span>
+<span class="line" id="L1403"><a class="ln" href="#L1403">1403</a>            memcmp(y,&quot;\&quot;\\a\\n\\x00foo\\r\&quot;&quot;,15) == 0);</span>
+<span class="line" id="L1404"><a class="ln" href="#L1404">1404</a></span>
+<span class="line" id="L1405"><a class="ln" href="#L1405">1405</a>        {</span>
+<span class="line" id="L1406"><a class="ln" href="#L1406">1406</a>            unsigned int oldfree;</span>
+<span class="line" id="L1407"><a class="ln" href="#L1407">1407</a>            char *p;</span>
+<span class="line" id="L1408"><a class="ln" href="#L1408">1408</a>            int i;</span>
+<span class="line" id="L1409"><a class="ln" href="#L1409">1409</a>            size_t step = 10, j;</span>
+<span class="line" id="L1410"><a class="ln" href="#L1410">1410</a></span>
+<span class="line" id="L1411"><a class="ln" href="#L1411">1411</a>            sdsfree(x);</span>
+<span class="line" id="L1412"><a class="ln" href="#L1412">1412</a>            sdsfree(y);</span>
+<span class="line" id="L1413"><a class="ln" href="#L1413">1413</a>            x = sdsnew(&quot;0&quot;);</span>
+<span class="line" id="L1414"><a class="ln" href="#L1414">1414</a>            test_cond(&quot;sdsnew() free/len buffers&quot;, sdslen(x) == 1 &amp;&amp; sdsavail(x) == 0);</span>
+<span class="line" id="L1415"><a class="ln" href="#L1415">1415</a></span>
+<span class="line" id="L1416"><a class="ln" href="#L1416">1416</a>            /* Run the test a few times in order to hit the first two</span>
+<span class="line" id="L1417"><a class="ln" href="#L1417">1417</a>             * SDS header types. */</span>
+<span class="line" id="L1418"><a class="ln" href="#L1418">1418</a>            for (i = 0; i &lt; 10; i++) {</span>
+<span class="line" id="L1419"><a class="ln" href="#L1419">1419</a>                size_t oldlen = sdslen(x);</span>
+<span class="line" id="L1420"><a class="ln" href="#L1420">1420</a>                x = sdsMakeRoomFor(x,step);</span>
+<span class="line" id="L1421"><a class="ln" href="#L1421">1421</a>                int type = x[-1]&amp;SDS_TYPE_MASK;</span>
+<span class="line" id="L1422"><a class="ln" href="#L1422">1422</a></span>
+<span class="line" id="L1423"><a class="ln" href="#L1423">1423</a>                test_cond(&quot;sdsMakeRoomFor() len&quot;, sdslen(x) == oldlen);</span>
+<span class="line" id="L1424"><a class="ln" href="#L1424">1424</a>                if (type != SDS_TYPE_5) {</span>
+<span class="line" id="L1425"><a class="ln" href="#L1425">1425</a>                    test_cond(&quot;sdsMakeRoomFor() free&quot;, sdsavail(x) &gt;= step);</span>
+<span class="line" id="L1426"><a class="ln" href="#L1426">1426</a>                    oldfree = sdsavail(x);</span>
+<span class="line" id="L1427"><a class="ln" href="#L1427">1427</a>                    UNUSED(oldfree);</span>
+<span class="line" id="L1428"><a class="ln" href="#L1428">1428</a>                }</span>
+<span class="line" id="L1429"><a class="ln" href="#L1429">1429</a>                p = x+oldlen;</span>
+<span class="line" id="L1430"><a class="ln" href="#L1430">1430</a>                for (j = 0; j &lt; step; j++) {</span>
+<span class="line" id="L1431"><a class="ln" href="#L1431">1431</a>                    p[j] = &#x27;A&#x27;+j;</span>
+<span class="line" id="L1432"><a class="ln" href="#L1432">1432</a>                }</span>
+<span class="line" id="L1433"><a class="ln" href="#L1433">1433</a>                sdsIncrLen(x,step);</span>
+<span class="line" id="L1434"><a class="ln" href="#L1434">1434</a>            }</span>
+<span class="line" id="L1435"><a class="ln" href="#L1435">1435</a>            test_cond(&quot;sdsMakeRoomFor() content&quot;,</span>
+<span class="line" id="L1436"><a class="ln" href="#L1436">1436</a>                memcmp(&quot;0ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ&quot;,x,101) == 0);</span>
+<span class="line" id="L1437"><a class="ln" href="#L1437">1437</a>            test_cond(&quot;sdsMakeRoomFor() final length&quot;,sdslen(x)==101);</span>
+<span class="line" id="L1438"><a class="ln" href="#L1438">1438</a></span>
+<span class="line" id="L1439"><a class="ln" href="#L1439">1439</a>            sdsfree(x);</span>
+<span class="line" id="L1440"><a class="ln" href="#L1440">1440</a>        }</span>
+<span class="line" id="L1441"><a class="ln" href="#L1441">1441</a></span>
+<span class="line" id="L1442"><a class="ln" href="#L1442">1442</a>        /* Simple template */</span>
+<span class="line" id="L1443"><a class="ln" href="#L1443">1443</a>        x = sdstemplate(&quot;v1={variable1} v2={variable2}&quot;, sdsTestTemplateCallback, NULL);</span>
+<span class="line" id="L1444"><a class="ln" href="#L1444">1444</a>        test_cond(&quot;sdstemplate() normal flow&quot;,</span>
+<span class="line" id="L1445"><a class="ln" href="#L1445">1445</a>                  memcmp(x,&quot;v1=value1 v2=value2&quot;,19) == 0);</span>
+<span class="line" id="L1446"><a class="ln" href="#L1446">1446</a>        sdsfree(x);</span>
+<span class="line" id="L1447"><a class="ln" href="#L1447">1447</a></span>
+<span class="line" id="L1448"><a class="ln" href="#L1448">1448</a>        /* Template with callback error */</span>
+<span class="line" id="L1449"><a class="ln" href="#L1449">1449</a>        x = sdstemplate(&quot;v1={variable1} v3={doesnotexist}&quot;, sdsTestTemplateCallback, NULL);</span>
+<span class="line" id="L1450"><a class="ln" href="#L1450">1450</a>        test_cond(&quot;sdstemplate() with callback error&quot;, x == NULL);</span>
+<span class="line" id="L1451"><a class="ln" href="#L1451">1451</a></span>
+<span class="line" id="L1452"><a class="ln" href="#L1452">1452</a>        /* Template with empty var name */</span>
+<span class="line" id="L1453"><a class="ln" href="#L1453">1453</a>        x = sdstemplate(&quot;v1={&quot;, sdsTestTemplateCallback, NULL);</span>
+<span class="line" id="L1454"><a class="ln" href="#L1454">1454</a>        test_cond(&quot;sdstemplate() with empty var name&quot;, x == NULL);</span>
+<span class="line" id="L1455"><a class="ln" href="#L1455">1455</a></span>
+<span class="line" id="L1456"><a class="ln" href="#L1456">1456</a>        /* Template with truncated var name */</span>
+<span class="line" id="L1457"><a class="ln" href="#L1457">1457</a>        x = sdstemplate(&quot;v1={start&quot;, sdsTestTemplateCallback, NULL);</span>
+<span class="line" id="L1458"><a class="ln" href="#L1458">1458</a>        test_cond(&quot;sdstemplate() with truncated var name&quot;, x == NULL);</span>
+<span class="line" id="L1459"><a class="ln" href="#L1459">1459</a></span>
+<span class="line" id="L1460"><a class="ln" href="#L1460">1460</a>        /* Template with quoting */</span>
+<span class="line" id="L1461"><a class="ln" href="#L1461">1461</a>        x = sdstemplate(&quot;v1={{{variable1}} {{} v2={variable2}&quot;, sdsTestTemplateCallback, NULL);</span>
+<span class="line" id="L1462"><a class="ln" href="#L1462">1462</a>        test_cond(&quot;sdstemplate() with quoting&quot;,</span>
+<span class="line" id="L1463"><a class="ln" href="#L1463">1463</a>                  memcmp(x,&quot;v1={value1} {} v2=value2&quot;,24) == 0);</span>
+<span class="line" id="L1464"><a class="ln" href="#L1464">1464</a>        sdsfree(x);</span>
+<span class="line" id="L1465"><a class="ln" href="#L1465">1465</a></span>
+<span class="line" id="L1466"><a class="ln" href="#L1466">1466</a>        /* Test sdsresize - extend */</span>
+<span class="line" id="L1467"><a class="ln" href="#L1467">1467</a>        x = sdsnew(&quot;1234567890123456789012345678901234567890&quot;);</span>
+<span class="line" id="L1468"><a class="ln" href="#L1468">1468</a>        x = sdsResize(x, 200, 1);</span>
+<span class="line" id="L1469"><a class="ln" href="#L1469">1469</a>        test_cond(&quot;sdsrezie() expand len&quot;, sdslen(x) == 40);</span>
+<span class="line" id="L1470"><a class="ln" href="#L1470">1470</a>        test_cond(&quot;sdsrezie() expand strlen&quot;, strlen(x) == 40);</span>
+<span class="line" id="L1471"><a class="ln" href="#L1471">1471</a>        test_cond(&quot;sdsrezie() expand alloc&quot;, sdsalloc(x) == 200);</span>
+<span class="line" id="L1472"><a class="ln" href="#L1472">1472</a>        /* Test sdsresize - trim free space */</span>
+<span class="line" id="L1473"><a class="ln" href="#L1473">1473</a>        x = sdsResize(x, 80, 1);</span>
+<span class="line" id="L1474"><a class="ln" href="#L1474">1474</a>        test_cond(&quot;sdsrezie() shrink len&quot;, sdslen(x) == 40);</span>
+<span class="line" id="L1475"><a class="ln" href="#L1475">1475</a>        test_cond(&quot;sdsrezie() shrink strlen&quot;, strlen(x) == 40);</span>
+<span class="line" id="L1476"><a class="ln" href="#L1476">1476</a>        test_cond(&quot;sdsrezie() shrink alloc&quot;, sdsalloc(x) == 80);</span>
+<span class="line" id="L1477"><a class="ln" href="#L1477">1477</a>        /* Test sdsresize - crop used space */</span>
+<span class="line" id="L1478"><a class="ln" href="#L1478">1478</a>        x = sdsResize(x, 30, 1);</span>
+<span class="line" id="L1479"><a class="ln" href="#L1479">1479</a>        test_cond(&quot;sdsrezie() crop len&quot;, sdslen(x) == 30);</span>
+<span class="line" id="L1480"><a class="ln" href="#L1480">1480</a>        test_cond(&quot;sdsrezie() crop strlen&quot;, strlen(x) == 30);</span>
+<span class="line" id="L1481"><a class="ln" href="#L1481">1481</a>        test_cond(&quot;sdsrezie() crop alloc&quot;, sdsalloc(x) == 30);</span>
+<span class="line" id="L1482"><a class="ln" href="#L1482">1482</a>        /* Test sdsresize - extend to different class */</span>
+<span class="line" id="L1483"><a class="ln" href="#L1483">1483</a>        x = sdsResize(x, 400, 1);</span>
+<span class="line" id="L1484"><a class="ln" href="#L1484">1484</a>        test_cond(&quot;sdsrezie() expand len&quot;, sdslen(x) == 30);</span>
+<span class="line" id="L1485"><a class="ln" href="#L1485">1485</a>        test_cond(&quot;sdsrezie() expand strlen&quot;, strlen(x) == 30);</span>
+<span class="line" id="L1486"><a class="ln" href="#L1486">1486</a>        test_cond(&quot;sdsrezie() expand alloc&quot;, sdsalloc(x) == 400);</span>
+<span class="line" id="L1487"><a class="ln" href="#L1487">1487</a>        /* Test sdsresize - shrink to different class */</span>
+<span class="line" id="L1488"><a class="ln" href="#L1488">1488</a>        x = sdsResize(x, 4, 1);</span>
+<span class="line" id="L1489"><a class="ln" href="#L1489">1489</a>        test_cond(&quot;sdsrezie() crop len&quot;, sdslen(x) == 4);</span>
+<span class="line" id="L1490"><a class="ln" href="#L1490">1490</a>        test_cond(&quot;sdsrezie() crop strlen&quot;, strlen(x) == 4);</span>
+<span class="line" id="L1491"><a class="ln" href="#L1491">1491</a>        test_cond(&quot;sdsrezie() crop alloc&quot;, sdsalloc(x) == 4);</span>
+<span class="line" id="L1492"><a class="ln" href="#L1492">1492</a>        sdsfree(x);</span>
+<span class="line" id="L1493"><a class="ln" href="#L1493">1493</a>    }</span>
+<span class="line" id="L1494"><a class="ln" href="#L1494">1494</a>    return 0;</span>
+<span class="line" id="L1495"><a class="ln" href="#L1495">1495</a>}</span>
+<span class="line" id="L1496"><a class="ln" href="#L1496">1496</a>#endif</span></pre></html>

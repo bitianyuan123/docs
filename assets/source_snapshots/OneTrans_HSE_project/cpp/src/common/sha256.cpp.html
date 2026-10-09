@@ -1,0 +1,102 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/common/sha256.cpp</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/common/sha256.cpp</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>56e73adefbc7a3ef046b87b6bdc97904cbc625cb7e1d17581ae420327d3339a1</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>#include &quot;common/sha256.h&quot;</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>#include &lt;cstring&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>namespace onetrans {</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>namespace {</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>constexpr uint32_t kK[64] = {</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>    0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>    0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>    0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>    0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>    0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    0xc67178f2};</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>inline uint32_t rotr(uint32_t x, uint32_t n) { return (x &gt;&gt; n) | (x &lt;&lt; (32 - n)); }</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>}  // namespace</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a></span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>std::vector&lt;uint8_t&gt; sha256(const void* data, size_t len) {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>                     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    const auto* bytes = static_cast&lt;const uint8_t*&gt;(data);</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>    // padding：0x80 + 0..63 个 0 + 8 字节大端 bit 长度</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>    std::vector&lt;uint8_t&gt; buf(bytes, bytes + len);</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>    size_t total = len + 1 + 8;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    size_t padded = ((total + 63) / 64) * 64;</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    buf.resize(padded, 0);</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    buf[len] = 0x80;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    uint64_t bits = static_cast&lt;uint64_t&gt;(len) * 8;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    for (int i = 0; i &lt; 8; ++i) buf[padded - 1 - i] = static_cast&lt;uint8_t&gt;((bits &gt;&gt; (8 * i)) &amp; 0xFF);</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a></span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>    uint32_t w[64];</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    for (size_t off = 0; off &lt; padded; off += 64) {</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>        for (int i = 0; i &lt; 16; ++i) {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>            w[i] = (static_cast&lt;uint32_t&gt;(buf[off + 4 * i]) &lt;&lt; 24) |</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>                   (static_cast&lt;uint32_t&gt;(buf[off + 4 * i + 1]) &lt;&lt; 16) |</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>                   (static_cast&lt;uint32_t&gt;(buf[off + 4 * i + 2]) &lt;&lt; 8) |</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>                   static_cast&lt;uint32_t&gt;(buf[off + 4 * i + 3]);</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>        }</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>        for (int i = 16; i &lt; 64; ++i) {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>            uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] &gt;&gt; 3);</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>            uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] &gt;&gt; 10);</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>            w[i] = w[i - 16] + s0 + w[i - 7] + s1;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>        }</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>        uint32_t a = h[0], b = h[1], c = h[2], d = h[3];</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>        uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>        for (int i = 0; i &lt; 64; ++i) {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>            uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>            uint32_t ch = (e &amp; f) ^ (~e &amp; g);</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>            uint32_t t1 = hh + s1 + ch + kK[i] + w[i];</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>            uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>            uint32_t maj = (a &amp; b) ^ (a &amp; c) ^ (b &amp; c);</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>            uint32_t t2 = s0 + maj;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>            hh = g; g = f; f = e; e = d + t1;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>            d = c; c = b; b = a; a = t1 + t2;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>        }</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>        h[0] += a; h[1] += b; h[2] += c; h[3] += d;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    }</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    std::vector&lt;uint8_t&gt; out(32);</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    for (int i = 0; i &lt; 8; ++i) {</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>        out[4 * i] = static_cast&lt;uint8_t&gt;(h[i] &gt;&gt; 24);</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        out[4 * i + 1] = static_cast&lt;uint8_t&gt;(h[i] &gt;&gt; 16);</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        out[4 * i + 2] = static_cast&lt;uint8_t&gt;(h[i] &gt;&gt; 8);</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>        out[4 * i + 3] = static_cast&lt;uint8_t&gt;(h[i]);</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    }</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    return out;</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>}</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a></span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>std::vector&lt;uint8_t&gt; sha256(const std::string&amp; data) {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    return sha256(data.data(), data.size());</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>std::string sha256_hex(const void* data, size_t len) {</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    auto digest = sha256(data, len);</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    static const char* hex = &quot;0123456789abcdef&quot;;</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    std::string out;</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    out.reserve(digest.size() * 2);</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    for (uint8_t b : digest) {</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>        out += hex[b &gt;&gt; 4];</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>        out += hex[b &amp; 0xF];</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>    }</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    return out;</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>}</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>std::string sha256_hex(const std::string&amp; data) { return sha256_hex(data.data(), data.size()); }</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a></span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>uint64_t stable_hash64(const std::string&amp; key) {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    auto digest = sha256(key);</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    uint64_t v = 0;</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    for (int i = 0; i &lt; 8; ++i) v = (v &lt;&lt; 8) | digest[static_cast&lt;size_t&gt;(i)];</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    return v;</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>}</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>}  // namespace onetrans</span></pre></html>

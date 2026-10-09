@@ -1,0 +1,51 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec4tigerllm_8506/configs/pairec_config.onetrans_rank.json</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec4tigerllm_8506/configs/pairec_config.onetrans_rank.json</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。</p><p>来源版本：<code>530f77327f0d7f7f15f54b1ddbfe422b58e94a88</code><br>原文件 SHA256：<code>0c79c16eeddd9eedc6e7ee57e2cf393c0a1f7d32428403eecab92ae924aa9b1e</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>{</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>  &quot;RunMode&quot;: &quot;daily&quot;,</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>  &quot;ListenConf&quot;: {</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>    &quot;HttpAddr&quot;: &quot;0.0.0.0&quot;,</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>    &quot;HttpPort&quot;: 18080</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>  },</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>  &quot;SceneConfs&quot;: {</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>    &quot;home_feed&quot;: {</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>      &quot;default&quot;: {</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>        &quot;RecallNames&quot;: [&quot;generative_recall&quot;, &quot;onetrans_s_stage&quot;]</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>      }</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>    }</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>  },</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>  &quot;SortNames&quot;: {</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>    &quot;home_feed&quot;: [&quot;onetrans_rank_sort&quot;]</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>  },</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>  &quot;RecallConfs&quot;: [</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    {</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>      &quot;Name&quot;: &quot;generative_recall&quot;,</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>      &quot;RecallType&quot;: &quot;GenerativeRecall&quot;,</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>      &quot;RecallCount&quot;: 50,</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>      &quot;CacheTime&quot;: 300,</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>      &quot;CachePrefix&quot;: &quot;gen_recall_&quot;,</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>      &quot;RecallAlgo&quot;: &quot;{\&quot;server_url\&quot;:\&quot;http://localhost:18000\&quot;,\&quot;timeout_ms\&quot;:3000,\&quot;max_retries\&quot;:1,\&quot;topk\&quot;:10,\&quot;temperature\&quot;:1.0,\&quot;beam_width\&quot;:1,\&quot;history_from\&quot;:\&quot;user_feature\&quot;,\&quot;history_feature_name\&quot;:\&quot;click_history\&quot;,\&quot;history_delimiter\&quot;:\&quot;,\&quot;,\&quot;history_max_length\&quot;:20}&quot;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    },</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    {</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>      &quot;Name&quot;: &quot;onetrans_s_stage&quot;,</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>      &quot;RecallType&quot;: &quot;OneTransSStage&quot;,</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>      &quot;RecallCount&quot;: 0,</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>      &quot;CacheTime&quot;: 0,</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>      &quot;RecallAlgo&quot;: &quot;{\&quot;onetrans_url\&quot;:\&quot;http://localhost:8080\&quot;,\&quot;onetrans_timeout_ms\&quot;:2000,\&quot;inject_sync\&quot;:false,\&quot;queue_size\&quot;:1024,\&quot;worker_num\&quot;:4,\&quot;feature_source\&quot;:\&quot;offline\&quot;,\&quot;user_features_path\&quot;:\&quot;../data/user_features.json\&quot;}&quot;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    }</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>  ],</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>  &quot;SortConfs&quot;: [</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    {</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>      &quot;Name&quot;: &quot;boost_score_sort&quot;,</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>      &quot;SortType&quot;: &quot;BoostScoreSort&quot;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>    }</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>  ],</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>  &quot;UserDefineConfs&quot;: {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>    &quot;OneTransRankSorts&quot;: [</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>      {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>        &quot;name&quot;: &quot;onetrans_rank_sort&quot;,</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>        &quot;server_url&quot;: &quot;http://localhost:8080&quot;,</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>        &quot;timeout_ms&quot;: 100,</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>        &quot;expected_candidates&quot;: 50,</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>        &quot;required_model_role&quot;: &quot;engineering&quot;</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>      }</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    ]</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>  }</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>}</span></pre></html>

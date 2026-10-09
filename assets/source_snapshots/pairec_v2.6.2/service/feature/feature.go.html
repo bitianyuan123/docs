@@ -1,0 +1,82 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/service/feature/feature.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/service/feature/feature.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v2.6.2</code><br>原文件 SHA256：<code>35414516d717f8824a2855a2e30825ef74cd91a81488dadbf20c115d33d78df3</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package feature</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;github.com/alibaba/pairec/v2/context&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;github.com/alibaba/pairec/v2/module&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;github.com/alibaba/pairec/v2/recconf&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>)</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>// Feature is a type for load user or item feature</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>type Feature struct {</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	// featureDao use for load feature from specific dao, example:redis or hologres</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	featureDao module.FeatureDao</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	// featureTrans use for transform feature, specific operator by FeatureOp</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	featureTrans []FeatureTrans</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>}</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>func LoadWithConfig(config recconf.FeatureLoadConfig) *Feature {</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	f := &amp;Feature{</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>		featureDao:   module.NewFeatureDao(config.FeatureDaoConf),</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>		featureTrans: make([]FeatureTrans, 0),</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	}</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a></span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	for _, conf := range config.Features {</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>		source := conf.FeatureSource</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>		if conf.FeatureValue != &quot;&quot; {</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>			source = conf.FeatureValue</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>		}</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>		ft := NewFeatureTrans(conf.FeatureType, conf.FeatureName, conf.FeatureStore, source, conf.RemoveFeatureSource, conf.Normalizer, conf.Expression)</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>		f.featureTrans = append(f.featureTrans, ft)</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	}</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>	return f</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>}</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a></span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>func (f *Feature) LoadFeatures(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	f.featureDao.FeatureFetch(user, items, context)</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	for _, trans := range f.featureTrans {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>		trans.FeatureTran(user, items, context)</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	}</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>}</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>const (</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	SOURCE_USER = &quot;user&quot;</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	SOURCE_ITEM = &quot;item&quot;</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>)</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a></span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>type FeatureTrans interface {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	FeatureTran(user *module.User, items []*module.Item, context *context.RecommendContext)</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>}</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a></span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>type featureTrans struct {</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	// featureType         string</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	featureOp           FeatureOp</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	featureName         string</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>	featureSource       string</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>	removeFeatureSource bool   // delete feature source</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>	featureStore        string // user or item</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	normalizer          Normalizer</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>func NewFeatureTrans(t, name, store string, source string, remove bool, normalizer, expression string) FeatureTrans {</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	return &amp;featureTrans{</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>		// featureType: t,</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		featureOp:           NewFeatureOp(t),</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		featureName:         name,</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		featureStore:        store,</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>		featureSource:       source,</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>		removeFeatureSource: remove,</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>		normalizer:          NewNormalizer(normalizer, expression),</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	}</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>}</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a></span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>func (f *featureTrans) FeatureTran(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	if f.featureStore == SOURCE_ITEM {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>		for _, item := range items {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>			f.featureOp.ItemTransOp(f.featureName, f.featureSource, f.removeFeatureSource, f.normalizer, user, item, context)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>		}</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	} else {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>		f.featureOp.UserTransOp(f.featureName, f.featureSource, f.removeFeatureSource, f.normalizer, user, context)</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	}</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>}</span></pre></html>

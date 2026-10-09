@@ -4,14 +4,14 @@
   "real_data_reverification_requested": false,
   "ok": true,
   "checks": {
-    "documents": 19,
-    "local_links": 427,
-    "mermaid_blocks": 62,
+    "documents": 22,
+    "local_links": 572,
+    "mermaid_blocks": 68,
     "five_views_present_in_all_module_documents": true,
     "json_files": 53,
     "copied_assets_verified": 15,
     "vendor_assets_verified": 4,
-    "source_snapshot_files_verified": 78,
+    "source_snapshot_files_verified": 116,
     "stored_history_evidence": {
       "history_hash": "e00b29132a8ba7bd36e4a7a8296f5d579a139832cc58ba64047518e1b5424177",
       "compared_with_archived_request": true

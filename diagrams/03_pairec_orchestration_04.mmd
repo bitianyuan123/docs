@@ -1,25 +1,41 @@
 sequenceDiagram
-    participant P as 请求协程
-    participant B as 批次任务组：2个协调协程
-    participant A as 算法任务组：每批1个协程
-    participant M as 配置的算法实现
-    participant Q as responseCh，容量2
-    P->>P: 构造2个IAlgoData，填满requestCh
-    P-)B: 启动2个批次协调协程
-    B->>B: 各取一个批次；各自wg.Add(1)
-    B-)A: 每批启动1个算法协程
-    par 算法执行
-        A->>M: algorithm.Run(name,algoData.GetFeatures())
-        M-->>A: []AlgoResponse或error
-        A->>A: 保存结果或错误；defer wg.Done()
-    and 批次汇合
-        B->>B: wg.Wait()，等该批算法计数归零
-        Note over A,B: 最后一个Done使Wait可返回<br/>Wait返回后才提交该批
-        B-)Q: responseCh <- algoData
-    and 请求回填
-        loop 接收2批
-            P->>Q: algoData = <-responseCh
-            Q-->>P: 一个已结束的批次
-            P->>P: 按批内位置写算法分，再算Item.Score
-        end
+    participant N as Nginx
+    participant P as PaiRec请求任务
+    participant H as PaiRec历史任务
+    participant F as 特征服务
+    participant DB as Redis
+    participant R as 三路召回任务
+    participant OH as OneTrans历史进程
+    participant OD as OneTrans候选进程
+    N->>P: recommend({uid:"1",scene_id:"home_feed",size:10})
+    P->>P: 固定request_id、release_id和期限
+    P-)H: 启动用户1的历史任务
+    par 候选准备
+        P->>F: GetUserContext(user_id="1",release_id)
+        F->>DB: 读取该版本用户、历史与查询表示
+        DB-->>F: 用户记录、10项历史、向量和词项
+        F-->>P: user_context及版本、缺失状态
+        P->>R: 三路并发，使用user_context与场景预算
+        R->>F: 生成分支：10项历史ID查询SID
+        F->>DB: 批读物品SID
+        DB-->>F: 同序SID记录
+        F-->>R: results中的semantic_id
+        Note over R: 向量/稀疏并行检索；生成推理后另向特征服务反查ID
+        R-->>P: 向量[1201,9001,3,4]；稀疏[4,9002,9003]；生成[4,1201,9002]
+        P->>P: 合并去重去已看 → [4,1201,9002,9001,9003]
+        P->>F: BatchGetItemFeatures(上述5个ID,release_id)
+        F->>DB: 批读5项业务属性
+        DB-->>F: 4项记录；9003缺失
+        F-->>P: 按输入位置返回FOUND/NOT_FOUND
+        P->>P: 剔除9003 → [4,1201,9002,9001]
+    and 历史计算
+        H->>H: Provider读取用户1历史；构造ingest_request
+        H->>OH: POST /ingest，user_id="1"，10项整数ID及等长timestamps
+        OH-->>H: accepted=true（计算与KV写入已结束）
+        H-)P: 历史任务结果，保存供汇合检查
     end
+    P->>P: 两条路径均成功；候选ID转为rank请求的字符串
+    P->>OD: POST /rank，user_id="1"，items=[4,1201,9002,9001]
+    OD-->>P: score=[0.72,0.86,0.63,0.91]，kv_hit=true
+    P->>P: 核对ID与分数；重排 → [9001,1201,4,9002]
+    P-->>N: items共4项，returned_size=4，shortfall=true

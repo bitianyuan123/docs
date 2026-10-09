@@ -1,20 +1,12 @@
-sequenceDiagram
-    participant P as PaiRec
-    participant A as HTTP接入与响应代码
-    participant H as 历史计算线程池
-    participant PS as 参数服务
-    participant DS as DataSystem
-    P->>A: POST /ingest：用户1，10项历史及占位序号
-    A->>A: 读取与解析；检查两个数组等长
-    A-)H: nearline_pool.add：输入与回调
-    Note over A: 接入线程提交后可处理下一连接
-    H->>H: NearlineWorker.ingest：10项左补40项，构造掩码
-    H->>PS: Lookup(model_version + "/item", padded_ids)
-    PS-->>H: 50 × 128 个浮点参数
-    H->>H: encode_s → 四层K/V → 序列化与checksum
-    H->>DS: Set(user_model_key, payload)
-    DS-->>H: 写入状态
-    H->>A: 调用done回调：accepted及计时
-    Note over A,H: 响应代码在历史任务线程执行<br/>不唤醒原接入线程
-    A-->>P: 发送原HTTP响应并关闭连接
-    A-->>H: 回调结束
+flowchart TD
+    A[HTTP接入线程] -->|ingest| H[历史任务池<br/>查表、历史计算、写KV]
+    A -->|rank：TSV装配后| L[候选参数查询池]
+    L --> E[候选编码池]
+    E --> K[历史KV读取池]
+    K --> B[攒批队列与线程]
+    B -->|miss：零logits| R[原请求响应回调]
+    B -->|桥可用且接收| Y[Python桥队列与线程]
+    B -->|否则| C[C++计算池]
+    H --> R
+    Y --> R
+    C --> R

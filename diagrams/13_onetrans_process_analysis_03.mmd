@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant A as HTTP接入线程
+    participant L as lookup池线程
+    participant E as encode池线程
+    participant K as KV池线程
+    participant B as 攒批线程
+    A-)L: add(ctx)：输入与回调已独立持有
+    L->>L: lookup_ns：四表顺序等待与均值
+    L-)E: add(ctx)：emb已填入
+    Note over L: 返回池，emb仍由ctx持有
+    E->>E: encode_ns_with；清空emb
+    E-)K: add(ctx,move(ns_emb))
+    Note over E: 返回池，张量由KV闭包持有
+    K->>K: Get返回rec或miss
+    K->>K: 移回ns_emb；锁内push；解锁
+    K-)B: notify_one：共享ctx已在batch_q
+    Note over K: 返回池，不等待出批
+    B->>B: 重新取得锁，满足条件才取批

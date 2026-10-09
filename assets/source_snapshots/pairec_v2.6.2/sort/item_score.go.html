@@ -1,0 +1,42 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/sort/item_score.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/sort/item_score.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v2.6.2</code><br>原文件 SHA256：<code>8bfb71815e443007b60557134cca25926af97ee3f9bf7383b365e4238f134afa</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package sort</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;errors&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	gosort &quot;sort&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;github.com/alibaba/pairec/v2/module&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>)</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a></span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>type ItemScoreSlice []*module.Item</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a></span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>func (us ItemScoreSlice) Len() int {</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	return len(us)</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>}</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>func (us ItemScoreSlice) Less(i, j int) bool {</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	return us[i].Score &lt; us[j].Score</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>}</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>func (us ItemScoreSlice) Swap(i, j int) {</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	tmp := us[i]</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	us[i] = us[j]</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	us[j] = tmp</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>}</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a></span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>type ItemScoreSort struct {</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>}</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>func (s *ItemScoreSort) Sort(sortData *SortData) error {</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	if _, ok := sortData.Data.([]*module.Item); !ok {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>		return errors.New(&quot;sort data type error&quot;)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	}</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	return s.doSort(sortData)</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>}</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>func (s *ItemScoreSort) doSort(sortData *SortData) error {</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	items := sortData.Data.([]*module.Item)</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	gosort.Sort(ItemScoreSlice(items))</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	sortData.Data = items</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>	return nil</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>}</span></pre></html>

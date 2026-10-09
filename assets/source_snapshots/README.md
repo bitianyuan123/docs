@@ -1,8 +1,8 @@
 # 源码与前期设计证据快照
 
-此目录保存正文引用的文件，方便单独 clone 后核对依据。HTML 保留原始行号及 `#L234` 锚点，以纯文本显示内容；不是可构建的完整服务源码。
+此目录保存正文引用文件，方便单独 clone 后核对依据。HTML 保留原始行号及 `#L234` 锚点，以纯文本显示内容；不是可构建的完整服务源码。
 
-`source_sha256` 为原文件摘要，`sha256` 为 HTML 摘要。连接口令如有遮盖会注明行号。历史分析按原文保存，其结论需要以当前源码复核；官方 PaiRec v2.6.2 快照来自 Go 模块归档；Redis 7.2.5 快照来自官方固定标签，作为运行机制参考，未指定为部署版本。两者原许可一并保留。
+`source_sha256` 为原文件摘要，`sha256` 为 HTML 摘要。连接口令如有遮盖会注明行号。历史分析按原文保存，结论由新文档重新复核。官方 PaiRec v2.6.2 来自 Go 模块归档；Redis 7.2.5、Go 1.24.0、Redigo v1.9.3 来自官方固定标签；后者作为运行机制参考，不据此宣称部署版本。原许可一并保留。
 
 | 文件 | 来源提交或版本 |
 |---|---|
@@ -84,5 +84,43 @@
 | [redis_7.2.5/src/socket.c](redis_7.2.5/src/socket.c.html) | `7.2.5` |
 | [redis_7.2.5/src/t_string.c](redis_7.2.5/src/t_string.c.html) | `7.2.5` |
 | [redis_7.2.5/COPYING](redis_7.2.5/COPYING.html) | `7.2.5` |
+| [redis_7.2.5/src/server.h](redis_7.2.5/src/server.h.html) | `7.2.5` |
+| [redis_7.2.5/src/sds.c](redis_7.2.5/src/sds.c.html) | `7.2.5` |
+| [redis_7.2.5/src/object.c](redis_7.2.5/src/object.c.html) | `7.2.5` |
+| [redis_7.2.5/src/dict.c](redis_7.2.5/src/dict.c.html) | `7.2.5` |
+| [redis_7.2.5/src/dict.h](redis_7.2.5/src/dict.h.html) | `7.2.5` |
+| [redis_7.2.5/src/atomicvar.h](redis_7.2.5/src/atomicvar.h.html) | `7.2.5` |
+| [redis_7.2.5/src/aof.c](redis_7.2.5/src/aof.c.html) | `7.2.5` |
+| [redis_7.2.5/src/rdb.c](redis_7.2.5/src/rdb.c.html) | `7.2.5` |
+| [redis_7.2.5/src/childinfo.c](redis_7.2.5/src/childinfo.c.html) | `7.2.5` |
+| [pairec_v2.6.2/go.mod](pairec_v2.6.2/go.mod.html) | `v2.6.2` |
+| [pairec4tigerllm_8506/configs/pairec_config.onetrans_rank.json](pairec4tigerllm_8506/configs/pairec_config.onetrans_rank.json.html) | `530f77327f0d` |
+| [pairec_v2.6.2/web/recommend_controller.go](pairec_v2.6.2/web/recommend_controller.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/app.go](pairec_v2.6.2/app.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/pipeline/user_recommend.go](pairec_v2.6.2/service/pipeline/user_recommend.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/filter/unique_filter.go](pairec_v2.6.2/filter/unique_filter.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/general_rank/general_rank.go](pairec_v2.6.2/service/general_rank/general_rank.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/sort/sort.go](pairec_v2.6.2/sort/sort.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/sort/item_score.go](pairec_v2.6.2/sort/item_score.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/feature/user_feature_service.go](pairec_v2.6.2/service/feature/user_feature_service.go.html) | `v2.6.2` |
+| [go_go1.24.0/src/runtime/chan.go](go_go1.24.0/src/runtime/chan.go.html) | `go1.24.0` |
+| [go_go1.24.0/src/sync/waitgroup.go](go_go1.24.0/src/sync/waitgroup.go.html) | `go1.24.0` |
+| [go_go1.24.0/src/runtime/netpoll.go](go_go1.24.0/src/runtime/netpoll.go.html) | `go1.24.0` |
+| [go_go1.24.0/src/runtime/netpoll_epoll.go](go_go1.24.0/src/runtime/netpoll_epoll.go.html) | `go1.24.0` |
+| [pairec_v2.6.2/service/feature/feature.go](pairec_v2.6.2/service/feature/feature.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/module/feature_redis_dao.go](pairec_v2.6.2/module/feature_redis_dao.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/persist/redisdb/redis.go](pairec_v2.6.2/persist/redisdb/redis.go.html) | `v2.6.2` |
+| [redigo_v1.9.3/redis/pool.go](redigo_v1.9.3/redis/pool.go.html) | `v1.9.3` |
+| [go_go1.24.0/src/runtime/sema.go](go_go1.24.0/src/runtime/sema.go.html) | `go1.24.0` |
+| [pairec_v2.6.2/algorithm/eas/client.go](pairec_v2.6.2/algorithm/eas/client.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/algorithm/eas/model.go](pairec_v2.6.2/algorithm/eas/model.go.html) | `v2.6.2` |
+| [pairec_v2.6.2/service/debug/debug_service.go](pairec_v2.6.2/service/debug/debug_service.go.html) | `v2.6.2` |
+| [OneTrans_HSE_project/cpp/src/engine/frontend.h](OneTrans_HSE_project/cpp/src/engine/frontend.h.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/common/tensor.h](OneTrans_HSE_project/cpp/src/common/tensor.h.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/serving/embed_lookup.cpp](OneTrans_HSE_project/cpp/src/serving/embed_lookup.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/cpp/src/common/sha256.cpp](OneTrans_HSE_project/cpp/src/common/sha256.cpp.html) | `16aecd6f7bd1` |
+| [OneTrans_HSE_project/onetrans/serving/serialize.py](OneTrans_HSE_project/onetrans/serving/serialize.py.html) | `16aecd6f7bd1` |
+| [go_go1.24.0/LICENSE](go_go1.24.0/LICENSE.html) | `go1.24.0` |
+| [redigo_v1.9.3/LICENSE](redigo_v1.9.3/LICENSE.html) | `v1.9.3` |
 
 完整来源与校验信息见 [manifest.json](manifest.json)。

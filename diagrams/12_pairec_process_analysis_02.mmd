@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant Q as 请求协程
+    participant C as channel与Go运行时
+    participant R as 最后一路召回协程
+    Q->>C: chanrecv(ch)，缓冲为空
+    C->>C: 锁内登记接收者，gopark并解锁
+    Note over Q: 等待结果；仍保留User和已收候选
+    R->>R: 后端返回后解析、构造 []*Item
+    R->>C: chansend(ch,items)
+    C->>C: 找接收者，复制切片描述；解锁
+    C-)Q: goready，加入可运行任务
+    C-->>R: 发送完成；召回协程可结束
+    Note over Q,C: 就绪后仍可能等待运行机会<br/>不是通知后立即执行
+    C-->>Q: 被调度后，接收操作返回
+    Q->>Q: append指针，结束固定次数汇合

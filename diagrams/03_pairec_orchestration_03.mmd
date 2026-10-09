@@ -1,26 +1,12 @@
-sequenceDiagram
-    participant P as 请求协程
-    participant V as 向量召回协程
-    participant S as 稀疏召回协程
-    participant G as 生成召回协程
-    participant Q as 结果channel，容量3
-    P-)V: go GetCandidateItems(user="1",context)
-    P-)S: go GetCandidateItems(user="1",context)
-    P-)G: go GetCandidateItems(user="1",context)
-    par 向量分支
-        V->>V: 插件处理输入，得到vector_items
-        V-)Q: ch <- vector_items
-    and 稀疏分支
-        S->>S: 插件处理输入，得到sparse_items
-        S-)Q: ch <- sparse_items
-    and 生成分支
-        G->>G: 插件处理输入，得到generated_items
-        G-)Q: ch <- generated_items
-    and 请求汇合
-        loop 接收3次
-            P->>Q: items = <-ch；空时等待
-            Q-->>P: 一路候选切片
-            P->>P: append到ret
+flowchart LR
+    subgraph GatewayPod[入口Pod]
+        subgraph GatewayContainer[Nginx容器]
+            N[Nginx主进程与工作进程]
         end
     end
-    P->>P: close(ch)，进入后续Filter
+    subgraph AppPod[PaiRec Pod]
+        subgraph AppContainer[推荐应用容器]
+            P[一个PaiRec应用进程<br/>Go运行时与原生bRPC运行时<br/>内含请求协程与历史worker]
+        end
+    end
+    N <-->|HTTP| P

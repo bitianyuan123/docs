@@ -1,0 +1,108 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/algorithm/eas/client.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/algorithm/eas/client.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v2.6.2</code><br>原文件 SHA256：<code>dc4037e81a4ff3032e1a3f4bf39cf233d22ac87621bca67de7759c6b24a089cd</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package eas</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;net&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;net/http&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;time&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;github.com/alibaba/pairec/v2/algorithm/response&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>)</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>var easClient *http.Client</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>func init() {</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	tr := &amp;http.Transport{</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>		DialContext: (&amp;net.Dialer{</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>			Timeout:   100 * time.Millisecond, // 100ms</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>			KeepAlive: 5 * time.Minute,</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>		}).DialContext,</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>		MaxIdleConnsPerHost:   200,</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>		MaxIdleConns:          200,</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>		IdleConnTimeout:       90 * time.Second,</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>		TLSHandshakeTimeout:   10 * time.Second,</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>		ExpectContinueTimeout: 10 * time.Second,</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	}</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a></span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	easClient = &amp;http.Client{Transport: tr}</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>}</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>type IEasRequest interface {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	Invoke(requestData interface{}) (body interface{}, err error)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	GetResponseFunc() response.ResponseFunc</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>}</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>type EasRequest struct {</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	serviceName      string</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	auth             string</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	url              string</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	timeout          time.Duration</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	responseFunc     response.ResponseFunc</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	responseFuncName string</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>}</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>func (r *EasRequest) SetUrl(url string) {</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	r.url = url</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>}</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>func (r *EasRequest) SetServiceName(name string) {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>	r.serviceName = name</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>}</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>func (r *EasRequest) SetAuth(auth string) {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	r.auth = auth</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>}</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>func (r *EasRequest) SetTimeout(timeout int) {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	if timeout &lt;= 0 {</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>		r.timeout = 100 * time.Millisecond</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>	} else {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>		r.timeout = time.Millisecond * time.Duration(timeout)</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	}</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>func (r *EasRequest) SetResponseFunc(name string) {</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	if name == &quot;pssmartResponseFunc&quot; {</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>		r.responseFunc = pssmartResponseFunc</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	} else if name == &quot;tfResponseFunc&quot; {</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		r.responseFunc = tfResponseFunc</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>	} else if name == &quot;alinkFMResponseFunc&quot; {</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>		r.responseFunc = alinkFMResponseFunc</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>	} else if name == &quot;tfMutValResponseFunc&quot; {</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>		r.responseFunc = tfMutValResponseFunc</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	} else if name == &quot;easyrecResponseFunc&quot; {</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>		r.responseFunc = easyrecResponseFunc</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	} else if name == &quot;easyrecResponseFuncDebug&quot; {</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>		r.responseFunc = easyrecResponseFuncDebug</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	} else if name == &quot;easyrecMutValResponseFunc&quot; {</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>		r.responseFunc = easyrecMutValResponseFunc</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	} else if name == &quot;easyrecMutValResponseFuncDebug&quot; {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		r.responseFunc = easyrecMutValResponseFuncDebug</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	} else if name == &quot;easyrecMutClassificationResponseFunc&quot; {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>		r.responseFunc = easyrecMutClassificationResponseFunc</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	} else if name == &quot;easyrecMutClassificationResponseFuncDebug&quot; {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>		r.responseFunc = easyrecMutClassificationResponseFuncDebug</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	} else if name == &quot;easyrecUserEmbResponseFunc&quot; {</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>		r.responseFunc = easyrecUserEmbResponseFunc</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	} else if name == &quot;easyrecUserRealtimeEmbeddingResponseFunc&quot; {</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>		r.responseFunc = easyrecUserRealtimeEmbeddingResponseFunc</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>	} else if name == &quot;easyrecUserRealtimeEmbeddingMindResponseFunc&quot; {</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>		r.responseFunc = easyrecUserRealtimeEmbeddingMindResponseFunc</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>	} else if name == &quot;tfServingResponseFunc&quot; {</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>		r.responseFunc = tfServingResponseFunc</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	} else if name == &quot;torchrecMutValResponseFunc&quot; {</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>		r.responseFunc = torchrecMutValResponseFunc</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	} else if name == &quot;torchrecMutValResponseFuncDebug&quot; {</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>		r.responseFunc = torchrecMutValResponseFuncDebug</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>	} else if name == &quot;torchrecEmbeddingResponseFunc&quot; {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>		r.responseFunc = torchrecEmbeddingResponseFunc</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	} else if name == &quot;torchrecEmbeddingItemsResponseFunc&quot; {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		r.responseFunc = torchrecEmbeddingItemsResponseFunc</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	} else if name == &quot;torchrecEmbeddingItemsResponseFuncDebug&quot; {</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>		r.responseFunc = torchrecEmbeddingItemsResponseFuncDebug</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>	} else if name == &quot;tfUseEmbResponseFunc&quot; {</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>		r.responseFunc = tfUseEmbResponseFunc</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	}</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a></span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	r.responseFuncName = name</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>}</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a></span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>func (r *EasRequest) GetResponseFunc() response.ResponseFunc {</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>	return r.responseFunc</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>}</span></pre></html>

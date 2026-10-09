@@ -1,0 +1,84 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/engine/frontend.h</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/engine/frontend.h</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>2b6b368ad547d824b1d42e62754cb5d41d43ffa6b3d7ef1e61650205ed93010b</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// serving 前处理（YambdaEmbedder + OneTransTokenizer 的 C++ 等价实现）。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 与 cpp/tools/gen_golden.py 的 make_s_input / make_ns_input 严格同语义：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// - S 侧：截尾保留最新 max_seq_len 条 → 左 padding（有效靠尾）→ item 查表 →</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//   STokenizer（mlp×mask + type_emb + mask + pos_emb + RMSNorm）。</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>// - NS 侧：dense=[用户级 ∥ 候选级] → piecewise 分箱；uid/item 查表；</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>//   artist/album mean-bag → NSGroupWiseTokenizer（组顺序 dense/uid/item/artist/album）</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>//   → RMSNorm。</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>//</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>// 稀疏查表经 LookupFn 注入（本地直查 / PS HTTP 客户端均可），保持数据面解耦。</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#pragma once</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>#include &lt;functional&gt;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>#include &lt;string&gt;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>#include &lt;vector&gt;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>#include &quot;common/tensor.h&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>#include &quot;engine/model.h&quot;  // linear_rows / rms_norm_rows 数值原语</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>namespace onetrans {</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>struct CandidateInput {</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>    int64_t item_id = 0;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>    std::vector&lt;int64_t&gt; artist_ids;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>    std::vector&lt;int64_t&gt; album_ids;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    std::vector&lt;float&gt; dense;  // 候选级 dense（n_cand_dense 列）</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>};</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>struct ScoreInput {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>    std::string user_id;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>    int64_t uid_sparse = 0;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>    std::vector&lt;float&gt; user_dense;       // 用户级 dense（n_user_dense 列）</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    std::vector&lt;CandidateInput&gt; candidates;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>};</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>struct IngestInput {</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>    std::string user_id;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>    std::vector&lt;int64_t&gt; item_ids;     // 时间升序（最旧在前、最新在尾）</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>    std::vector&lt;int64_t&gt; timestamps;</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>};</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>// 查表函数：表名（item/user/artist/album）+ id 列表 → fp32 平铺 [N * d_model]</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>using LookupFn = std::function&lt;std::vector&lt;float&gt;(const std::string&amp;, const std::vector&lt;int64_t&gt;&amp;)&gt;;</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>// NS 侧查表预取结果（EmbedLookup Pool 产出 → Frontend Encode Pool 消费的契约，</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>// §7.4.3 阶段边界数据结构；bag 聚合属查表侧，在 lookup 阶段完成）</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>struct NsEmbeddings {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    std::vector&lt;float&gt; uid;     // [D]（单行，encode 时广播 M 份）</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    std::vector&lt;float&gt; items;   // [M * D]</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    std::vector&lt;float&gt; artists;  // [M * D]（mean-bag 已聚合）</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    std::vector&lt;float&gt; albums;   // [M * D]（mean-bag 已聚合）</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>};</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a></span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>class EmbeddingFrontend {</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>public:</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    static EmbeddingFrontend load(const ArtifactStore&amp; store);</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a></span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    // → (s_emb [1, max_seq_len, D], s_mask [1, max_seq_len] 0/1)</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    std::pair&lt;Tensor, Tensor&gt; encode_s(const std::vector&lt;int64_t&gt;&amp; item_ids,</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>                                       const LookupFn&amp; lookup) const;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    // → ns_emb [M, Ns, D]（lookup + encode 一步式：nearline/兼容路径）</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    Tensor encode_ns(const ScoreInput&amp; in, const LookupFn&amp; lookup) const;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a></span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    // 两步式（SEDA，§7.4.3）：</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    // 阶段 1（EmbedLookup Pool）：查表 + mean-bag 聚合</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    NsEmbeddings lookup_ns(const ScoreInput&amp; in, const LookupFn&amp; lookup) const;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    // 阶段 2（Frontend Encode Pool）：piecewise + 组 MLP + RMSNorm → ns_emb [M, Ns, D]</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    Tensor encode_ns_with(const ScoreInput&amp; in, const NsEmbeddings&amp; emb) const;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    const ArtifactConfig&amp; config() const { return cfg_; }</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>private:</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    ArtifactConfig cfg_;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    // tokenizer</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    Tensor s_mlp_w1, s_mlp_w2;   // [D, seq_in_dim] / [D, D]</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    Tensor s_type_emb;            // [1, D]</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    Tensor pos_emb;               // [max_seq_len, D]</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    Tensor tok_rms_g;             // [D]</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    std::vector&lt;Tensor&gt; ns_w1, ns_w2;  // 每组 [D, in] / [D, D]</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    // piecewise</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    Tensor pw_w, pw_b;            // [n_features, max_n_bins]</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>};</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>}  // namespace onetrans</span></pre></html>

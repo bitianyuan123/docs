@@ -1,0 +1,729 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>go_go1.24.0/src/runtime/netpoll.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>go_go1.24.0/src/runtime/netpoll.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>go1.24.0</code><br>原文件 SHA256：<code>5e51769ba4a9cea1b0ec54c847c847c8ebbc2cf8ef9c470a34fe7cf0d4c8b743</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Copyright 2013 The Go Authors. All rights reserved.</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>// Use of this source code is governed by a BSD-style</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// license that can be found in the LICENSE file.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//go:build unix || (js &amp;&amp; wasm) || wasip1 || windows</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>package runtime</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>import (</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;internal/runtime/atomic&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;internal/runtime/sys&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;unsafe&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>)</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a></span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>// Integrated network poller (platform-independent part).</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>// A particular implementation (epoll/kqueue/port/AIX/Windows)</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>// must define the following functions:</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>//</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>// func netpollinit()</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>//     Initialize the poller. Only called once.</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>//</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>// func netpollopen(fd uintptr, pd *pollDesc) int32</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>//     Arm edge-triggered notifications for fd. The pd argument is to pass</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>//     back to netpollready when fd is ready. Return an errno value.</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>//</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>// func netpollclose(fd uintptr) int32</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>//     Disable notifications for fd. Return an errno value.</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>//</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>// func netpoll(delta int64) (gList, int32)</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>//     Poll the network. If delta &lt; 0, block indefinitely. If delta == 0,</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>//     poll without blocking. If delta &gt; 0, block for up to delta nanoseconds.</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>//     Return a list of goroutines built by calling netpollready,</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>//     and a delta to add to netpollWaiters when all goroutines are ready.</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>//     This must never return an empty list with a non-zero delta.</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>//</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>// func netpollBreak()</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>//     Wake up the network poller, assumed to be blocked in netpoll.</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>//</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>// func netpollIsPollDescriptor(fd uintptr) bool</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>//     Reports whether fd is a file descriptor used by the poller.</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>// Error codes returned by runtime_pollReset and runtime_pollWait.</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>// These must match the values in internal/poll/fd_poll_runtime.go.</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>const (</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	pollNoError        = 0 // no error</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	pollErrClosing     = 1 // descriptor is closed</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>	pollErrTimeout     = 2 // I/O timeout</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	pollErrNotPollable = 3 // general error polling descriptor</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>)</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a></span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>// pollDesc contains 2 binary semaphores, rg and wg, to park reader and writer</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>// goroutines respectively. The semaphore can be in the following states:</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>//</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>//	pdReady - io readiness notification is pending;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>//	          a goroutine consumes the notification by changing the state to pdNil.</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>//	pdWait - a goroutine prepares to park on the semaphore, but not yet parked;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>//	         the goroutine commits to park by changing the state to G pointer,</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>//	         or, alternatively, concurrent io notification changes the state to pdReady,</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>//	         or, alternatively, concurrent timeout/close changes the state to pdNil.</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>//	G pointer - the goroutine is blocked on the semaphore;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>//	            io notification or timeout/close changes the state to pdReady or pdNil respectively</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>//	            and unparks the goroutine.</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>//	pdNil - none of the above.</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>const (</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>	pdNil   uintptr = 0</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	pdReady uintptr = 1</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>	pdWait  uintptr = 2</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>)</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>const pollBlockSize = 4 * 1024</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>// Network poller descriptor.</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>//</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>// No heap pointers.</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>type pollDesc struct {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>	_     sys.NotInHeap</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	link  *pollDesc      // in pollcache, protected by pollcache.lock</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>	fd    uintptr        // constant for pollDesc usage lifetime</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	fdseq atomic.Uintptr // protects against stale pollDesc</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	// atomicInfo holds bits from closing, rd, and wd,</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>	// which are only ever written while holding the lock,</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	// summarized for use by netpollcheckerr,</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	// which cannot acquire the lock.</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>	// After writing these fields under lock in a way that</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>	// might change the summary, code must call publishInfo</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>	// before releasing the lock.</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>	// Code that changes fields and then calls netpollunblock</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	// (while still holding the lock) must call publishInfo</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	// before calling netpollunblock, because publishInfo is what</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	// stops netpollblock from blocking anew</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>	// (by changing the result of netpollcheckerr).</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>	// atomicInfo also holds the eventErr bit,</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>	// recording whether a poll event on the fd got an error;</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	// atomicInfo is the only source of truth for that bit.</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>	atomicInfo atomic.Uint32 // atomic pollInfo</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>	// rg, wg are accessed atomically and hold g pointers.</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>	// (Using atomic.Uintptr here is similar to using guintptr elsewhere.)</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	rg atomic.Uintptr // pdReady, pdWait, G waiting for read or pdNil</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	wg atomic.Uintptr // pdReady, pdWait, G waiting for write or pdNil</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a></span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	lock    mutex // protects the following fields</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	closing bool</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>	rrun    bool      // whether rt is running</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>	wrun    bool      // whether wt is running</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>	user    uint32    // user settable cookie</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	rseq    uintptr   // protects from stale read timers</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>	rt      timer     // read deadline timer</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>	rd      int64     // read deadline (a nanotime in the future, -1 when expired)</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	wseq    uintptr   // protects from stale write timers</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>	wt      timer     // write deadline timer</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>	wd      int64     // write deadline (a nanotime in the future, -1 when expired)</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>	self    *pollDesc // storage for indirect interface. See (*pollDesc).makeArg.</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>}</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a></span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>// pollInfo is the bits needed by netpollcheckerr, stored atomically,</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>// mostly duplicating state that is manipulated under lock in pollDesc.</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>// The one exception is the pollEventErr bit, which is maintained only</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>// in the pollInfo.</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>type pollInfo uint32</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a></span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>const (</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	pollClosing = 1 &lt;&lt; iota</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>	pollEventErr</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>	pollExpiredReadDeadline</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>	pollExpiredWriteDeadline</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>	pollFDSeq // 20 bit field, low 20 bits of fdseq field</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>)</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a></span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>const (</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	pollFDSeqBits = 20                   // number of bits in pollFDSeq</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	pollFDSeqMask = 1&lt;&lt;pollFDSeqBits - 1 // mask for pollFDSeq</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>)</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a></span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>func (i pollInfo) closing() bool              { return i&amp;pollClosing != 0 }</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>func (i pollInfo) eventErr() bool             { return i&amp;pollEventErr != 0 }</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>func (i pollInfo) expiredReadDeadline() bool  { return i&amp;pollExpiredReadDeadline != 0 }</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>func (i pollInfo) expiredWriteDeadline() bool { return i&amp;pollExpiredWriteDeadline != 0 }</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a></span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>// info returns the pollInfo corresponding to pd.</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>func (pd *pollDesc) info() pollInfo {</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>	return pollInfo(pd.atomicInfo.Load())</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>}</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a></span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>// publishInfo updates pd.atomicInfo (returned by pd.info)</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>// using the other values in pd.</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>// It must be called while holding pd.lock,</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>// and it must be called after changing anything</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>// that might affect the info bits.</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>// In practice this means after changing closing</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>// or changing rd or wd from &lt; 0 to &gt;= 0.</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>func (pd *pollDesc) publishInfo() {</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>	var info uint32</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>	if pd.closing {</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>		info |= pollClosing</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>	}</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>	if pd.rd &lt; 0 {</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>		info |= pollExpiredReadDeadline</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>	}</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>	if pd.wd &lt; 0 {</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>		info |= pollExpiredWriteDeadline</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>	}</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>	info |= uint32(pd.fdseq.Load()&amp;pollFDSeqMask) &lt;&lt; pollFDSeq</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a></span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	// Set all of x except the pollEventErr bit.</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	x := pd.atomicInfo.Load()</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>	for !pd.atomicInfo.CompareAndSwap(x, (x&amp;pollEventErr)|info) {</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>		x = pd.atomicInfo.Load()</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>	}</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>}</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a></span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>// setEventErr sets the result of pd.info().eventErr() to b.</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>// We only change the error bit if seq == 0 or if seq matches pollFDSeq</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>// (issue #59545).</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>func (pd *pollDesc) setEventErr(b bool, seq uintptr) {</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>	mSeq := uint32(seq &amp; pollFDSeqMask)</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>	x := pd.atomicInfo.Load()</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>	xSeq := (x &gt;&gt; pollFDSeq) &amp; pollFDSeqMask</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>	if seq != 0 &amp;&amp; xSeq != mSeq {</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>		return</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>	}</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>	for (x&amp;pollEventErr != 0) != b &amp;&amp; !pd.atomicInfo.CompareAndSwap(x, x^pollEventErr) {</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>		x = pd.atomicInfo.Load()</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>		xSeq := (x &gt;&gt; pollFDSeq) &amp; pollFDSeqMask</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>		if seq != 0 &amp;&amp; xSeq != mSeq {</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>			return</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>		}</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>	}</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>}</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a></span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>type pollCache struct {</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>	lock  mutex</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>	first *pollDesc</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>	// PollDesc objects must be type-stable,</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>	// because we can get ready notification from epoll/kqueue</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>	// after the descriptor is closed/reused.</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	// Stale notifications are detected using seq variable,</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>	// seq is incremented when deadlines are changed or descriptor is reused.</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>}</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a></span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>var (</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>	netpollInitLock mutex</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	netpollInited   atomic.Uint32</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a></span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>	pollcache      pollCache</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>	netpollWaiters atomic.Uint32</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>)</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a></span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>// netpollWaiters is accessed in tests</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>//go:linkname netpollWaiters</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a></span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>//go:linkname poll_runtime_pollServerInit internal/poll.runtime_pollServerInit</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>func poll_runtime_pollServerInit() {</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>	netpollGenericInit()</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>}</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a></span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>func netpollGenericInit() {</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>	if netpollInited.Load() == 0 {</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>		lockInit(&amp;netpollInitLock, lockRankNetpollInit)</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>		lockInit(&amp;pollcache.lock, lockRankPollCache)</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>		lock(&amp;netpollInitLock)</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>		if netpollInited.Load() == 0 {</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>			netpollinit()</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>			netpollInited.Store(1)</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>		}</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>		unlock(&amp;netpollInitLock)</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>	}</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>}</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a></span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>func netpollinited() bool {</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>	return netpollInited.Load() != 0</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>}</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a></span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>//go:linkname poll_runtime_isPollServerDescriptor internal/poll.runtime_isPollServerDescriptor</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a></span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>// poll_runtime_isPollServerDescriptor reports whether fd is a</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>// descriptor being used by netpoll.</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>func poll_runtime_isPollServerDescriptor(fd uintptr) bool {</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>	return netpollIsPollDescriptor(fd)</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>}</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a></span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>//go:linkname poll_runtime_pollOpen internal/poll.runtime_pollOpen</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>func poll_runtime_pollOpen(fd uintptr) (*pollDesc, int) {</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>	pd := pollcache.alloc()</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>	lock(&amp;pd.lock)</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>	wg := pd.wg.Load()</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>	if wg != pdNil &amp;&amp; wg != pdReady {</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>		throw(&quot;runtime: blocked write on free polldesc&quot;)</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>	}</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>	rg := pd.rg.Load()</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>	if rg != pdNil &amp;&amp; rg != pdReady {</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>		throw(&quot;runtime: blocked read on free polldesc&quot;)</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>	}</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>	pd.fd = fd</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>	if pd.fdseq.Load() == 0 {</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>		// The value 0 is special in setEventErr, so don&#x27;t use it.</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>		pd.fdseq.Store(1)</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>	}</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>	pd.closing = false</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>	pd.setEventErr(false, 0)</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>	pd.rseq++</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>	pd.rg.Store(pdNil)</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>	pd.rd = 0</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>	pd.wseq++</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>	pd.wg.Store(pdNil)</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>	pd.wd = 0</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>	pd.self = pd</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>	pd.publishInfo()</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>	unlock(&amp;pd.lock)</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a></span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>	errno := netpollopen(fd, pd)</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>	if errno != 0 {</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>		pollcache.free(pd)</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>		return nil, int(errno)</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>	}</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>	return pd, 0</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>}</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a></span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>//go:linkname poll_runtime_pollClose internal/poll.runtime_pollClose</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>func poll_runtime_pollClose(pd *pollDesc) {</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>	if !pd.closing {</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>		throw(&quot;runtime: close polldesc w/o unblock&quot;)</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>	}</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>	wg := pd.wg.Load()</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>	if wg != pdNil &amp;&amp; wg != pdReady {</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>		throw(&quot;runtime: blocked write on closing polldesc&quot;)</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>	}</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>	rg := pd.rg.Load()</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>	if rg != pdNil &amp;&amp; rg != pdReady {</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>		throw(&quot;runtime: blocked read on closing polldesc&quot;)</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>	}</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>	netpollclose(pd.fd)</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>	pollcache.free(pd)</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>}</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a></span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>func (c *pollCache) free(pd *pollDesc) {</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>	// pd can&#x27;t be shared here, but lock anyhow because</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>	// that&#x27;s what publishInfo documents.</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>	lock(&amp;pd.lock)</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a></span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>	// Increment the fdseq field, so that any currently</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>	// running netpoll calls will not mark pd as ready.</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>	fdseq := pd.fdseq.Load()</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>	fdseq = (fdseq + 1) &amp; (1&lt;&lt;taggedPointerBits - 1)</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>	pd.fdseq.Store(fdseq)</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a></span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>	pd.publishInfo()</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a></span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>	unlock(&amp;pd.lock)</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a></span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>	lock(&amp;c.lock)</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>	pd.link = c.first</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>	c.first = pd</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>	unlock(&amp;c.lock)</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>}</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a></span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>// poll_runtime_pollReset, which is internal/poll.runtime_pollReset,</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>// prepares a descriptor for polling in mode, which is &#x27;r&#x27; or &#x27;w&#x27;.</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>// This returns an error code; the codes are defined above.</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>//</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>//go:linkname poll_runtime_pollReset internal/poll.runtime_pollReset</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>func poll_runtime_pollReset(pd *pollDesc, mode int) int {</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>	errcode := netpollcheckerr(pd, int32(mode))</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>	if errcode != pollNoError {</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>		return errcode</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>	}</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>	if mode == &#x27;r&#x27; {</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>		pd.rg.Store(pdNil)</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>	} else if mode == &#x27;w&#x27; {</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>		pd.wg.Store(pdNil)</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>	}</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>	return pollNoError</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>}</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a></span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>// poll_runtime_pollWait, which is internal/poll.runtime_pollWait,</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>// waits for a descriptor to be ready for reading or writing,</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>// according to mode, which is &#x27;r&#x27; or &#x27;w&#x27;.</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>// This returns an error code; the codes are defined above.</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>//</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>//go:linkname poll_runtime_pollWait internal/poll.runtime_pollWait</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>func poll_runtime_pollWait(pd *pollDesc, mode int) int {</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>	errcode := netpollcheckerr(pd, int32(mode))</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>	if errcode != pollNoError {</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>		return errcode</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>	}</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>	// As for now only Solaris, illumos, AIX and wasip1 use level-triggered IO.</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>	if GOOS == &quot;solaris&quot; || GOOS == &quot;illumos&quot; || GOOS == &quot;aix&quot; || GOOS == &quot;wasip1&quot; {</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>		netpollarm(pd, mode)</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>	}</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>	for !netpollblock(pd, int32(mode), false) {</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a>		errcode = netpollcheckerr(pd, int32(mode))</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>		if errcode != pollNoError {</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>			return errcode</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>		}</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>		// Can happen if timeout has fired and unblocked us,</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>		// but before we had a chance to run, timeout has been reset.</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>		// Pretend it has not happened and retry.</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>	}</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>	return pollNoError</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>}</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a></span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>//go:linkname poll_runtime_pollWaitCanceled internal/poll.runtime_pollWaitCanceled</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>func poll_runtime_pollWaitCanceled(pd *pollDesc, mode int) {</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>	// This function is used only on windows after a failed attempt to cancel</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>	// a pending async IO operation. Wait for ioready, ignore closing or timeouts.</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>	for !netpollblock(pd, int32(mode), true) {</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>	}</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>}</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a></span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>//go:linkname poll_runtime_pollSetDeadline internal/poll.runtime_pollSetDeadline</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>func poll_runtime_pollSetDeadline(pd *pollDesc, d int64, mode int) {</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>	lock(&amp;pd.lock)</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>	if pd.closing {</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>		unlock(&amp;pd.lock)</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>		return</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>	}</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>	rd0, wd0 := pd.rd, pd.wd</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>	combo0 := rd0 &gt; 0 &amp;&amp; rd0 == wd0</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a>	if d &gt; 0 {</span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>		d += nanotime()</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>		if d &lt;= 0 {</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>			// If the user has a deadline in the future, but the delay calculation</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>			// overflows, then set the deadline to the maximum possible value.</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>			d = 1&lt;&lt;63 - 1</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>		}</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>	}</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>	if mode == &#x27;r&#x27; || mode == &#x27;r&#x27;+&#x27;w&#x27; {</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>		pd.rd = d</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>	}</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>	if mode == &#x27;w&#x27; || mode == &#x27;r&#x27;+&#x27;w&#x27; {</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>		pd.wd = d</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>	}</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a>	pd.publishInfo()</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>	combo := pd.rd &gt; 0 &amp;&amp; pd.rd == pd.wd</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>	rtf := netpollReadDeadline</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>	if combo {</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>		rtf = netpollDeadline</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>	}</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a>	if !pd.rrun {</span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>		if pd.rd &gt; 0 {</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>			// Copy current seq into the timer arg.</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a>			// Timer func will check the seq against current descriptor seq,</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>			// if they differ the descriptor was reused or timers were reset.</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a>			pd.rt.modify(pd.rd, 0, rtf, pd.makeArg(), pd.rseq)</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>			pd.rrun = true</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>		}</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>	} else if pd.rd != rd0 || combo != combo0 {</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>		pd.rseq++ // invalidate current timers</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>		if pd.rd &gt; 0 {</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>			pd.rt.modify(pd.rd, 0, rtf, pd.makeArg(), pd.rseq)</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>		} else {</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>			pd.rt.stop()</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>			pd.rrun = false</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>		}</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>	}</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>	if !pd.wrun {</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>		if pd.wd &gt; 0 &amp;&amp; !combo {</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>			pd.wt.modify(pd.wd, 0, netpollWriteDeadline, pd.makeArg(), pd.wseq)</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>			pd.wrun = true</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>		}</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>	} else if pd.wd != wd0 || combo != combo0 {</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>		pd.wseq++ // invalidate current timers</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>		if pd.wd &gt; 0 &amp;&amp; !combo {</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>			pd.wt.modify(pd.wd, 0, netpollWriteDeadline, pd.makeArg(), pd.wseq)</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>		} else {</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>			pd.wt.stop()</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a>			pd.wrun = false</span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>		}</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a>	}</span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>	// If we set the new deadline in the past, unblock currently pending IO if any.</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>	// Note that pd.publishInfo has already been called, above, immediately after modifying rd and wd.</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>	delta := int32(0)</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>	var rg, wg *g</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>	if pd.rd &lt; 0 {</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>		rg = netpollunblock(pd, &#x27;r&#x27;, false, &amp;delta)</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>	}</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>	if pd.wd &lt; 0 {</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>		wg = netpollunblock(pd, &#x27;w&#x27;, false, &amp;delta)</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>	}</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>	unlock(&amp;pd.lock)</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>	if rg != nil {</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>		netpollgoready(rg, 3)</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>	}</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>	if wg != nil {</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>		netpollgoready(wg, 3)</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>	}</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a>	netpollAdjustWaiters(delta)</span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>}</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a></span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>//go:linkname poll_runtime_pollUnblock internal/poll.runtime_pollUnblock</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>func poll_runtime_pollUnblock(pd *pollDesc) {</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>	lock(&amp;pd.lock)</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>	if pd.closing {</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>		throw(&quot;runtime: unblock on closing polldesc&quot;)</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>	}</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>	pd.closing = true</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>	pd.rseq++</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>	pd.wseq++</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>	var rg, wg *g</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>	pd.publishInfo()</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a>	delta := int32(0)</span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>	rg = netpollunblock(pd, &#x27;r&#x27;, false, &amp;delta)</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>	wg = netpollunblock(pd, &#x27;w&#x27;, false, &amp;delta)</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>	if pd.rrun {</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>		pd.rt.stop()</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>		pd.rrun = false</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>	}</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>	if pd.wrun {</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a>		pd.wt.stop()</span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a>		pd.wrun = false</span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a>	}</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>	unlock(&amp;pd.lock)</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a>	if rg != nil {</span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>		netpollgoready(rg, 3)</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a>	}</span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>	if wg != nil {</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>		netpollgoready(wg, 3)</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>	}</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>	netpollAdjustWaiters(delta)</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>}</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a></span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>// netpollready is called by the platform-specific netpoll function.</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>// It declares that the fd associated with pd is ready for I/O.</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>// The toRun argument is used to build a list of goroutines to return</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>// from netpoll. The mode argument is &#x27;r&#x27;, &#x27;w&#x27;, or &#x27;r&#x27;+&#x27;w&#x27; to indicate</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>// whether the fd is ready for reading or writing or both.</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>//</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>// This returns a delta to apply to netpollWaiters.</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a>//</span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>// This may run while the world is stopped, so write barriers are not allowed.</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>//</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>//go:nowritebarrier</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>func netpollready(toRun *gList, pd *pollDesc, mode int32) int32 {</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>	delta := int32(0)</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>	var rg, wg *g</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>	if mode == &#x27;r&#x27; || mode == &#x27;r&#x27;+&#x27;w&#x27; {</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>		rg = netpollunblock(pd, &#x27;r&#x27;, true, &amp;delta)</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>	}</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>	if mode == &#x27;w&#x27; || mode == &#x27;r&#x27;+&#x27;w&#x27; {</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a>		wg = netpollunblock(pd, &#x27;w&#x27;, true, &amp;delta)</span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>	}</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>	if rg != nil {</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a>		toRun.push(rg)</span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>	}</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a>	if wg != nil {</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a>		toRun.push(wg)</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a>	}</span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>	return delta</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>}</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a></span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>func netpollcheckerr(pd *pollDesc, mode int32) int {</span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>	info := pd.info()</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a>	if info.closing() {</span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>		return pollErrClosing</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>	}</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>	if (mode == &#x27;r&#x27; &amp;&amp; info.expiredReadDeadline()) || (mode == &#x27;w&#x27; &amp;&amp; info.expiredWriteDeadline()) {</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>		return pollErrTimeout</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>	}</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>	// Report an event scanning error only on a read event.</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>	// An error on a write event will be captured in a subsequent</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>	// write call that is able to report a more specific error.</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>	if mode == &#x27;r&#x27; &amp;&amp; info.eventErr() {</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a>		return pollErrNotPollable</span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>	}</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>	return pollNoError</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a>}</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a></span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>func netpollblockcommit(gp *g, gpp unsafe.Pointer) bool {</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>	r := atomic.Casuintptr((*uintptr)(gpp), pdWait, uintptr(unsafe.Pointer(gp)))</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a>	if r {</span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>		// Bump the count of goroutines waiting for the poller.</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a>		// The scheduler uses this to decide whether to block</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a>		// waiting for the poller if there is nothing else to do.</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a>		netpollAdjustWaiters(1)</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a>	}</span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>	return r</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>}</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a></span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>func netpollgoready(gp *g, traceskip int) {</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>	goready(gp, traceskip+1)</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a>}</span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a></span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a>// returns true if IO is ready, or false if timed out or closed</span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a>// waitio - wait only for completed IO, ignore errors</span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>// Concurrent calls to netpollblock in the same mode are forbidden, as pollDesc</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a>// can hold only a single waiting goroutine for each mode.</span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>func netpollblock(pd *pollDesc, mode int32, waitio bool) bool {</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a>	gpp := &amp;pd.rg</span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a>	if mode == &#x27;w&#x27; {</span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>		gpp = &amp;pd.wg</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>	}</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a></span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>	// set the gpp semaphore to pdWait</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>	for {</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>		// Consume notification if already ready.</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>		if gpp.CompareAndSwap(pdReady, pdNil) {</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>			return true</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>		}</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a>		if gpp.CompareAndSwap(pdNil, pdWait) {</span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a>			break</span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>		}</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a></span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>		// Double check that this isn&#x27;t corrupt; otherwise we&#x27;d loop</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>		// forever.</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>		if v := gpp.Load(); v != pdReady &amp;&amp; v != pdNil {</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a>			throw(&quot;runtime: double wait&quot;)</span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a>		}</span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>	}</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a></span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a>	// need to recheck error states after setting gpp to pdWait</span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>	// this is necessary because runtime_pollUnblock/runtime_pollSetDeadline/deadlineimpl</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>	// do the opposite: store to closing/rd/wd, publishInfo, load of rg/wg</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a>	if waitio || netpollcheckerr(pd, mode) == pollNoError {</span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>		gopark(netpollblockcommit, unsafe.Pointer(gpp), waitReasonIOWait, traceBlockNet, 5)</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>	}</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a>	// be careful to not lose concurrent pdReady notification</span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a>	old := gpp.Swap(pdNil)</span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a>	if old &gt; pdWait {</span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a>		throw(&quot;runtime: corrupted polldesc&quot;)</span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a>	}</span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a>	return old == pdReady</span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a>}</span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a></span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>// netpollunblock moves either pd.rg (if mode == &#x27;r&#x27;) or</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a>// pd.wg (if mode == &#x27;w&#x27;) into the pdReady state.</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a>// This returns any goroutine blocked on pd.{rg,wg}.</span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a>// It adds any adjustment to netpollWaiters to *delta;</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a>// this adjustment should be applied after the goroutine has</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a>// been marked ready.</span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a>func netpollunblock(pd *pollDesc, mode int32, ioready bool, delta *int32) *g {</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a>	gpp := &amp;pd.rg</span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a>	if mode == &#x27;w&#x27; {</span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a>		gpp = &amp;pd.wg</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a>	}</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a></span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a>	for {</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a>		old := gpp.Load()</span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a>		if old == pdReady {</span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a>			return nil</span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>		}</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>		if old == pdNil &amp;&amp; !ioready {</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a>			// Only set pdReady for ioready. runtime_pollWait</span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a>			// will check for timeout/cancel before waiting.</span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>			return nil</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a>		}</span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>		new := pdNil</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a>		if ioready {</span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a>			new = pdReady</span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>		}</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a>		if gpp.CompareAndSwap(old, new) {</span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a>			if old == pdWait {</span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a>				old = pdNil</span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a>			} else if old != pdNil {</span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a>				*delta -= 1</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a>			}</span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a>			return (*g)(unsafe.Pointer(old))</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a>		}</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a>	}</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a>}</span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a></span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a>func netpolldeadlineimpl(pd *pollDesc, seq uintptr, read, write bool) {</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a>	lock(&amp;pd.lock)</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a>	// Seq arg is seq when the timer was set.</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a>	// If it&#x27;s stale, ignore the timer event.</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>	currentSeq := pd.rseq</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a>	if !read {</span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a>		currentSeq = pd.wseq</span>
+<span class="line" id="L629"><a class="ln" href="#L629">629</a>	}</span>
+<span class="line" id="L630"><a class="ln" href="#L630">630</a>	if seq != currentSeq {</span>
+<span class="line" id="L631"><a class="ln" href="#L631">631</a>		// The descriptor was reused or timers were reset.</span>
+<span class="line" id="L632"><a class="ln" href="#L632">632</a>		unlock(&amp;pd.lock)</span>
+<span class="line" id="L633"><a class="ln" href="#L633">633</a>		return</span>
+<span class="line" id="L634"><a class="ln" href="#L634">634</a>	}</span>
+<span class="line" id="L635"><a class="ln" href="#L635">635</a>	delta := int32(0)</span>
+<span class="line" id="L636"><a class="ln" href="#L636">636</a>	var rg *g</span>
+<span class="line" id="L637"><a class="ln" href="#L637">637</a>	if read {</span>
+<span class="line" id="L638"><a class="ln" href="#L638">638</a>		if pd.rd &lt;= 0 || !pd.rrun {</span>
+<span class="line" id="L639"><a class="ln" href="#L639">639</a>			throw(&quot;runtime: inconsistent read deadline&quot;)</span>
+<span class="line" id="L640"><a class="ln" href="#L640">640</a>		}</span>
+<span class="line" id="L641"><a class="ln" href="#L641">641</a>		pd.rd = -1</span>
+<span class="line" id="L642"><a class="ln" href="#L642">642</a>		pd.publishInfo()</span>
+<span class="line" id="L643"><a class="ln" href="#L643">643</a>		rg = netpollunblock(pd, &#x27;r&#x27;, false, &amp;delta)</span>
+<span class="line" id="L644"><a class="ln" href="#L644">644</a>	}</span>
+<span class="line" id="L645"><a class="ln" href="#L645">645</a>	var wg *g</span>
+<span class="line" id="L646"><a class="ln" href="#L646">646</a>	if write {</span>
+<span class="line" id="L647"><a class="ln" href="#L647">647</a>		if pd.wd &lt;= 0 || !pd.wrun &amp;&amp; !read {</span>
+<span class="line" id="L648"><a class="ln" href="#L648">648</a>			throw(&quot;runtime: inconsistent write deadline&quot;)</span>
+<span class="line" id="L649"><a class="ln" href="#L649">649</a>		}</span>
+<span class="line" id="L650"><a class="ln" href="#L650">650</a>		pd.wd = -1</span>
+<span class="line" id="L651"><a class="ln" href="#L651">651</a>		pd.publishInfo()</span>
+<span class="line" id="L652"><a class="ln" href="#L652">652</a>		wg = netpollunblock(pd, &#x27;w&#x27;, false, &amp;delta)</span>
+<span class="line" id="L653"><a class="ln" href="#L653">653</a>	}</span>
+<span class="line" id="L654"><a class="ln" href="#L654">654</a>	unlock(&amp;pd.lock)</span>
+<span class="line" id="L655"><a class="ln" href="#L655">655</a>	if rg != nil {</span>
+<span class="line" id="L656"><a class="ln" href="#L656">656</a>		netpollgoready(rg, 0)</span>
+<span class="line" id="L657"><a class="ln" href="#L657">657</a>	}</span>
+<span class="line" id="L658"><a class="ln" href="#L658">658</a>	if wg != nil {</span>
+<span class="line" id="L659"><a class="ln" href="#L659">659</a>		netpollgoready(wg, 0)</span>
+<span class="line" id="L660"><a class="ln" href="#L660">660</a>	}</span>
+<span class="line" id="L661"><a class="ln" href="#L661">661</a>	netpollAdjustWaiters(delta)</span>
+<span class="line" id="L662"><a class="ln" href="#L662">662</a>}</span>
+<span class="line" id="L663"><a class="ln" href="#L663">663</a></span>
+<span class="line" id="L664"><a class="ln" href="#L664">664</a>func netpollDeadline(arg any, seq uintptr, delta int64) {</span>
+<span class="line" id="L665"><a class="ln" href="#L665">665</a>	netpolldeadlineimpl(arg.(*pollDesc), seq, true, true)</span>
+<span class="line" id="L666"><a class="ln" href="#L666">666</a>}</span>
+<span class="line" id="L667"><a class="ln" href="#L667">667</a></span>
+<span class="line" id="L668"><a class="ln" href="#L668">668</a>func netpollReadDeadline(arg any, seq uintptr, delta int64) {</span>
+<span class="line" id="L669"><a class="ln" href="#L669">669</a>	netpolldeadlineimpl(arg.(*pollDesc), seq, true, false)</span>
+<span class="line" id="L670"><a class="ln" href="#L670">670</a>}</span>
+<span class="line" id="L671"><a class="ln" href="#L671">671</a></span>
+<span class="line" id="L672"><a class="ln" href="#L672">672</a>func netpollWriteDeadline(arg any, seq uintptr, delta int64) {</span>
+<span class="line" id="L673"><a class="ln" href="#L673">673</a>	netpolldeadlineimpl(arg.(*pollDesc), seq, false, true)</span>
+<span class="line" id="L674"><a class="ln" href="#L674">674</a>}</span>
+<span class="line" id="L675"><a class="ln" href="#L675">675</a></span>
+<span class="line" id="L676"><a class="ln" href="#L676">676</a>// netpollAnyWaiters reports whether any goroutines are waiting for I/O.</span>
+<span class="line" id="L677"><a class="ln" href="#L677">677</a>func netpollAnyWaiters() bool {</span>
+<span class="line" id="L678"><a class="ln" href="#L678">678</a>	return netpollWaiters.Load() &gt; 0</span>
+<span class="line" id="L679"><a class="ln" href="#L679">679</a>}</span>
+<span class="line" id="L680"><a class="ln" href="#L680">680</a></span>
+<span class="line" id="L681"><a class="ln" href="#L681">681</a>// netpollAdjustWaiters adds delta to netpollWaiters.</span>
+<span class="line" id="L682"><a class="ln" href="#L682">682</a>func netpollAdjustWaiters(delta int32) {</span>
+<span class="line" id="L683"><a class="ln" href="#L683">683</a>	if delta != 0 {</span>
+<span class="line" id="L684"><a class="ln" href="#L684">684</a>		netpollWaiters.Add(delta)</span>
+<span class="line" id="L685"><a class="ln" href="#L685">685</a>	}</span>
+<span class="line" id="L686"><a class="ln" href="#L686">686</a>}</span>
+<span class="line" id="L687"><a class="ln" href="#L687">687</a></span>
+<span class="line" id="L688"><a class="ln" href="#L688">688</a>func (c *pollCache) alloc() *pollDesc {</span>
+<span class="line" id="L689"><a class="ln" href="#L689">689</a>	lock(&amp;c.lock)</span>
+<span class="line" id="L690"><a class="ln" href="#L690">690</a>	if c.first == nil {</span>
+<span class="line" id="L691"><a class="ln" href="#L691">691</a>		const pdSize = unsafe.Sizeof(pollDesc{})</span>
+<span class="line" id="L692"><a class="ln" href="#L692">692</a>		n := pollBlockSize / pdSize</span>
+<span class="line" id="L693"><a class="ln" href="#L693">693</a>		if n == 0 {</span>
+<span class="line" id="L694"><a class="ln" href="#L694">694</a>			n = 1</span>
+<span class="line" id="L695"><a class="ln" href="#L695">695</a>		}</span>
+<span class="line" id="L696"><a class="ln" href="#L696">696</a>		// Must be in non-GC memory because can be referenced</span>
+<span class="line" id="L697"><a class="ln" href="#L697">697</a>		// only from epoll/kqueue internals.</span>
+<span class="line" id="L698"><a class="ln" href="#L698">698</a>		mem := persistentalloc(n*pdSize, 0, &amp;memstats.other_sys)</span>
+<span class="line" id="L699"><a class="ln" href="#L699">699</a>		for i := uintptr(0); i &lt; n; i++ {</span>
+<span class="line" id="L700"><a class="ln" href="#L700">700</a>			pd := (*pollDesc)(add(mem, i*pdSize))</span>
+<span class="line" id="L701"><a class="ln" href="#L701">701</a>			lockInit(&amp;pd.lock, lockRankPollDesc)</span>
+<span class="line" id="L702"><a class="ln" href="#L702">702</a>			pd.rt.init(nil, nil)</span>
+<span class="line" id="L703"><a class="ln" href="#L703">703</a>			pd.wt.init(nil, nil)</span>
+<span class="line" id="L704"><a class="ln" href="#L704">704</a>			pd.link = c.first</span>
+<span class="line" id="L705"><a class="ln" href="#L705">705</a>			c.first = pd</span>
+<span class="line" id="L706"><a class="ln" href="#L706">706</a>		}</span>
+<span class="line" id="L707"><a class="ln" href="#L707">707</a>	}</span>
+<span class="line" id="L708"><a class="ln" href="#L708">708</a>	pd := c.first</span>
+<span class="line" id="L709"><a class="ln" href="#L709">709</a>	c.first = pd.link</span>
+<span class="line" id="L710"><a class="ln" href="#L710">710</a>	unlock(&amp;c.lock)</span>
+<span class="line" id="L711"><a class="ln" href="#L711">711</a>	return pd</span>
+<span class="line" id="L712"><a class="ln" href="#L712">712</a>}</span>
+<span class="line" id="L713"><a class="ln" href="#L713">713</a></span>
+<span class="line" id="L714"><a class="ln" href="#L714">714</a>// makeArg converts pd to an interface{}.</span>
+<span class="line" id="L715"><a class="ln" href="#L715">715</a>// makeArg does not do any allocation. Normally, such</span>
+<span class="line" id="L716"><a class="ln" href="#L716">716</a>// a conversion requires an allocation because pointers to</span>
+<span class="line" id="L717"><a class="ln" href="#L717">717</a>// types which embed internal/runtime/sys.NotInHeap (which pollDesc is)</span>
+<span class="line" id="L718"><a class="ln" href="#L718">718</a>// must be stored in interfaces indirectly. See issue 42076.</span>
+<span class="line" id="L719"><a class="ln" href="#L719">719</a>func (pd *pollDesc) makeArg() (i any) {</span>
+<span class="line" id="L720"><a class="ln" href="#L720">720</a>	x := (*eface)(unsafe.Pointer(&amp;i))</span>
+<span class="line" id="L721"><a class="ln" href="#L721">721</a>	x._type = pdType</span>
+<span class="line" id="L722"><a class="ln" href="#L722">722</a>	x.data = unsafe.Pointer(&amp;pd.self)</span>
+<span class="line" id="L723"><a class="ln" href="#L723">723</a>	return</span>
+<span class="line" id="L724"><a class="ln" href="#L724">724</a>}</span>
+<span class="line" id="L725"><a class="ln" href="#L725">725</a></span>
+<span class="line" id="L726"><a class="ln" href="#L726">726</a>var (</span>
+<span class="line" id="L727"><a class="ln" href="#L727">727</a>	pdEface any    = (*pollDesc)(nil)</span>
+<span class="line" id="L728"><a class="ln" href="#L728">728</a>	pdType  *_type = efaceOf(&amp;pdEface)._type</span>
+<span class="line" id="L729"><a class="ln" href="#L729">729</a>)</span></pre></html>

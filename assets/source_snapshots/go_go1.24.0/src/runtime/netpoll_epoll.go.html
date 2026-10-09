@@ -1,0 +1,176 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>go_go1.24.0/src/runtime/netpoll_epoll.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>go_go1.24.0/src/runtime/netpoll_epoll.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>go1.24.0</code><br>原文件 SHA256：<code>1c1bbe01d3d3f1bbe9e63fe1f401d7d4fa2fa2127456fdb8bfcf66f8bf4a961c</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Copyright 2013 The Go Authors. All rights reserved.</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>// Use of this source code is governed by a BSD-style</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// license that can be found in the LICENSE file.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//go:build linux</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>package runtime</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a></span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>import (</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;internal/runtime/atomic&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;internal/runtime/syscall&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;unsafe&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>)</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a></span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>var (</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	epfd           int32         = -1 // epoll descriptor</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	netpollEventFd uintptr            // eventfd for netpollBreak</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	netpollWakeSig atomic.Uint32      // used to avoid duplicate calls of netpollBreak</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>)</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a></span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>func netpollinit() {</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	var errno uintptr</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	epfd, errno = syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	if errno != 0 {</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>		println(&quot;runtime: epollcreate failed with&quot;, errno)</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>		throw(&quot;runtime: netpollinit failed&quot;)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>	}</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	efd, errno := syscall.Eventfd(0, syscall.EFD_CLOEXEC|syscall.EFD_NONBLOCK)</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	if errno != 0 {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>		println(&quot;runtime: eventfd failed with&quot;, -errno)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>		throw(&quot;runtime: eventfd failed&quot;)</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>	}</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	ev := syscall.EpollEvent{</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>		Events: syscall.EPOLLIN,</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	}</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	*(**uintptr)(unsafe.Pointer(&amp;ev.Data)) = &amp;netpollEventFd</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	errno = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, efd, &amp;ev)</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	if errno != 0 {</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>		println(&quot;runtime: epollctl failed with&quot;, errno)</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>		throw(&quot;runtime: epollctl failed&quot;)</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>	}</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	netpollEventFd = uintptr(efd)</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>}</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>func netpollIsPollDescriptor(fd uintptr) bool {</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	return fd == uintptr(epfd) || fd == netpollEventFd</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>}</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>func netpollopen(fd uintptr, pd *pollDesc) uintptr {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	var ev syscall.EpollEvent</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>	ev.Events = syscall.EPOLLIN | syscall.EPOLLOUT | syscall.EPOLLRDHUP | syscall.EPOLLET</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	tp := taggedPointerPack(unsafe.Pointer(pd), pd.fdseq.Load())</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	*(*taggedPointer)(unsafe.Pointer(&amp;ev.Data)) = tp</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	return syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, int32(fd), &amp;ev)</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>}</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>func netpollclose(fd uintptr) uintptr {</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	var ev syscall.EpollEvent</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	return syscall.EpollCtl(epfd, syscall.EPOLL_CTL_DEL, int32(fd), &amp;ev)</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>}</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>func netpollarm(pd *pollDesc, mode int) {</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	throw(&quot;runtime: unused&quot;)</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>}</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a></span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>// netpollBreak interrupts an epollwait.</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>func netpollBreak() {</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>	// Failing to cas indicates there is an in-flight wakeup, so we&#x27;re done here.</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	if !netpollWakeSig.CompareAndSwap(0, 1) {</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>		return</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	}</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a></span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	var one uint64 = 1</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	oneSize := int32(unsafe.Sizeof(one))</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	for {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		n := write(netpollEventFd, noescape(unsafe.Pointer(&amp;one)), oneSize)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>		if n == oneSize {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>			break</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>		}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>		if n == -_EINTR {</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>			continue</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>		}</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>		if n == -_EAGAIN {</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>			return</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>		}</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>		println(&quot;runtime: netpollBreak write failed with&quot;, -n)</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>		throw(&quot;runtime: netpollBreak write failed&quot;)</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>	}</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>}</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a></span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>// netpoll checks for ready network connections.</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>// Returns a list of goroutines that become runnable,</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>// and a delta to add to netpollWaiters.</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>// This must never return an empty list with a non-zero delta.</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>//</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>// delay &lt; 0: blocks indefinitely</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>// delay == 0: does not block, just polls</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>// delay &gt; 0: block for up to that many nanoseconds</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>func netpoll(delay int64) (gList, int32) {</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	if epfd == -1 {</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>		return gList{}, 0</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	}</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	var waitms int32</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	if delay &lt; 0 {</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>		waitms = -1</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>	} else if delay == 0 {</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>		waitms = 0</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	} else if delay &lt; 1e6 {</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>		waitms = 1</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>	} else if delay &lt; 1e15 {</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>		waitms = int32(delay / 1e6)</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>	} else {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>		// An arbitrary cap on how long to wait for a timer.</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>		// 1e9 ms == ~11.5 days.</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>		waitms = 1e9</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>	}</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>	var events [128]syscall.EpollEvent</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>retry:</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	n, errno := syscall.EpollWait(epfd, events[:], int32(len(events)), waitms)</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>	if errno != 0 {</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>		if errno != _EINTR {</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>			println(&quot;runtime: epollwait on fd&quot;, epfd, &quot;failed with&quot;, errno)</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>			throw(&quot;runtime: netpoll failed&quot;)</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>		}</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>		// If a timed sleep was interrupted, just return to</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>		// recalculate how long we should sleep now.</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>		if waitms &gt; 0 {</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>			return gList{}, 0</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>		}</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>		goto retry</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>	}</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	var toRun gList</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	delta := int32(0)</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>	for i := int32(0); i &lt; n; i++ {</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>		ev := events[i]</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>		if ev.Events == 0 {</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>			continue</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>		}</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a></span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>		if *(**uintptr)(unsafe.Pointer(&amp;ev.Data)) == &amp;netpollEventFd {</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>			if ev.Events != syscall.EPOLLIN {</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>				println(&quot;runtime: netpoll: eventfd ready for&quot;, ev.Events)</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>				throw(&quot;runtime: netpoll: eventfd ready for something unexpected&quot;)</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>			}</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>			if delay != 0 {</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>				// netpollBreak could be picked up by a</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>				// nonblocking poll. Only read the 8-byte</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>				// integer if blocking.</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>				// Since EFD_SEMAPHORE was not specified,</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>				// the eventfd counter will be reset to 0.</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>				var one uint64</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>				read(int32(netpollEventFd), noescape(unsafe.Pointer(&amp;one)), int32(unsafe.Sizeof(one)))</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>				netpollWakeSig.Store(0)</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>			}</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>			continue</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>		}</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a></span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>		var mode int32</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>		if ev.Events&amp;(syscall.EPOLLIN|syscall.EPOLLRDHUP|syscall.EPOLLHUP|syscall.EPOLLERR) != 0 {</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>			mode += &#x27;r&#x27;</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>		}</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>		if ev.Events&amp;(syscall.EPOLLOUT|syscall.EPOLLHUP|syscall.EPOLLERR) != 0 {</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>			mode += &#x27;w&#x27;</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>		}</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>		if mode != 0 {</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>			tp := *(*taggedPointer)(unsafe.Pointer(&amp;ev.Data))</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>			pd := (*pollDesc)(tp.pointer())</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>			tag := tp.tag()</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>			if pd.fdseq.Load() == tag {</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>				pd.setEventErr(ev.Events == syscall.EPOLLERR, tag)</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>				delta += netpollready(&amp;toRun, pd, mode)</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>			}</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>		}</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	}</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>	return toRun, delta</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>}</span></pre></html>

@@ -1,0 +1,711 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>go_go1.24.0/src/runtime/sema.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>go_go1.24.0/src/runtime/sema.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>go1.24.0</code><br>原文件 SHA256：<code>6f48724da2c981dace00252024197440cea445da309816a0d81ca97550b14402</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Copyright 2009 The Go Authors. All rights reserved.</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>// Use of this source code is governed by a BSD-style</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// license that can be found in the LICENSE file.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>// Semaphore implementation exposed to Go.</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>// Intended use is provide a sleep and wakeup</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// primitive that can be used in the contended case</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>// of other synchronization primitives.</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>// Thus it targets the same goal as Linux&#x27;s futex,</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>// but it has much simpler semantics.</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>//</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>// That is, don&#x27;t think of these as semaphores.</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>// Think of them as a way to implement sleep and wakeup</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>// such that every sleep is paired with a single wakeup,</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>// even if, due to races, the wakeup happens before the sleep.</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>//</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>// See Mullender and Cox, ``Semaphores in Plan 9,&#x27;&#x27;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>// https://swtch.com/semaphore.pdf</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a></span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>package runtime</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a></span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>import (</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	&quot;internal/cpu&quot;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	&quot;internal/runtime/atomic&quot;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	&quot;unsafe&quot;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>// Asynchronous semaphore for sync.Mutex.</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a></span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>// A semaRoot holds a balanced tree of sudog with distinct addresses (s.elem).</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>// Each of those sudog may in turn point (through s.waitlink) to a list</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>// of other sudogs waiting on the same address.</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>// The operations on the inner lists of sudogs with the same address</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>// are all O(1). The scanning of the top-level semaRoot list is O(log n),</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>// where n is the number of distinct addresses with goroutines blocked</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>// on them that hash to the given semaRoot.</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>// See golang.org/issue/17953 for a program that worked badly</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>// before we introduced the second level of list, and</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>// BenchmarkSemTable/OneAddrCollision/* for a benchmark that exercises this.</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>type semaRoot struct {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>	lock  mutex</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	treap *sudog        // root of balanced tree of unique waiters.</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	nwait atomic.Uint32 // Number of waiters. Read w/o the lock.</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>}</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>var semtable semTable</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a></span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>// Prime to not correlate with any user patterns.</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>const semTabSize = 251</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a></span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>type semTable [semTabSize]struct {</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	root semaRoot</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	pad  [cpu.CacheLinePadSize - unsafe.Sizeof(semaRoot{})]byte</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>}</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>func (t *semTable) rootFor(addr *uint32) *semaRoot {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>	return &amp;t[(uintptr(unsafe.Pointer(addr))&gt;&gt;3)%semTabSize].root</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>}</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a></span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>// sync_runtime_Semacquire should be an internal detail,</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>// but widely used packages access it using linkname.</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>// Notable members of the hall of shame include:</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>//   - gvisor.dev/gvisor</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>//   - github.com/sagernet/gvisor</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>//</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>// Do not remove or change the type signature.</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>// See go.dev/issue/67401.</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>//</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>//go:linkname sync_runtime_Semacquire sync.runtime_Semacquire</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>func sync_runtime_Semacquire(addr *uint32) {</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	semacquire1(addr, false, semaBlockProfile, 0, waitReasonSemacquire)</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>}</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>//go:linkname poll_runtime_Semacquire internal/poll.runtime_Semacquire</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>func poll_runtime_Semacquire(addr *uint32) {</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>	semacquire1(addr, false, semaBlockProfile, 0, waitReasonSemacquire)</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>}</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>// sync_runtime_Semrelease should be an internal detail,</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>// but widely used packages access it using linkname.</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>// Notable members of the hall of shame include:</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>//   - gvisor.dev/gvisor</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>//   - github.com/sagernet/gvisor</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>//</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>// Do not remove or change the type signature.</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>// See go.dev/issue/67401.</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>//</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>//go:linkname sync_runtime_Semrelease sync.runtime_Semrelease</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>func sync_runtime_Semrelease(addr *uint32, handoff bool, skipframes int) {</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	semrelease1(addr, handoff, skipframes)</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>}</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>//go:linkname internal_sync_runtime_SemacquireMutex internal/sync.runtime_SemacquireMutex</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>func internal_sync_runtime_SemacquireMutex(addr *uint32, lifo bool, skipframes int) {</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	semacquire1(addr, lifo, semaBlockProfile|semaMutexProfile, skipframes, waitReasonSyncMutexLock)</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>}</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>//go:linkname sync_runtime_SemacquireRWMutexR sync.runtime_SemacquireRWMutexR</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>func sync_runtime_SemacquireRWMutexR(addr *uint32, lifo bool, skipframes int) {</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	semacquire1(addr, lifo, semaBlockProfile|semaMutexProfile, skipframes, waitReasonSyncRWMutexRLock)</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>}</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a></span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>//go:linkname sync_runtime_SemacquireRWMutex sync.runtime_SemacquireRWMutex</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>func sync_runtime_SemacquireRWMutex(addr *uint32, lifo bool, skipframes int) {</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>	semacquire1(addr, lifo, semaBlockProfile|semaMutexProfile, skipframes, waitReasonSyncRWMutexLock)</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>}</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a></span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>//go:linkname sync_runtime_SemacquireWaitGroup sync.runtime_SemacquireWaitGroup</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>func sync_runtime_SemacquireWaitGroup(addr *uint32) {</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>	semacquire1(addr, false, semaBlockProfile, 0, waitReasonSyncWaitGroupWait)</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>}</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a></span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>//go:linkname poll_runtime_Semrelease internal/poll.runtime_Semrelease</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>func poll_runtime_Semrelease(addr *uint32) {</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>	semrelease(addr)</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>}</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a></span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>//go:linkname internal_sync_runtime_Semrelease internal/sync.runtime_Semrelease</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>func internal_sync_runtime_Semrelease(addr *uint32, handoff bool, skipframes int) {</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>	semrelease1(addr, handoff, skipframes)</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>}</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a></span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>func readyWithTime(s *sudog, traceskip int) {</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	if s.releasetime != 0 {</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>		s.releasetime = cputicks()</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>	}</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>	goready(s.g, traceskip)</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>}</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a></span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>type semaProfileFlags int</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a></span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>const (</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	semaBlockProfile semaProfileFlags = 1 &lt;&lt; iota</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>	semaMutexProfile</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>)</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>// Called from runtime.</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>func semacquire(addr *uint32) {</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	semacquire1(addr, false, 0, 0, waitReasonSemacquire)</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>}</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a></span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>func semacquire1(addr *uint32, lifo bool, profile semaProfileFlags, skipframes int, reason waitReason) {</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>	gp := getg()</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>	if gp != gp.m.curg {</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>		throw(&quot;semacquire not on the G stack&quot;)</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>	}</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a></span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>	// Easy case.</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>	if cansemacquire(addr) {</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>		return</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>	}</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a></span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>	// Harder case:</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>	//	increment waiter count</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>	//	try cansemacquire one more time, return if succeeded</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>	//	enqueue itself as a waiter</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>	//	sleep</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>	//	(waiter descriptor is dequeued by signaler)</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>	s := acquireSudog()</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>	root := semtable.rootFor(addr)</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>	t0 := int64(0)</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>	s.releasetime = 0</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>	s.acquiretime = 0</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>	s.ticket = 0</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>	if profile&amp;semaBlockProfile != 0 &amp;&amp; blockprofilerate &gt; 0 {</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>		t0 = cputicks()</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>		s.releasetime = -1</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>	}</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>	if profile&amp;semaMutexProfile != 0 &amp;&amp; mutexprofilerate &gt; 0 {</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>		if t0 == 0 {</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>			t0 = cputicks()</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>		}</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>		s.acquiretime = t0</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	}</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>	for {</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>		lockWithRank(&amp;root.lock, lockRankRoot)</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>		// Add ourselves to nwait to disable &quot;easy case&quot; in semrelease.</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>		root.nwait.Add(1)</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>		// Check cansemacquire to avoid missed wakeup.</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>		if cansemacquire(addr) {</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>			root.nwait.Add(-1)</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>			unlock(&amp;root.lock)</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>			break</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>		}</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>		// Any semrelease after the cansemacquire knows we&#x27;re waiting</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>		// (we set nwait above), so go to sleep.</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>		root.queue(addr, s, lifo)</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>		goparkunlock(&amp;root.lock, reason, traceBlockSync, 4+skipframes)</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>		if s.ticket != 0 || cansemacquire(addr) {</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>			break</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>		}</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>	}</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>	if s.releasetime &gt; 0 {</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>		blockevent(s.releasetime-t0, 3+skipframes)</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>	}</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>	releaseSudog(s)</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>}</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a></span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>func semrelease(addr *uint32) {</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>	semrelease1(addr, false, 0)</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>}</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a></span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>func semrelease1(addr *uint32, handoff bool, skipframes int) {</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	root := semtable.rootFor(addr)</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>	atomic.Xadd(addr, 1)</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a></span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>	// Easy case: no waiters?</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>	// This check must happen after the xadd, to avoid a missed wakeup</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>	// (see loop in semacquire).</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>	if root.nwait.Load() == 0 {</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>		return</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>	}</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a></span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>	// Harder case: search for a waiter and wake it.</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>	lockWithRank(&amp;root.lock, lockRankRoot)</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>	if root.nwait.Load() == 0 {</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>		// The count is already consumed by another goroutine,</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>		// so no need to wake up another goroutine.</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>		unlock(&amp;root.lock)</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>		return</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>	}</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>	s, t0, tailtime := root.dequeue(addr)</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>	if s != nil {</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>		root.nwait.Add(-1)</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>	}</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>	unlock(&amp;root.lock)</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>	if s != nil { // May be slow or even yield, so unlock first</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>		acquiretime := s.acquiretime</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>		if acquiretime != 0 {</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>			// Charge contention that this (delayed) unlock caused.</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>			// If there are N more goroutines waiting beyond the</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>			// one that&#x27;s waking up, charge their delay as well, so that</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>			// contention holding up many goroutines shows up as</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>			// more costly than contention holding up a single goroutine.</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>			// It would take O(N) time to calculate how long each goroutine</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>			// has been waiting, so instead we charge avg(head-wait, tail-wait)*N.</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>			// head-wait is the longest wait and tail-wait is the shortest.</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>			// (When we do a lifo insertion, we preserve this property by</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>			// copying the old head&#x27;s acquiretime into the inserted new head.</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>			// In that case the overall average may be slightly high, but that&#x27;s fine:</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>			// the average of the ends is only an approximation to the actual</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>			// average anyway.)</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>			// The root.dequeue above changed the head and tail acquiretime</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>			// to the current time, so the next unlock will not re-count this contention.</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>			dt0 := t0 - acquiretime</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>			dt := dt0</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>			if s.waiters != 0 {</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>				dtail := t0 - tailtime</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>				dt += (dtail + dt0) / 2 * int64(s.waiters)</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>			}</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>			mutexevent(dt, 3+skipframes)</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>		}</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>		if s.ticket != 0 {</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>			throw(&quot;corrupted semaphore ticket&quot;)</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>		}</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>		if handoff &amp;&amp; cansemacquire(addr) {</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>			s.ticket = 1</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>		}</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>		readyWithTime(s, 5+skipframes)</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>		if s.ticket == 1 &amp;&amp; getg().m.locks == 0 {</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>			// Direct G handoff</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>			// readyWithTime has added the waiter G as runnext in the</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>			// current P; we now call the scheduler so that we start running</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>			// the waiter G immediately.</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>			// Note that waiter inherits our time slice: this is desirable</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>			// to avoid having a highly contended semaphore hog the P</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>			// indefinitely. goyield is like Gosched, but it emits a</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>			// &quot;preempted&quot; trace event instead and, more importantly, puts</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>			// the current G on the local runq instead of the global one.</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>			// We only do this in the starving regime (handoff=true), as in</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>			// the non-starving case it is possible for a different waiter</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>			// to acquire the semaphore while we are yielding/scheduling,</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>			// and this would be wasteful. We wait instead to enter starving</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>			// regime, and then we start to do direct handoffs of ticket and</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>			// P.</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>			// See issue 33747 for discussion.</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>			goyield()</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>		}</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>	}</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>}</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a></span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>func cansemacquire(addr *uint32) bool {</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>	for {</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>		v := atomic.Load(addr)</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>		if v == 0 {</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>			return false</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>		}</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>		if atomic.Cas(addr, v, v-1) {</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>			return true</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>		}</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>	}</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>}</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a></span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>// queue adds s to the blocked goroutines in semaRoot.</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>func (root *semaRoot) queue(addr *uint32, s *sudog, lifo bool) {</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>	s.g = getg()</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>	s.elem = unsafe.Pointer(addr)</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>	s.next = nil</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>	s.prev = nil</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>	s.waiters = 0</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a></span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>	var last *sudog</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>	pt := &amp;root.treap</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>	for t := *pt; t != nil; t = *pt {</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>		if t.elem == unsafe.Pointer(addr) {</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>			// Already have addr in list.</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>			if lifo {</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>				// Substitute s in t&#x27;s place in treap.</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>				*pt = s</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>				s.ticket = t.ticket</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>				s.acquiretime = t.acquiretime // preserve head acquiretime as oldest time</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>				s.parent = t.parent</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>				s.prev = t.prev</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>				s.next = t.next</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>				if s.prev != nil {</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>					s.prev.parent = s</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>				}</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>				if s.next != nil {</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>					s.next.parent = s</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>				}</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>				// Add t first in s&#x27;s wait list.</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>				s.waitlink = t</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>				s.waittail = t.waittail</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>				if s.waittail == nil {</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>					s.waittail = t</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>				}</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>				s.waiters = t.waiters</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>				if s.waiters+1 != 0 {</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>					s.waiters++</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>				}</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>				t.parent = nil</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>				t.prev = nil</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>				t.next = nil</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>				t.waittail = nil</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>			} else {</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>				// Add s to end of t&#x27;s wait list.</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>				if t.waittail == nil {</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>					t.waitlink = s</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>				} else {</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>					t.waittail.waitlink = s</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>				}</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>				t.waittail = s</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>				s.waitlink = nil</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>				if t.waiters+1 != 0 {</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>					t.waiters++</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>				}</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>			}</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>			return</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>		}</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>		last = t</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>		if uintptr(unsafe.Pointer(addr)) &lt; uintptr(t.elem) {</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a>			pt = &amp;t.prev</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>		} else {</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>			pt = &amp;t.next</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>		}</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>	}</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a></span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>	// Add s as new leaf in tree of unique addrs.</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>	// The balanced tree is a treap using ticket as the random heap priority.</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>	// That is, it is a binary tree ordered according to the elem addresses,</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>	// but then among the space of possible binary trees respecting those</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>	// addresses, it is kept balanced on average by maintaining a heap ordering</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>	// on the ticket: s.ticket &lt;= both s.prev.ticket and s.next.ticket.</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>	// https://en.wikipedia.org/wiki/Treap</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>	// https://faculty.washington.edu/aragon/pubs/rst89.pdf</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>	//</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>	// s.ticket compared with zero in couple of places, therefore set lowest bit.</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>	// It will not affect treap&#x27;s quality noticeably.</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>	s.ticket = cheaprand() | 1</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>	s.parent = last</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>	*pt = s</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a></span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>	// Rotate up into tree according to ticket (priority).</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>	for s.parent != nil &amp;&amp; s.parent.ticket &gt; s.ticket {</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>		if s.parent.prev == s {</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>			root.rotateRight(s.parent)</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>		} else {</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>			if s.parent.next != s {</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>				panic(&quot;semaRoot queue&quot;)</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a>			}</span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>			root.rotateLeft(s.parent)</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>		}</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>	}</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>}</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a></span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>// dequeue searches for and finds the first goroutine</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>// in semaRoot blocked on addr.</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>// If the sudog was being profiled, dequeue returns the time</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>// at which it was woken up as now. Otherwise now is 0.</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>// If there are additional entries in the wait list, dequeue</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>// returns tailtime set to the last entry&#x27;s acquiretime.</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>// Otherwise tailtime is found.acquiretime.</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>func (root *semaRoot) dequeue(addr *uint32) (found *sudog, now, tailtime int64) {</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a>	ps := &amp;root.treap</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>	s := *ps</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>	for ; s != nil; s = *ps {</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>		if s.elem == unsafe.Pointer(addr) {</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>			goto Found</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>		}</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a>		if uintptr(unsafe.Pointer(addr)) &lt; uintptr(s.elem) {</span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>			ps = &amp;s.prev</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>		} else {</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a>			ps = &amp;s.next</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>		}</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a>	}</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>	return nil, 0, 0</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a></span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>Found:</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>	now = int64(0)</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>	if s.acquiretime != 0 {</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>		now = cputicks()</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>	}</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>	if t := s.waitlink; t != nil {</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>		// Substitute t, also waiting on addr, for s in root tree of unique addrs.</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>		*ps = t</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>		t.ticket = s.ticket</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>		t.parent = s.parent</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>		t.prev = s.prev</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>		if t.prev != nil {</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>			t.prev.parent = t</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>		}</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>		t.next = s.next</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>		if t.next != nil {</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>			t.next.parent = t</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>		}</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>		if t.waitlink != nil {</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>			t.waittail = s.waittail</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a>		} else {</span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>			t.waittail = nil</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a>		}</span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>		t.waiters = s.waiters</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>		if t.waiters &gt; 1 {</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>			t.waiters--</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>		}</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>		// Set head and tail acquire time to &#x27;now&#x27;,</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>		// because the caller will take care of charging</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>		// the delays before now for all entries in the list.</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>		t.acquiretime = now</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>		tailtime = s.waittail.acquiretime</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>		s.waittail.acquiretime = now</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>		s.waitlink = nil</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>		s.waittail = nil</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>	} else {</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>		// Rotate s down to be leaf of tree for removal, respecting priorities.</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>		for s.next != nil || s.prev != nil {</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>			if s.next == nil || s.prev != nil &amp;&amp; s.prev.ticket &lt; s.next.ticket {</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>				root.rotateRight(s)</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a>			} else {</span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>				root.rotateLeft(s)</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>			}</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>		}</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>		// Remove s, now a leaf.</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>		if s.parent != nil {</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>			if s.parent.prev == s {</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>				s.parent.prev = nil</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>			} else {</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>				s.parent.next = nil</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>			}</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>		} else {</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>			root.treap = nil</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>		}</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a>		tailtime = s.acquiretime</span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>	}</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>	s.parent = nil</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>	s.elem = nil</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>	s.next = nil</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>	s.prev = nil</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>	s.ticket = 0</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>	return s, now, tailtime</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a>}</span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a></span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a>// rotateLeft rotates the tree rooted at node x.</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>// turning (x a (y b c)) into (y (x a b) c).</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a>func (root *semaRoot) rotateLeft(x *sudog) {</span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>	// p -&gt; (x a (y b c))</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a>	p := x.parent</span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>	y := x.next</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>	b := y.prev</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a></span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>	y.prev = x</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>	x.parent = y</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a>	x.next = b</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>	if b != nil {</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>		b.parent = x</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>	}</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a></span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>	y.parent = p</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>	if p == nil {</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>		root.treap = y</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a>	} else if p.prev == x {</span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>		p.prev = y</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>	} else {</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>		if p.next != x {</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>			throw(&quot;semaRoot rotateLeft&quot;)</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>		}</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>		p.next = y</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>	}</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>}</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a></span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>// rotateRight rotates the tree rooted at node y.</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a>// turning (y (x a b) c) into (x a (y b c)).</span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>func (root *semaRoot) rotateRight(y *sudog) {</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>	// p -&gt; (y (x a b) c)</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a>	p := y.parent</span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>	x := y.prev</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a>	b := x.next</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a></span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a>	x.next = y</span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>	y.parent = x</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>	y.prev = b</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>	if b != nil {</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>		b.parent = y</span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>	}</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a></span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>	x.parent = p</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>	if p == nil {</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>		root.treap = x</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>	} else if p.prev == y {</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>		p.prev = x</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>	} else {</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>		if p.next != y {</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>			throw(&quot;semaRoot rotateRight&quot;)</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>		}</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a>		p.next = x</span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>	}</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>}</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a></span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a>// notifyList is a ticket-based notification list used to implement sync.Cond.</span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>//</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>// It must be kept in sync with the sync package.</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a>type notifyList struct {</span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>	// wait is the ticket number of the next waiter. It is atomically</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a>	// incremented outside the lock.</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a>	wait atomic.Uint32</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a></span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a>	// notify is the ticket number of the next waiter to be notified. It can</span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>	// be read outside the lock, but is only written to with lock held.</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>	//</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a>	// Both wait &amp; notify can wrap around, and such cases will be correctly</span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>	// handled as long as their &quot;unwrapped&quot; difference is bounded by 2^31.</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>	// For this not to be the case, we&#x27;d need to have 2^31+ goroutines</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a>	// blocked on the same condvar, which is currently not possible.</span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>	notify uint32</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a></span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a>	// List of parked waiters.</span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>	lock mutex</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a>	head *sudog</span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>	tail *sudog</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a>}</span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a></span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>// less checks if a &lt; b, considering a &amp; b running counts that may overflow the</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>// 32-bit range, and that their &quot;unwrapped&quot; difference is always less than 2^31.</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a>func less(a, b uint32) bool {</span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>	return int32(a-b) &lt; 0</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>}</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a></span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>// notifyListAdd adds the caller to a notify list such that it can receive</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>// notifications. The caller must eventually call notifyListWait to wait for</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>// such a notification, passing the returned ticket number.</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a>//</span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a>//go:linkname notifyListAdd sync.runtime_notifyListAdd</span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>func notifyListAdd(l *notifyList) uint32 {</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a>	// This may be called concurrently, for example, when called from</span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>	// sync.Cond.Wait while holding a RWMutex in read mode.</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>	return l.wait.Add(1) - 1</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>}</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a></span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a>// notifyListWait waits for a notification. If one has been sent since</span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>// notifyListAdd was called, it returns immediately. Otherwise, it blocks.</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a>//</span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a>//go:linkname notifyListWait sync.runtime_notifyListWait</span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>func notifyListWait(l *notifyList, t uint32) {</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>	lockWithRank(&amp;l.lock, lockRankNotifyList)</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a></span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>	// Return right away if this ticket has already been notified.</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>	if less(t, l.notify) {</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a>		unlock(&amp;l.lock)</span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a>		return</span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a>	}</span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a></span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a>	// Enqueue itself.</span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a>	s := acquireSudog()</span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a>	s.g = getg()</span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a>	s.ticket = t</span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>	s.releasetime = 0</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a>	t0 := int64(0)</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a>	if blockprofilerate &gt; 0 {</span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a>		t0 = cputicks()</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a>		s.releasetime = -1</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a>	}</span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a>	if l.tail == nil {</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a>		l.head = s</span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a>	} else {</span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a>		l.tail.next = s</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a>	}</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a>	l.tail = s</span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a>	goparkunlock(&amp;l.lock, waitReasonSyncCondWait, traceBlockCondWait, 3)</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a>	if t0 != 0 {</span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a>		blockevent(s.releasetime-t0, 2)</span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a>	}</span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>	releaseSudog(s)</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>}</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a></span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a>// notifyListNotifyAll notifies all entries in the list.</span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>//</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a>//go:linkname notifyListNotifyAll sync.runtime_notifyListNotifyAll</span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>func notifyListNotifyAll(l *notifyList) {</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a>	// Fast-path: if there are no new waiters since the last notification</span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a>	// we don&#x27;t need to acquire the lock.</span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>	if l.wait.Load() == atomic.Load(&amp;l.notify) {</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a>		return</span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a>	}</span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a></span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a>	// Pull the list out into a local variable, waiters will be readied</span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a>	// outside the lock.</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a>	lockWithRank(&amp;l.lock, lockRankNotifyList)</span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a>	s := l.head</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a>	l.head = nil</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a>	l.tail = nil</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a></span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a>	// Update the next ticket to be notified. We can set it to the current</span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a>	// value of wait because any previous waiters are already in the list</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a>	// or will notice that they have already been notified when trying to</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a>	// add themselves to the list.</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a>	atomic.Store(&amp;l.notify, l.wait.Load())</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>	unlock(&amp;l.lock)</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a></span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a>	// Go through the local list and ready all waiters.</span>
+<span class="line" id="L629"><a class="ln" href="#L629">629</a>	for s != nil {</span>
+<span class="line" id="L630"><a class="ln" href="#L630">630</a>		next := s.next</span>
+<span class="line" id="L631"><a class="ln" href="#L631">631</a>		s.next = nil</span>
+<span class="line" id="L632"><a class="ln" href="#L632">632</a>		if s.g.syncGroup != nil &amp;&amp; getg().syncGroup != s.g.syncGroup {</span>
+<span class="line" id="L633"><a class="ln" href="#L633">633</a>			println(&quot;semaphore wake of synctest goroutine&quot;, s.g.goid, &quot;from outside bubble&quot;)</span>
+<span class="line" id="L634"><a class="ln" href="#L634">634</a>			panic(&quot;semaphore wake of synctest goroutine from outside bubble&quot;)</span>
+<span class="line" id="L635"><a class="ln" href="#L635">635</a>		}</span>
+<span class="line" id="L636"><a class="ln" href="#L636">636</a>		readyWithTime(s, 4)</span>
+<span class="line" id="L637"><a class="ln" href="#L637">637</a>		s = next</span>
+<span class="line" id="L638"><a class="ln" href="#L638">638</a>	}</span>
+<span class="line" id="L639"><a class="ln" href="#L639">639</a>}</span>
+<span class="line" id="L640"><a class="ln" href="#L640">640</a></span>
+<span class="line" id="L641"><a class="ln" href="#L641">641</a>// notifyListNotifyOne notifies one entry in the list.</span>
+<span class="line" id="L642"><a class="ln" href="#L642">642</a>//</span>
+<span class="line" id="L643"><a class="ln" href="#L643">643</a>//go:linkname notifyListNotifyOne sync.runtime_notifyListNotifyOne</span>
+<span class="line" id="L644"><a class="ln" href="#L644">644</a>func notifyListNotifyOne(l *notifyList) {</span>
+<span class="line" id="L645"><a class="ln" href="#L645">645</a>	// Fast-path: if there are no new waiters since the last notification</span>
+<span class="line" id="L646"><a class="ln" href="#L646">646</a>	// we don&#x27;t need to acquire the lock at all.</span>
+<span class="line" id="L647"><a class="ln" href="#L647">647</a>	if l.wait.Load() == atomic.Load(&amp;l.notify) {</span>
+<span class="line" id="L648"><a class="ln" href="#L648">648</a>		return</span>
+<span class="line" id="L649"><a class="ln" href="#L649">649</a>	}</span>
+<span class="line" id="L650"><a class="ln" href="#L650">650</a></span>
+<span class="line" id="L651"><a class="ln" href="#L651">651</a>	lockWithRank(&amp;l.lock, lockRankNotifyList)</span>
+<span class="line" id="L652"><a class="ln" href="#L652">652</a></span>
+<span class="line" id="L653"><a class="ln" href="#L653">653</a>	// Re-check under the lock if we need to do anything.</span>
+<span class="line" id="L654"><a class="ln" href="#L654">654</a>	t := l.notify</span>
+<span class="line" id="L655"><a class="ln" href="#L655">655</a>	if t == l.wait.Load() {</span>
+<span class="line" id="L656"><a class="ln" href="#L656">656</a>		unlock(&amp;l.lock)</span>
+<span class="line" id="L657"><a class="ln" href="#L657">657</a>		return</span>
+<span class="line" id="L658"><a class="ln" href="#L658">658</a>	}</span>
+<span class="line" id="L659"><a class="ln" href="#L659">659</a></span>
+<span class="line" id="L660"><a class="ln" href="#L660">660</a>	// Update the next notify ticket number.</span>
+<span class="line" id="L661"><a class="ln" href="#L661">661</a>	atomic.Store(&amp;l.notify, t+1)</span>
+<span class="line" id="L662"><a class="ln" href="#L662">662</a></span>
+<span class="line" id="L663"><a class="ln" href="#L663">663</a>	// Try to find the g that needs to be notified.</span>
+<span class="line" id="L664"><a class="ln" href="#L664">664</a>	// If it hasn&#x27;t made it to the list yet we won&#x27;t find it,</span>
+<span class="line" id="L665"><a class="ln" href="#L665">665</a>	// but it won&#x27;t park itself once it sees the new notify number.</span>
+<span class="line" id="L666"><a class="ln" href="#L666">666</a>	//</span>
+<span class="line" id="L667"><a class="ln" href="#L667">667</a>	// This scan looks linear but essentially always stops quickly.</span>
+<span class="line" id="L668"><a class="ln" href="#L668">668</a>	// Because g&#x27;s queue separately from taking numbers,</span>
+<span class="line" id="L669"><a class="ln" href="#L669">669</a>	// there may be minor reorderings in the list, but we</span>
+<span class="line" id="L670"><a class="ln" href="#L670">670</a>	// expect the g we&#x27;re looking for to be near the front.</span>
+<span class="line" id="L671"><a class="ln" href="#L671">671</a>	// The g has others in front of it on the list only to the</span>
+<span class="line" id="L672"><a class="ln" href="#L672">672</a>	// extent that it lost the race, so the iteration will not</span>
+<span class="line" id="L673"><a class="ln" href="#L673">673</a>	// be too long. This applies even when the g is missing:</span>
+<span class="line" id="L674"><a class="ln" href="#L674">674</a>	// it hasn&#x27;t yet gotten to sleep and has lost the race to</span>
+<span class="line" id="L675"><a class="ln" href="#L675">675</a>	// the (few) other g&#x27;s that we find on the list.</span>
+<span class="line" id="L676"><a class="ln" href="#L676">676</a>	for p, s := (*sudog)(nil), l.head; s != nil; p, s = s, s.next {</span>
+<span class="line" id="L677"><a class="ln" href="#L677">677</a>		if s.ticket == t {</span>
+<span class="line" id="L678"><a class="ln" href="#L678">678</a>			n := s.next</span>
+<span class="line" id="L679"><a class="ln" href="#L679">679</a>			if p != nil {</span>
+<span class="line" id="L680"><a class="ln" href="#L680">680</a>				p.next = n</span>
+<span class="line" id="L681"><a class="ln" href="#L681">681</a>			} else {</span>
+<span class="line" id="L682"><a class="ln" href="#L682">682</a>				l.head = n</span>
+<span class="line" id="L683"><a class="ln" href="#L683">683</a>			}</span>
+<span class="line" id="L684"><a class="ln" href="#L684">684</a>			if n == nil {</span>
+<span class="line" id="L685"><a class="ln" href="#L685">685</a>				l.tail = p</span>
+<span class="line" id="L686"><a class="ln" href="#L686">686</a>			}</span>
+<span class="line" id="L687"><a class="ln" href="#L687">687</a>			unlock(&amp;l.lock)</span>
+<span class="line" id="L688"><a class="ln" href="#L688">688</a>			s.next = nil</span>
+<span class="line" id="L689"><a class="ln" href="#L689">689</a>			if s.g.syncGroup != nil &amp;&amp; getg().syncGroup != s.g.syncGroup {</span>
+<span class="line" id="L690"><a class="ln" href="#L690">690</a>				println(&quot;semaphore wake of synctest goroutine&quot;, s.g.goid, &quot;from outside bubble&quot;)</span>
+<span class="line" id="L691"><a class="ln" href="#L691">691</a>				panic(&quot;semaphore wake of synctest goroutine from outside bubble&quot;)</span>
+<span class="line" id="L692"><a class="ln" href="#L692">692</a>			}</span>
+<span class="line" id="L693"><a class="ln" href="#L693">693</a>			readyWithTime(s, 4)</span>
+<span class="line" id="L694"><a class="ln" href="#L694">694</a>			return</span>
+<span class="line" id="L695"><a class="ln" href="#L695">695</a>		}</span>
+<span class="line" id="L696"><a class="ln" href="#L696">696</a>	}</span>
+<span class="line" id="L697"><a class="ln" href="#L697">697</a>	unlock(&amp;l.lock)</span>
+<span class="line" id="L698"><a class="ln" href="#L698">698</a>}</span>
+<span class="line" id="L699"><a class="ln" href="#L699">699</a></span>
+<span class="line" id="L700"><a class="ln" href="#L700">700</a>//go:linkname notifyListCheck sync.runtime_notifyListCheck</span>
+<span class="line" id="L701"><a class="ln" href="#L701">701</a>func notifyListCheck(sz uintptr) {</span>
+<span class="line" id="L702"><a class="ln" href="#L702">702</a>	if sz != unsafe.Sizeof(notifyList{}) {</span>
+<span class="line" id="L703"><a class="ln" href="#L703">703</a>		print(&quot;runtime: bad notifyList size - sync=&quot;, sz, &quot; runtime=&quot;, unsafe.Sizeof(notifyList{}), &quot;\n&quot;)</span>
+<span class="line" id="L704"><a class="ln" href="#L704">704</a>		throw(&quot;bad notifyList size&quot;)</span>
+<span class="line" id="L705"><a class="ln" href="#L705">705</a>	}</span>
+<span class="line" id="L706"><a class="ln" href="#L706">706</a>}</span>
+<span class="line" id="L707"><a class="ln" href="#L707">707</a></span>
+<span class="line" id="L708"><a class="ln" href="#L708">708</a>//go:linkname internal_sync_nanotime internal/sync.runtime_nanotime</span>
+<span class="line" id="L709"><a class="ln" href="#L709">709</a>func internal_sync_nanotime() int64 {</span>
+<span class="line" id="L710"><a class="ln" href="#L710">710</a>	return nanotime()</span>
+<span class="line" id="L711"><a class="ln" href="#L711">711</a>}</span></pre></html>

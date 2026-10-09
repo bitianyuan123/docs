@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant Q as 请求处理协程
+    participant P as 附加路径协调协程
+    participant W as 一条pipeline工作协程
+    Q->>Q: 创建User、ctx；完成需等待的用户特征
+    Q-)P: go；共享User、ctx和debugService
+    P-)W: go Recommend(user,ctx)
+    par 主路径
+        Q->>Q: 召回→过滤→特征→Rank
+        Q->>Q: wg.Wait()
+        Note over Q: 若附加路径未完成<br/>当前协程挂起
+    and 附加路径
+        W->>W: 自己的召回、特征、打分、排序
+        W-)P: ch发送 []*Item
+        P->>P: 收齐；写pipelineItems；defer wg.Done()
+        P-)Q: 计数归零后使等待协程可运行
+    end
+    Q->>Q: 重新获得执行机会；mergePipelineItems
+    Q->>Q: 重排、截断、构造HTTP响应

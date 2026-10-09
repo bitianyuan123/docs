@@ -1,0 +1,138 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/go.mod</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/go.mod</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v2.6.2</code><br>原文件 SHA256：<code>0369bfaf9f40d5db7d6ad69876965fb9f31aa67abf5da166da75189bf30da599</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>module github.com/alibaba/pairec/v2</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>go 1.24</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>require (</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	github.com/ClickHouse/clickhouse-go v1.5.4</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	github.com/Knetic/govaluate v3.0.1-0.20171022003610-9aa49832a739+incompatible</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	github.com/alibabacloud-go/darabonba-encode-util v0.0.2</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	github.com/alibabacloud-go/darabonba-map v0.0.2</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	github.com/alibabacloud-go/darabonba-string v1.0.2</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	github.com/alibabacloud-go/tea v1.3.12</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	github.com/alibabacloud-go/tea-utils v1.4.5</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	github.com/aliyun/aliyun-be-go-sdk v1.0.1-0.20230607022243-19a50c32ec4c</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	github.com/aliyun/aliyun-datahub-sdk-go v1.1.1</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	github.com/aliyun/aliyun-igraph-go-sdk v0.0.0-20221208132745-defc68e1b227</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	github.com/aliyun/aliyun-log-go-sdk v0.1.27</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	github.com/aliyun/aliyun-tablestore-go-sdk v1.7.7</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	github.com/expr-lang/expr v1.17.6</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	github.com/go-sql-driver/mysql v1.7.1</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	github.com/goburrow/cache v0.1.3</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	github.com/gogo/protobuf v1.3.2 // indirect</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	github.com/golang/protobuf v1.5.4</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	github.com/golang/snappy v0.0.4</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	github.com/gomodule/redigo v1.9.3</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	github.com/huandu/go-sqlbuilder v1.21.0</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>	github.com/lib/pq v1.10.9</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	github.com/mailru/easyjson v0.7.6</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	github.com/milvus-io/milvus-sdk-go/v2 v2.2.1-0.20230210104028-47d534fab70e</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	github.com/patrickmn/go-cache v2.1.0+incompatible</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	github.com/prometheus/client_golang v1.15.1</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	github.com/segmentio/kafka-go v0.4.23</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	github.com/spaolacci/murmur3 v1.1.0</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	github.com/tidwall/gjson v1.14.3</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>	github.com/tsuna/gohbase v0.0.0-20200414231402-ae5d5a2cd032</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>	golang.org/x/exp v0.0.0-20240525044651-4c93da0ed11d</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	gonum.org/v1/gonum v0.12.0</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>	google.golang.org/grpc v1.48.0</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>	google.golang.org/protobuf v1.33.0</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>)</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>require (</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	fortio.org/assert v1.2.1</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>	github.com/alibabacloud-go/opensearch-util v1.0.1</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	github.com/aliyun/aliyun-pai-featurestore-go-sdk/v2 v2.3.7-0.20250919070609-b13950e7887b</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>	github.com/aliyun/aliyun-pairec-config-go-sdk/v2 v2.1.2-0.20251127021918-fbafc72f36fa</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	github.com/aliyun/credentials-go v1.4.6</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>	github.com/apache/calcite-avatica-go/v5 v5.0.0</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	github.com/bruceding/go-antlr-valuate v0.0.3</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>	github.com/golang/geo v0.0.0-20251029182131-33017506d313</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>	github.com/google/uuid v1.3.0</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	github.com/mmcloughlin/geohash v0.10.0</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	go.uber.org/automaxprocs v1.5.2</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>)</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>require (</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.5 // indirect</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>	github.com/alibabacloud-go/darabonba-openapi/v2 v2.1.12 // indirect</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>	github.com/alibabacloud-go/endpoint-util v1.1.0 // indirect</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>	github.com/alibabacloud-go/openapi-util v0.1.1 // indirect</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	github.com/alibabacloud-go/paifeaturestore-20230621/v4 v4.0.0 // indirect</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	github.com/alibabacloud-go/pairecservice-20221213/v3 v3.3.0 // indirect</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>	github.com/alibabacloud-go/tea-utils/v2 v2.0.7 // indirect</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>	github.com/aliyun/alibaba-cloud-sdk-go v1.63.92 // indirect</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	github.com/aliyun/aliyun-odps-go-sdk/arrow v0.0.1 // indirect</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>	github.com/clbanning/mxj/v2 v2.7.0 // indirect</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	github.com/google/flatbuffers v23.1.21+incompatible // indirect</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0 // indirect</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	github.com/hamba/avro/v2 v2.28.0 // indirect</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>	github.com/hashicorp/go-uuid v1.0.3 // indirect</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	github.com/hashicorp/golang-lru v0.5.4 // indirect</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	github.com/jcmturner/aescts/v2 v2.0.0 // indirect</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	github.com/jcmturner/dnsutils/v2 v2.0.0 // indirect</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>	github.com/jcmturner/gofork v1.7.6 // indirect</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	github.com/jcmturner/goidentity/v6 v6.0.1 // indirect</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>	github.com/jcmturner/gokrb5/v8 v8.4.3 // indirect</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	github.com/jcmturner/rpc/v2 v2.0.3 // indirect</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>	github.com/jmespath/go-jmespath v0.4.0 // indirect</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	github.com/milvus-io/milvus-proto/go-api v0.0.0-20230105121931-9f9303dcc729 // indirect</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>	github.com/mitchellh/mapstructure v1.5.0 // indirect</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>	github.com/opentracing/opentracing-go v1.2.1-0.20220228012449-10b1cf09e00b // indirect</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	github.com/pierrec/lz4/v4 v4.1.11 // indirect</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>	github.com/rcrowley/go-metrics v0.0.0-20181016184325-3113b8401b8a // indirect</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>	github.com/rogpeppe/go-internal v1.11.0 // indirect</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>	github.com/valyala/fasttemplate v1.2.2 // indirect</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>	github.com/xinsnake/go-http-digest-auth-client v0.6.0 // indirect</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	golang.org/x/crypto v0.24.0 // indirect</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	golang.org/x/sync v0.11.0 // indirect</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>	gopkg.in/ini.v1 v1.67.0 // indirect</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>	modernc.org/mathutil v1.6.0 // indirect</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>	modernc.org/strutil v1.2.0 // indirect</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>)</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a></span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>require (</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>	github.com/alibabacloud-go/debug v1.0.1 // indirect</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>	github.com/andybalholm/brotli v1.0.4 // indirect</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>	github.com/antihax/optional v1.0.0 // indirect</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>	github.com/apache/thrift v0.14.1</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>	github.com/beorn7/perks v1.0.1 // indirect</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	github.com/cenkalti/backoff v2.2.1+incompatible // indirect</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	github.com/cespare/xxhash/v2 v2.2.0</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>	github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58 // indirect</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>	github.com/go-kit/kit v0.12.0 // indirect</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>	github.com/go-kit/log v0.2.1 // indirect</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>	github.com/go-logfmt/logfmt v0.5.1 // indirect</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>	github.com/huandu/xstrings v1.3.2 // indirect</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>	github.com/josharian/intern v1.0.0 // indirect</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	github.com/json-iterator/go v1.1.12</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>	github.com/klauspost/compress v1.17.11</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>	github.com/modern-go/reflect2 v1.0.2 // indirect</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>	github.com/pierrec/lz4 v2.6.1+incompatible</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>	github.com/pkg/errors v0.9.1</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>	github.com/prometheus/client_model v0.3.0 // indirect</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	github.com/prometheus/common v0.42.0</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>	github.com/prometheus/procfs v0.9.0 // indirect</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>	github.com/samuel/go-zookeeper v0.0.0-20190923202752-2cc03de413da // indirect</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>	github.com/shopspring/decimal v1.3.1 // indirect</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>	github.com/sirupsen/logrus v1.9.3 // indirect</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	github.com/tidwall/match v1.1.1 // indirect</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>	github.com/tidwall/pretty v1.2.1 // indirect</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>	github.com/tjfoc/gmsm v1.4.1 // indirect</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>	github.com/valyala/bytebufferpool v1.0.0 // indirect</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>	github.com/valyala/fasthttp v1.43.0 // indirect</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>	go.uber.org/atomic v1.9.0 // indirect</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	golang.org/x/net v0.26.0</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>	golang.org/x/sys v0.21.0</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	golang.org/x/text v0.16.0 // indirect</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	google.golang.org/genproto v0.0.0-20220616135557-88e70c0c3a90 // indirect</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>	modernc.org/b v1.0.0 // indirect</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>)</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a></span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>replace github.com/apache/calcite-avatica-go/v5 =&gt; github.com/aliyun/alibabacloud-lindorm-go-sql-driver/v5 v5.0.1</span></pre></html>

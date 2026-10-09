@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant A as accept线程
+    participant Q as FdQueue
+    participant W as HTTP接入线程
+    participant T as 历史或候选任务队列
+    A->>A: accept返回fd
+    A->>Q: push(fd)：持锁入队
+    Q-->>A: 解锁并notify_one，返回
+    W->>Q: pop：检查队列或stop谓词
+    Note over Q,W: 无fd时释放锁等待<br/>被通知后重新争锁与CPU
+    Q-->>W: fd出队，释放锁
+    W->>W: read_request：阻塞收头和body
+    W->>W: 解析路由，构造输入与done
+    W-)T: 向对应Executor交付异步任务
+    Note over W: 交付成功后当前接入线程可取下一fd

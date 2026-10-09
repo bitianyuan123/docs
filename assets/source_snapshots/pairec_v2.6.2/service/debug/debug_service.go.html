@@ -1,0 +1,628 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/service/debug/debug_service.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/service/debug/debug_service.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v2.6.2</code><br>原文件 SHA256：<code>8638aee13df712e9f67338a6005edb2c033daf508a4582cb38f38554b87393d3</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package debug</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;bytes&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;encoding/json&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;fmt&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;math/rand&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;os&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;path/filepath&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;runtime/debug&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;sort&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;strconv&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	&quot;strings&quot;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	&quot;sync&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;time&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>	&quot;github.com/alibaba/pairec/v2/context&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	&quot;github.com/alibaba/pairec/v2/datasource/datahub&quot;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	&quot;github.com/alibaba/pairec/v2/datasource/kafka&quot;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	&quot;github.com/alibaba/pairec/v2/log&quot;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	&quot;github.com/alibaba/pairec/v2/module&quot;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	&quot;github.com/alibaba/pairec/v2/recconf&quot;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>)</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a></span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>type LogOutputer interface {</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	WriteLog(log map[string]interface{})</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>}</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>type ConsoleOutput struct {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>}</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>func (t *ConsoleOutput) WriteLog(log map[string]interface{}) {</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>	j, _ := json.Marshal(log)</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>	fmt.Println(string(j))</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>}</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a></span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>type DatahubOutput struct {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	datahub *datahub.Datahub</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>}</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a></span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>func NewDatahubOutput(config *recconf.DebugConfig) *DatahubOutput {</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	datahubclient, err := datahub.GetDatahub(config.DatahubName)</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>	hub := DatahubOutput{}</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>	if err != nil {</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>		fmt.Println(err)</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	} else {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>		hub.datahub = datahubclient</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>	}</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	return &amp;hub</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>}</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a></span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>func (t *DatahubOutput) WriteLog(log map[string]interface{}) {</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	t.datahub.SendMessage([]map[string]interface{}{log})</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>}</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>type KafkaOutput struct {</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>	kafka *kafka.KafkaProducer</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a></span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>func NewKafkaOutput(config *recconf.DebugConfig) *KafkaOutput {</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	kafkaclient, err := kafka.GetKafkaProducer(config.KafKaName)</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	hub := KafkaOutput{}</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>	if err != nil {</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		fmt.Println(err)</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	} else {</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>		hub.kafka = kafkaclient</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>	}</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	return &amp;hub</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>}</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>func (k *KafkaOutput) WriteLog(logs map[string]interface{}) {</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	module, _ := json.Marshal(logs[&quot;module&quot;])</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	messages, _ := json.Marshal(logs)</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	k.kafka.SendMessages(module, messages)</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>}</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a></span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>var fileOutputMux sync.Mutex</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a></span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>type FileOutput struct {</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	path       string</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>	maxFileNum int</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>}</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a></span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>func NewFileOutput(config *recconf.DebugConfig) *FileOutput {</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>	file := FileOutput{}</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a></span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>	file.path = config.FilePath</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	filepath.Clean(file.path)</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>	if !strings.HasSuffix(file.path, &quot;/&quot;) {</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>		file.path += &quot;/&quot;</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>	}</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>	if config.MaxFileNum &gt; 0 {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>		file.maxFileNum = config.MaxFileNum</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>	} else {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		file.maxFileNum = 20</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	}</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a></span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>	return &amp;file</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>}</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a></span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>func (t *FileOutput) WriteLog(log map[string]interface{}) {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>	logData, _ := json.MarshalIndent(log, &quot;&quot;, &quot;	&quot;)</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>	logData = append(logData, &#x27;\n&#x27;)</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a></span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>	err := os.MkdirAll(t.path, 0755)</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>	if err != nil {</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>		fmt.Println(err)</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>		return</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>	}</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>	f, err := t.getCurrFile()</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>	if err != nil {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>		fmt.Println(err)</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>		return</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>	}</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a></span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>	fileOutputMux.Lock()</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>	defer fileOutputMux.Unlock()</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>	defer f.Close()</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a></span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>	_, err = f.Write(logData)</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>	if err != nil {</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>		fmt.Println(err)</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	}</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a></span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>func (t *FileOutput) getCurrFile() (*os.File, error) {</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>	files, err := t.getSortedFiles()</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>	if err != nil {</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>		return nil, err</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>	}</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	var f *os.File</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	if len(files) == 0 {</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>		f, err = t.newFile()</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>		if err != nil {</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>			return nil, err</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>		}</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>	} else {</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>		f, err = os.OpenFile(filepath.Join(t.path, files[len(files)-1].Name()), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>		if err != nil {</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>			return nil, err</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>		}</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>		fileInfo, err := f.Stat()</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>		if err != nil {</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>			return nil, err</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>		}</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>		if fileInfo.Size() &gt; 1024*1024*1024 {</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>			f.Close()</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a></span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>			if len(files) &gt;= t.maxFileNum {</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>				for i := 0; i &lt; len(files)-t.maxFileNum+1; i++ {</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>					err := os.Remove(filepath.Join(t.path, files[i].Name()))</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>					if err != nil {</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>						return nil, err</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>					}</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>				}</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>			}</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a></span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>			f, err = t.newFile()</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>			if err != nil {</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>				return nil, err</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>			}</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>		} else {</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>			if len(files) &gt; t.maxFileNum {</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>				for i := 0; i &lt; len(files)-t.maxFileNum; i++ {</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>					err := os.Remove(filepath.Join(t.path, files[i].Name()))</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>					if err != nil {</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>						return nil, err</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>					}</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>				}</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>			}</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>		}</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>	}</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	return f, nil</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>}</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a></span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>func (t *FileOutput) newFile() (*os.File, error) {</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>	datetime := time.Now().Format(&quot;20060102150405&quot;)</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>	f, err := os.OpenFile(t.path+&quot;pairec.debug.&quot;+datetime+&quot;.log&quot;, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>	if err != nil {</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>		return nil, err</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>	}</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>	return f, nil</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>}</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a></span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>func (t *FileOutput) getSortedFiles() ([]os.FileInfo, error) {</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>	files := []os.FileInfo{}</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>	err := filepath.Walk(t.path, func(path string, info os.FileInfo, err error) error {</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>		if info.IsDir() &amp;&amp; path != t.path {</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>			return filepath.SkipDir</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>		}</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>		if !info.IsDir() {</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>			if strings.HasPrefix(info.Name(), &quot;pairec.debug.&quot;) &amp;&amp; strings.HasSuffix(info.Name(), &quot;.log&quot;) {</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>				files = append(files, info)</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>			}</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>		}</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>		return nil</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	})</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>	if err != nil {</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>		return nil, err</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>	}</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>	sort.Slice(files, func(i, j int) bool {</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>		return t.getFileTimestamp(files[i]) &lt; t.getFileTimestamp(files[j])</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>	})</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>	return files, nil</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>}</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a></span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>func (t *FileOutput) getFileTimestamp(file os.FileInfo) int64 {</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>	timestampStr := strings.TrimSuffix(strings.TrimPrefix(file.Name(), &quot;pairec.debug.&quot;), &quot;.log&quot;)</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>	timestamp, _ := strconv.ParseInt(timestampStr, 10, 64)</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>	return timestamp</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>}</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a></span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>type EmptyOutput struct {</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>}</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a></span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>func (t *EmptyOutput) WriteLog(log map[string]interface{}) {</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>}</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a></span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>type DebugService struct {</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>	logFlag     bool</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>	logOutputer LogOutputer</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>	requestTime int64</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>}</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a></span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>func NewDebugService(user *module.User, context *context.RecommendContext) *DebugService {</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>	service := DebugService{</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>		logFlag: false,</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>	}</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>	var debugConfig recconf.DebugConfig</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a></span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>	found := false</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>		data := context.ExperimentResult.GetExperimentParams().GetString(&quot;debugConfig&quot;, &quot;&quot;)</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>		if data != &quot;&quot; {</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>			if err := json.Unmarshal([]byte(data), &amp;debugConfig); err == nil {</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>				found = true</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>			}</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>		}</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>	}</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a></span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>	if !found {</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>		scene := context.GetParameter(&quot;scene&quot;).(string)</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>		if config, ok := context.Config.DebugConfs[scene]; ok {</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>			found = true</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>			debugConfig = config</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>		}</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>	}</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a></span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>	if !found {</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>		// not found debug config, not set logflag</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>		return &amp;service</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>	}</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a></span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>	if debugConfig.Rate == 100 {</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>		service.logFlag = true</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>	} else {</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>		if len(debugConfig.DebugUsers) &gt; 0 {</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>			for _, uid := range debugConfig.DebugUsers {</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>				if uid == string(user.Id) {</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>					service.logFlag = true</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>					break</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>				}</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>			}</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>		}</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a></span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>		if !service.logFlag {</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>			if rand.Intn(100) &lt; debugConfig.Rate {</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>				service.logFlag = true</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>			}</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>		}</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>	}</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a></span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>	if service.logFlag {</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>		service.requestTime = time.Now().Unix()</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>		service.init(&amp;debugConfig)</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>	}</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>	return &amp;service</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>}</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a></span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>func (d *DebugService) init(config *recconf.DebugConfig) {</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a></span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>	switch config.OutputType {</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>	case &quot;console&quot;:</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>		d.logOutputer = new(ConsoleOutput)</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a></span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>	case &quot;datahub&quot;:</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>		d.logOutputer = NewDatahubOutput(config)</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a></span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>	case &quot;file&quot;:</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>		d.logOutputer = NewFileOutput(config)</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a></span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>	case &quot;kafka&quot;:</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>		d.logOutputer = NewKafkaOutput(config)</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a></span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>	default:</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>		d.logOutputer = new(EmptyOutput)</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>	}</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>}</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a></span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>type debugItem struct {</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>	Id         string</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>	RetrieveId string</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>	Score      float64</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>	AlgoScores map[string]float64</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>}</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a></span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>var bufferPool = sync.Pool{</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>	New: func() interface{} {</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>		var buf bytes.Buffer</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>		buf.Grow(4096)</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>		return &amp;buf</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>	},</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>}</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a></span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>func (d *DebugService) WriteRecallLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>	if d.logFlag {</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>		triggerMap := make(map[module.ItemId]string, len(items))</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>		newItems := make([]*debugItem, 0, len(items))</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>		for _, item := range items {</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>			triggerMap[item.Id] = item.StringProperty(&quot;trigger_id&quot;)</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>			newItem := debugItem{</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>				Id:         string(item.Id),</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>				RetrieveId: item.RetrieveId,</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>				Score:      item.Score,</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>			}</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>			newItems = append(newItems, &amp;newItem)</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>		}</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>		go d.doWriteRecallLog(user, newItems, context, triggerMap)</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>	}</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>}</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a></span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>func (d *DebugService) WriteFilterLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>	if d.logFlag {</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>		go d.doWriteFilterLog(user, items, context)</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>	}</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>}</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a></span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>func (d *DebugService) WriteGeneralLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>	if d.logFlag {</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>		newItems := make([]*debugItem, 0, len(items))</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>		for _, item := range items {</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>			newItem := debugItem{</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>				Id:         string(item.Id),</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>				RetrieveId: item.RetrieveId,</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>				Score:      item.Score,</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>				AlgoScores: item.CloneAlgoScores(),</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>			}</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>			newItems = append(newItems, &amp;newItem)</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>		}</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>		go d.doWriteGeneralLog(user, newItems, context)</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a>	}</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>}</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a></span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>func (d *DebugService) WriteRankLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>	if d.logFlag {</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>		newItems := make([]*debugItem, 0, len(items))</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a>		for _, item := range items {</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>			newItem := debugItem{</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>				Id:         string(item.Id),</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>				RetrieveId: item.RetrieveId,</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>				Score:      item.Score,</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>				AlgoScores: item.CloneAlgoScores(),</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>			}</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>			newItems = append(newItems, &amp;newItem)</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>		}</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>		go d.doWriteRankLog(user, newItems, context)</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>	}</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>}</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a></span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>func (d *DebugService) WriteSortLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>	if d.logFlag {</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>		go d.doWriteSortLog(user, items, context)</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>	}</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>}</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a></span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>func (d *DebugService) WriteRecommendLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>	if d.logFlag {</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>		go d.doWriteRecommendLog(user, items, context)</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a>	}</span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>}</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a></span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>func (d *DebugService) doWriteRecallLog(user *module.User, items []*debugItem, context *context.RecommendContext, triggerMap map[module.ItemId]string) {</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>	log := make(map[string]interface{}, 8)</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a></span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>	log[&quot;request_id&quot;] = context.RecommendId</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>	log[&quot;module&quot;] = &quot;recall&quot;</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>	log[&quot;scene_id&quot;] = context.GetParameter(&quot;scene&quot;)</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>		log[&quot;exp_id&quot;] = context.ExperimentResult.GetExpId()</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>	}</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>	log[&quot;request_time&quot;] = d.requestTime</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>	log[&quot;uid&quot;] = string(user.Id)</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a>	//var itemLogInfos []string</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a></span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>	itemsMap := make(map[string][]*debugItem)</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>	for _, item := range items {</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>		itemsMap[item.RetrieveId] = append(itemsMap[item.RetrieveId], item)</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>	}</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a></span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>	buf := bufferPool.Get().(*bytes.Buffer)</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>	defer bufferPool.Put(buf)</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a></span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>	for name, itemList := range itemsMap {</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a>		log[&quot;retrieveid&quot;] = name</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>		buf.Reset()</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>		for i, item := range itemList {</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>			if i &gt; 0 {</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>				buf.WriteByte(&#x27;,&#x27;)</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>			}</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>			buf.WriteString(item.Id)</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>			buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>			buf.WriteString(strconv.FormatFloat(item.Score, &#x27;f&#x27;, -1, 64))</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>			buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>			buf.WriteString(triggerMap[module.ItemId(item.Id)])</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>			//itemLogInfos = append(itemLogInfos, buf.String())</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>		}</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>		log[&quot;items&quot;] = buf.String()</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>		d.logOutputer.WriteLog(log)</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a></span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>		//itemLogInfos = itemLogInfos[:0]</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>	}</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a></span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>}</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a></span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>func (d *DebugService) doWriteFilterLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>	log := make(map[string]interface{})</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a></span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>	log[&quot;request_id&quot;] = context.RecommendId</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a>	log[&quot;module&quot;] = &quot;filter&quot;</span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>	log[&quot;scene_id&quot;] = context.GetParameter(&quot;scene&quot;)</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>		log[&quot;exp_id&quot;] = context.ExperimentResult.GetExpId()</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>	}</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>	log[&quot;request_time&quot;] = d.requestTime</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>	log[&quot;uid&quot;] = string(user.Id)</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>	//var itemLogInfos []string</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>	itemsMap := make(map[string][]*module.Item)</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>	for _, item := range items {</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>		itemsMap[item.GetRecallName()] = append(itemsMap[item.GetRecallName()], item)</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>	}</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a></span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>	buf := bufferPool.Get().(*bytes.Buffer)</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>	defer bufferPool.Put(buf)</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>	for name, itemList := range itemsMap {</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>		log[&quot;retrieveid&quot;] = name</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>		buf.Reset()</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a>		for i, item := range itemList {</span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>			if i &gt; 0 {</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>				buf.WriteByte(&#x27;,&#x27;)</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>			}</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>			buf.WriteString(string(item.Id))</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>			buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>			buf.WriteString(strconv.FormatFloat(item.Score, &#x27;f&#x27;, -1, 64))</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>			//itemLogInfos = append(itemLogInfos, fmt.Sprintf(&quot;%s:%f&quot;, item.Id, item.Score))</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>		}</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>		log[&quot;items&quot;] = buf.String()</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>		d.logOutputer.WriteLog(log)</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a></span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>		//itemLogInfos = itemLogInfos[:0]</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>	}</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a></span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>}</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a></span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>func (d *DebugService) doWriteGeneralLog(user *module.User, items []*debugItem, context *context.RecommendContext) {</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>	defer func() {</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>		if err := recover(); err != nil {</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>			stack := string(debug.Stack())</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>			log.Error(fmt.Sprintf(&quot;error=%v, stack=%s&quot;, err, strings.ReplaceAll(stack, &quot;\n&quot;, &quot;\t&quot;)))</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a>		}</span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a>	}()</span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a></span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>	log := make(map[string]interface{})</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a></span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>	log[&quot;request_id&quot;] = context.RecommendId</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a>	log[&quot;module&quot;] = &quot;general_rank&quot;</span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>	log[&quot;scene_id&quot;] = context.GetParameter(&quot;scene&quot;)</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>		log[&quot;exp_id&quot;] = context.ExperimentResult.GetExpId()</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>	}</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>	log[&quot;request_time&quot;] = d.requestTime</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a>	log[&quot;uid&quot;] = string(user.Id)</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>	itemsMap := make(map[string][]*debugItem)</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>	for _, item := range items {</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>		itemsMap[item.RetrieveId] = append(itemsMap[item.RetrieveId], item)</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>	}</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a></span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>	buf := bufferPool.Get().(*bytes.Buffer)</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>	defer bufferPool.Put(buf)</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a></span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>	for name, itemList := range itemsMap {</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>		log[&quot;retrieveid&quot;] = name</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>		buf.Reset()</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>		for i, item := range itemList {</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>			if i &gt; 0 {</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>				buf.WriteByte(&#x27;,&#x27;)</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>			}</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>			buf.WriteString(item.Id)</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>			buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>			buf.WriteString(strconv.FormatFloat(item.Score, &#x27;f&#x27;, -1, 64))</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a>			if b, err := json.Marshal(item.AlgoScores); err == nil {</span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>				buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>				buf.Write(b)</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a>			}</span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>		}</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a>		log[&quot;items&quot;] = buf.String()</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a>		d.logOutputer.WriteLog(log)</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a>	}</span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a></span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>}</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a></span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>func (d *DebugService) doWriteRankLog(user *module.User, items []*debugItem, context *context.RecommendContext) {</span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>	log := make(map[string]interface{})</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a></span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>	log[&quot;request_id&quot;] = context.RecommendId</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>	log[&quot;module&quot;] = &quot;rank&quot;</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>	log[&quot;scene_id&quot;] = context.GetParameter(&quot;scene&quot;)</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>		log[&quot;exp_id&quot;] = context.ExperimentResult.GetExpId()</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>	}</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>	log[&quot;request_time&quot;] = d.requestTime</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>	log[&quot;uid&quot;] = string(user.Id)</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>	itemsMap := make(map[string][]*debugItem)</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a>	//gosort.Sort(gosort.Reverse(sort.ItemScoreSlice(items)))</span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>	for _, item := range items {</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>		itemsMap[item.RetrieveId] = append(itemsMap[item.RetrieveId], item)</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a>	}</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a></span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>	buf := bufferPool.Get().(*bytes.Buffer)</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>	defer bufferPool.Put(buf)</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a></span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>	for name, itemList := range itemsMap {</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a>		log[&quot;retrieveid&quot;] = name</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a>		buf.Reset()</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a>		for i, item := range itemList {</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a>			if i &gt; 0 {</span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>				buf.WriteByte(&#x27;,&#x27;)</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>			}</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a>			buf.WriteString(item.Id)</span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>			buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>			buf.WriteString(strconv.FormatFloat(item.Score, &#x27;f&#x27;, -1, 64))</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a>			if b, err := json.Marshal(item.AlgoScores); err == nil {</span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>				buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a>				buf.Write(b)</span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a>			}</span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>		}</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a>		log[&quot;items&quot;] = buf.String()</span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>		d.logOutputer.WriteLog(log)</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a>	}</span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a></span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>}</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a></span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a>func (d *DebugService) doWriteSortLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>	log := make(map[string]interface{})</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a></span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>	log[&quot;request_id&quot;] = context.RecommendId</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>	log[&quot;module&quot;] = &quot;sort&quot;</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>	log[&quot;scene_id&quot;] = context.GetParameter(&quot;scene&quot;)</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a>		log[&quot;exp_id&quot;] = context.ExperimentResult.GetExpId()</span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a>	}</span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>	log[&quot;request_time&quot;] = d.requestTime</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a>	log[&quot;uid&quot;] = string(user.Id)</span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>	itemsMap := make(map[string][]*module.Item)</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>	for _, item := range items {</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>		itemsMap[item.GetRecallName()] = append(itemsMap[item.GetRecallName()], item)</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a>	}</span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a>	buf := bufferPool.Get().(*bytes.Buffer)</span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>	defer bufferPool.Put(buf)</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a></span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a>	for name, itemList := range itemsMap {</span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>		log[&quot;retrieveid&quot;] = name</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>		buf.Reset()</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a>		for i, item := range itemList {</span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>			if i &gt; 0 {</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>				buf.WriteByte(&#x27;,&#x27;)</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a>			}</span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a>			buf.WriteString(string(item.Id))</span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a>			buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a>			buf.WriteString(strconv.FormatFloat(item.Score, &#x27;f&#x27;, -1, 64))</span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a>			if b, err := json.Marshal(item.CloneAlgoScores()); err == nil {</span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a>				buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a>				buf.Write(b)</span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a>			}</span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>		}</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a>		log[&quot;items&quot;] = buf.String()</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a>		d.logOutputer.WriteLog(log)</span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a>	}</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a>}</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a></span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a>func (d *DebugService) doWriteRecommendLog(user *module.User, items []*module.Item, context *context.RecommendContext) {</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a>	log := make(map[string]interface{})</span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a></span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a>	log[&quot;request_id&quot;] = context.RecommendId</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a>	log[&quot;module&quot;] = &quot;recommend&quot;</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a>	log[&quot;scene_id&quot;] = context.GetParameter(&quot;scene&quot;)</span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a>	if context.ExperimentResult != nil {</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a>		log[&quot;exp_id&quot;] = context.ExperimentResult.GetExpId()</span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a>	}</span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a>	log[&quot;request_time&quot;] = d.requestTime</span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>	log[&quot;uid&quot;] = string(user.Id)</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>	itemsMap := make(map[string][]*module.Item)</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a>	for _, item := range items {</span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a>		itemsMap[item.GetRecallName()] = append(itemsMap[item.GetRecallName()], item)</span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>	}</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a></span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>	buf := bufferPool.Get().(*bytes.Buffer)</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a>	defer bufferPool.Put(buf)</span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a></span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>	for name, itemList := range itemsMap {</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a>		log[&quot;retrieveid&quot;] = name</span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a>		buf.Reset()</span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a>		for i, item := range itemList {</span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a>			if i &gt; 0 {</span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a>				buf.WriteByte(&#x27;,&#x27;)</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a>			}</span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a>			buf.WriteString(string(item.Id))</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a>			buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a>			buf.WriteString(strconv.FormatFloat(item.Score, &#x27;f&#x27;, -1, 64))</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a>			if b, err := json.Marshal(item.CloneAlgoScores()); err == nil {</span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a>				buf.WriteByte(&#x27;:&#x27;)</span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a>				buf.Write(b)</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a>			}</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a>		}</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a>		log[&quot;items&quot;] = buf.String()</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>		d.logOutputer.WriteLog(log)</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a>	}</span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a>}</span></pre></html>

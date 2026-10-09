@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant Q as 请求或特征加载协程
+    participant D as Redis DAO工作协程
+    participant P as Redigo连接池
+    participant I as 本请求Item对象
+    Q->>Q: groups[0]保存4个Item指针，投递requestCh
+    Q-)D: go，一次取走该组
+    Q->>Q: wg.Wait()
+    D->>P: Get()，借用或新建连接
+    P-->>D: 一个连接
+    D->>D: conn.Do(MGET,4个key)，等待后端字节
+    Note over D: 网络等待可挂起G<br/>连接与候选仍被保留
+    D->>D: RESP转换为字符串数组
+    loop 每个非空value
+        D->>D: JSON解析，新建properties map
+        D->>I: AddProperties(properties)
+        I->>I: 加Item锁，逐字段写入，解锁
+        I-->>D: 写入完成
+    end
+    D->>P: defer Close()，归还或关闭连接
+    P-->>D: 完成
+    D-)Q: defer wg.Done()，最后一个完成者使等待者可运行
+    Q->>Q: 调度后继续特征转换或Rank

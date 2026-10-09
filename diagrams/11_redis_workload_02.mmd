@@ -1,21 +1,14 @@
 sequenceDiagram
-    participant F as 特征业务任务
-    participant C as 特征客户端IO
-    participant K as Redis所在OS
-    participant R as Redis主线程
-    F->>C: 查询user_keys的4项，等待结果
-    R->>K: aeApiPoll → epoll_wait，无就绪事件
-    C-)K: TCP发送219字节RESP请求
-    K-->>R: 可读事件返回；需取得CPU后处理
-    R->>K: readQueryFromClient → connRead
-    K-->>R: 已到达的字节，累积到querybuf
-    R->>R: processInputBuffer：收齐参数，argc=5
-    R->>R: processCommand → call → mgetCommand
-    R->>R: 顺序查4键，构造1520字节数组回复
-    R->>R: 加入待写连接列表；beforeSleep处理
-    R->>K: writeToClient → socket write/writev
-    K-->>R: 本次接受的字节数
-    K-)C: TCP传回回复字节
-    C->>C: 收齐1个RESP数组，核对4个位置
-    C-->>F: 4个JSON字符串
-    F->>F: JSON解码、业务核验，返回用户上下文
+    participant A as 连接甲的内存状态
+    participant M as Redis主线程
+    participant B as 连接乙的内存状态
+    M->>A: 可读回调；读入甲1与甲2两条完整命令
+    A-->>M: querybuf包含两条命令
+    M->>M: 解析甲1；完整执行用户1的4键MGET
+    M->>M: resetClient；继续同一processInputBuffer循环
+    M->>M: 解析并完整执行甲2
+    Note over M,B: 乙即使已就绪，也要等主线程<br/>离开甲的处理路径
+    M->>B: 本轮处理乙的可读回调
+    B-->>M: 候选五键MGET
+    M->>M: 完整执行乙；两连接回复各归其缓冲
+    M->>M: 后续处理待写、定时维护及下一轮事件

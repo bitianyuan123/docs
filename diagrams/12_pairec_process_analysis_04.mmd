@@ -1,0 +1,24 @@
+sequenceDiagram
+    participant Q as 请求协程
+    participant B as 本批协调协程
+    participant A as 本批算法协程
+    participant D as 本批AlgoData
+    Q-)B: go；requestCh已有本批输入
+    B->>B: 取一批；wg.Add(1)
+    B-)A: go algorithm.Run
+    par 模型调用
+        A->>A: 工厂短读锁查实例；解锁；执行算法
+        A->>A: 编码、网络等待、响应解析
+        A->>D: SetAlgoResult(name,result)
+        D->>D: 本批mutex内更新结果map
+        D-->>A: 写入完成
+        A-)B: defer wg.Done()
+    and 本批汇合
+        B->>B: wg.Wait()；非零时挂起
+    and 请求侧可执行工作
+        Q->>Q: 解析RankScore与ScoreRewrite表达式
+    end
+    B-)Q: responseCh发送本批AlgoData
+    Q->>D: 读取Items与AlgoResult
+    D-->>Q: 相同Item指针和结果数组
+    Q->>Q: 按批内位置回填分数，再逐项求值

@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant A as HTTP接入线程
+    participant H as 历史任务线程
+    participant R as 原请求响应对象
+    A-)H: nearline_pool.add：move(in)与done
+    H->>H: NearlineWorker.ingest
+    H->>H: frontend.encode_s：同步查表并编码
+    Note over H: PS等待占住历史工作名额；不提交lookup池
+    H->>H: runner.encode_s：历史模型循环
+    H->>H: kv_serialize、checksum
+    H->>H: store.put：同步等待存储状态
+    H->>R: done(accepted,checksum,reason)
+    R->>R: 当前历史线程发送并关闭HTTP
+    R-->>H: 返回；销毁该任务输入与中间结果

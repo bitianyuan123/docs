@@ -1,0 +1,129 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>go_go1.24.0/src/sync/waitgroup.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>go_go1.24.0/src/sync/waitgroup.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>go1.24.0</code><br>原文件 SHA256：<code>15f9028c4f7627d58f6beb346eda8257e61aa6c267d45da4557f68df855e1b8f</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Copyright 2011 The Go Authors. All rights reserved.</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>// Use of this source code is governed by a BSD-style</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// license that can be found in the LICENSE file.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a></span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>package sync</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a></span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>import (</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;internal/race&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;sync/atomic&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>	&quot;unsafe&quot;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>)</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a></span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>// A WaitGroup waits for a collection of goroutines to finish.</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>// The main goroutine calls [WaitGroup.Add] to set the number of</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>// goroutines to wait for. Then each of the goroutines</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>// runs and calls [WaitGroup.Done] when finished. At the same time,</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>// [WaitGroup.Wait] can be used to block until all goroutines have finished.</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>//</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>// A WaitGroup must not be copied after first use.</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>//</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>// In the terminology of [the Go memory model], a call to [WaitGroup.Done]</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>// “synchronizes before” the return of any Wait call that it unblocks.</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>//</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>// [the Go memory model]: https://go.dev/ref/mem</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>type WaitGroup struct {</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	noCopy noCopy</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>	state atomic.Uint64 // high 32 bits are counter, low 32 bits are waiter count.</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	sema  uint32</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>}</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>// Add adds delta, which may be negative, to the [WaitGroup] counter.</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>// If the counter becomes zero, all goroutines blocked on [WaitGroup.Wait] are released.</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>// If the counter goes negative, Add panics.</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>//</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>// Note that calls with a positive delta that occur when the counter is zero</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>// must happen before a Wait. Calls with a negative delta, or calls with a</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>// positive delta that start when the counter is greater than zero, may happen</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>// at any time.</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>// Typically this means the calls to Add should execute before the statement</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>// creating the goroutine or other event to be waited for.</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>// If a WaitGroup is reused to wait for several independent sets of events,</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>// new Add calls must happen after all previous Wait calls have returned.</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>// See the WaitGroup example.</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>func (wg *WaitGroup) Add(delta int) {</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>	if race.Enabled {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>		if delta &lt; 0 {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>			// Synchronize decrements with Wait.</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>			race.ReleaseMerge(unsafe.Pointer(wg))</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>		}</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>		race.Disable()</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>		defer race.Enable()</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>	}</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>	state := wg.state.Add(uint64(delta) &lt;&lt; 32)</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>	v := int32(state &gt;&gt; 32)</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>	w := uint32(state)</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>	if race.Enabled &amp;&amp; delta &gt; 0 &amp;&amp; v == int32(delta) {</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>		// The first increment must be synchronized with Wait.</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>		// Need to model this as a read, because there can be</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>		// several concurrent wg.counter transitions from 0.</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>		race.Read(unsafe.Pointer(&amp;wg.sema))</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>	}</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>	if v &lt; 0 {</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		panic(&quot;sync: negative WaitGroup counter&quot;)</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>	}</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	if w != 0 &amp;&amp; delta &gt; 0 &amp;&amp; v == int32(delta) {</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>		panic(&quot;sync: WaitGroup misuse: Add called concurrently with Wait&quot;)</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>	}</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>	if v &gt; 0 || w == 0 {</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>		return</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>	}</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>	// This goroutine has set counter to 0 when waiters &gt; 0.</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>	// Now there can&#x27;t be concurrent mutations of state:</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>	// - Adds must not happen concurrently with Wait,</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>	// - Wait does not increment waiters if it sees counter == 0.</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>	// Still do a cheap sanity check to detect WaitGroup misuse.</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>	if wg.state.Load() != state {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>		panic(&quot;sync: WaitGroup misuse: Add called concurrently with Wait&quot;)</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	}</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>	// Reset waiters count to 0.</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>	wg.state.Store(0)</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>	for ; w != 0; w-- {</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>		runtime_Semrelease(&amp;wg.sema, false, 0)</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>	}</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>}</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a></span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>// Done decrements the [WaitGroup] counter by one.</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>func (wg *WaitGroup) Done() {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>	wg.Add(-1)</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>}</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a></span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>// Wait blocks until the [WaitGroup] counter is zero.</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>func (wg *WaitGroup) Wait() {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>	if race.Enabled {</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>		race.Disable()</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>	}</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>	for {</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>		state := wg.state.Load()</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>		v := int32(state &gt;&gt; 32)</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>		w := uint32(state)</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>		if v == 0 {</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>			// Counter is 0, no need to wait.</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>			if race.Enabled {</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>				race.Enable()</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>				race.Acquire(unsafe.Pointer(wg))</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>			}</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>			return</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>		}</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>		// Increment waiters count.</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>		if wg.state.CompareAndSwap(state, state+1) {</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>			if race.Enabled &amp;&amp; w == 0 {</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>				// Wait must be synchronized with the first Add.</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>				// Need to model this is as a write to race with the read in Add.</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>				// As a consequence, can do the write only for the first waiter,</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>				// otherwise concurrent Waits will race with each other.</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>				race.Write(unsafe.Pointer(&amp;wg.sema))</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>			}</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>			runtime_SemacquireWaitGroup(&amp;wg.sema)</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>			if wg.state.Load() != 0 {</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>				panic(&quot;sync: WaitGroup is reused before previous Wait has returned&quot;)</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>			}</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>			if race.Enabled {</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>				race.Enable()</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>				race.Acquire(unsafe.Pointer(wg))</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>			}</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>			return</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>		}</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>	}</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>}</span></pre></html>

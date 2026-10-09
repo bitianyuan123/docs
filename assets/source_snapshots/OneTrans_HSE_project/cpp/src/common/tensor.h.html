@@ -1,0 +1,93 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/common/tensor.h</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/common/tensor.h</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>d97bcab04b106b3d8038c231d12a15c9e6c7e90c0d7a10b1c5b3503986242b65</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// 通用张量（fp32、行主序）与张量目录（manifest.json + *.bin）加载。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 与 Python 侧导出格式（cpp/tools/export_weights.py）对齐：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>//   manifest.tensors[name] = {shape, offset, dtype}，offset 单位为 float 元素，</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//   所有张量在 .bin 中按声明顺序 fp32 小端连续平铺。</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>#pragma once</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a></span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>#include &lt;cmath&gt;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#include &lt;cstdint&gt;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>#include &lt;fstream&gt;</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#include &lt;stdexcept&gt;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>#include &lt;string&gt;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>#include &lt;vector&gt;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a></span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>namespace onetrans {</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>struct Tensor {</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>    std::vector&lt;int64_t&gt; shape;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>    std::vector&lt;float&gt; data;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a></span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>    Tensor() = default;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>    explicit Tensor(std::vector&lt;int64_t&gt; shp) : shape(std::move(shp)) {</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>        int64_t n = 1;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>        for (auto s : shape) n *= s;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>        data.assign(static_cast&lt;size_t&gt;(n), 0.0f);</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>    }</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>    static Tensor zeros(std::vector&lt;int64_t&gt; shp) { return Tensor(std::move(shp)); }</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>    int64_t numel() const {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>        int64_t n = 1;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>        for (auto s : shape) n *= s;</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>        return n;</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    }</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>    float&amp; at(int64_t i) { return data[static_cast&lt;size_t&gt;(i)]; }</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    const float&amp; at(int64_t i) const { return data[static_cast&lt;size_t&gt;(i)]; }</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>};</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a></span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>// 线性代数原语（无 bias；PyTorch nn.Linear 语义 y = x @ W^T）</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>// x: [n, in]，W: [out, in]，y: [n, out]</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>void matmul_nt(const float* x, const float* w, float* y, int64_t n, int64_t in, int64_t out);</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>// RMSNorm：out = x * rsqrt(mean(x^2) + eps) * g（逐行）</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>void rms_norm(const float* x, const float* g, float* out, int64_t rows, int64_t dim, float eps);</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>// 精确 GELU：0.5x(1 + erf(x / sqrt(2)))，对齐 torch.nn.GELU 默认</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>inline float gelu(float v) {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    return 0.5f * v * (1.0f + std::erf(v * 0.70710678118654752440f));</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>}</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>struct TensorMeta {</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    std::string name;</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    std::vector&lt;int64_t&gt; shape;</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    int64_t offset;  // 元素偏移</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>};</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a></span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>struct ArtifactConfig {</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    int d_model = 128;</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    int num_heads = 4;</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>    int num_blocks = 4;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>    int max_seq_len = 50;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    int min_seq_len = 5;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    int ns_tokens_num = 5;</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    bool use_cls_token = false;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>    std::vector&lt;int64_t&gt; dims;  // pyramid 逐层宽度（num_blocks + 1 个）</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    double rms_eps = 1.1920928955078125e-07;</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>    int seq_in_dim = 128;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    std::vector&lt;int64_t&gt; ns_group_dims;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    int num_items = 0, num_users = 0, num_artists = 0, num_albums = 0;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    int n_user_dense = 15, n_cand_dense = 15;</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    int piecewise_n_features = 30;</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    int piecewise_max_n_bins = 8;</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>    std::vector&lt;int64_t&gt; piecewise_n_bins;  // 每列 bin 数</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>};</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a></span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>// manifest.json + weights.bin（或 golden.bin）的只读目录。</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>class ArtifactStore {</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>public:</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    // dir 下读 manifest.json 与 bin_file；不存在则抛异常。</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    void load(const std::string&amp; dir, const std::string&amp; bin_file);</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    bool has(const std::string&amp; name) const;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    Tensor get(const std::string&amp; name) const;          // 拷贝出张量</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    const std::vector&lt;float&gt;&amp; raw() const { return blob_; }</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    const TensorMeta&amp; meta(const std::string&amp; name) const;</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    const ArtifactConfig&amp; config() const { return cfg_; }</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a></span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>private:</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    ArtifactConfig cfg_;</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>    std::vector&lt;float&gt; blob_;</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    std::vector&lt;TensorMeta&gt; metas_;</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>};</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>}  // namespace onetrans</span></pre></html>

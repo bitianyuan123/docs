@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant R as 历史触发协程
+    participant Q as 历史任务channel
+    participant W as 长期历史worker协程
+    participant S as 执行OneTransRankSort的请求协程
+    participant L as 本请求Latch
+    R->>R: Provider查历史，构建两个int64数组
+    R->>L: New()，写入当前Context
+    R-)Q: 非阻塞发送req指针
+    Q-)W: 接收req；worker获得执行机会
+    R->>R: 返回nil候选，完成召回汇合份额
+    par 历史调用
+        W->>W: JSON编码；HTTP /ingest；等响应
+        W->>L: Done()，sync.Once内close(channel)
+    and 候选首查与重查
+        S->>S: 校验候选；编码；HTTP /rank
+        S->>S: 解码首查；发现kv_hit=false
+        S->>L: Wait(timeout)
+        Note over S,L: 已关闭则直接返回<br/>否则等close或计时器
+        L-->>S: true或false；源码未检查此值
+        S->>S: 再编码、再次HTTP /rank、再解码
+        S->>S: 验证ID集合、回填分数、稳定降序
+    end

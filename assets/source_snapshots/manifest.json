@@ -89,7 +89,8 @@
       "line_count": 898,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -103,7 +104,8 @@
       "redacted_lines": [],
       "referenced_by": [
         "02_onetrans.md",
-        "08_request_walkthrough.md"
+        "08_request_walkthrough.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -117,7 +119,8 @@
       "redacted_lines": [],
       "referenced_by": [
         "02_onetrans.md",
-        "08_request_walkthrough.md"
+        "08_request_walkthrough.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -143,7 +146,8 @@
       "line_count": 120,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -157,7 +161,8 @@
       "redacted_lines": [],
       "referenced_by": [
         "02_onetrans.md",
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -171,7 +176,8 @@
       "redacted_lines": [],
       "referenced_by": [
         "02_onetrans.md",
-        "08_request_walkthrough.md"
+        "08_request_walkthrough.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -185,7 +191,8 @@
       "redacted_lines": [],
       "referenced_by": [
         "02_onetrans.md",
-        "08_request_walkthrough.md"
+        "08_request_walkthrough.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -198,7 +205,8 @@
       "line_count": 74,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -214,7 +222,8 @@
         "02_onetrans.md",
         "03_pairec_orchestration.md",
         "09_evidence_and_gaps.md",
-        "10_feature_catalog.md"
+        "10_feature_catalog.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -230,7 +239,8 @@
         "02_onetrans.md",
         "03_pairec_orchestration.md",
         "08_request_walkthrough.md",
-        "09_evidence_and_gaps.md"
+        "09_evidence_and_gaps.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -417,7 +427,8 @@
       "redacted_lines": [],
       "referenced_by": [
         "02_onetrans.md",
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ]
     },
     {
@@ -433,7 +444,9 @@
         "02_onetrans.md",
         "03_pairec_orchestration.md",
         "08_request_walkthrough.md",
-        "10_feature_catalog.md"
+        "10_feature_catalog.md",
+        "12_pairec_process_analysis.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -447,7 +460,9 @@
       "redacted_lines": [],
       "referenced_by": [
         "02_onetrans.md",
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -575,7 +590,8 @@
       "line_count": 319,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -588,7 +604,8 @@
       "line_count": 67,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -601,7 +618,8 @@
       "line_count": 268,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -627,7 +645,8 @@
       "line_count": 128,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -640,7 +659,8 @@
       "line_count": 226,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -653,7 +673,8 @@
       "line_count": 247,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -666,7 +687,8 @@
       "line_count": 110,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -679,7 +701,8 @@
       "line_count": 196,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -705,7 +728,8 @@
       "line_count": 254,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -719,7 +743,8 @@
       "redacted_lines": [],
       "referenced_by": [
         "03_pairec_orchestration.md",
-        "09_evidence_and_gaps.md"
+        "09_evidence_and_gaps.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -734,7 +759,8 @@
       "line_count": 146,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -749,7 +775,8 @@
       "line_count": 68,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -764,7 +791,8 @@
       "line_count": 366,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -779,7 +807,8 @@
       "line_count": 228,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -794,7 +823,8 @@
       "line_count": 174,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -809,7 +839,8 @@
       "line_count": 315,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -824,7 +855,8 @@
       "line_count": 317,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -839,7 +871,8 @@
       "line_count": 103,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -869,7 +902,8 @@
       "line_count": 45,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ]
     },
     {
@@ -924,7 +958,9 @@
       "line_count": 1174,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -937,7 +973,8 @@
       "line_count": 124,
       "redacted_lines": [],
       "referenced_by": [
-        "02_onetrans.md"
+        "02_onetrans.md",
+        "13_onetrans_process_analysis.md"
       ]
     },
     {
@@ -950,7 +987,8 @@
       "line_count": 346,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "12_pairec_process_analysis.md"
       ],
       "source_version": "v2.6.2",
       "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
@@ -1090,6 +1128,564 @@
       ],
       "source_version": "7.2.5",
       "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/COPYING"
+    },
+    {
+      "file": "redis_7.2.5/src/server.h.html",
+      "sha256": "29e42c0e232d5dabe8c85573af8dd4947128bb94d10f421d18fb12e66f95150c",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/server.h",
+      "source_commit": null,
+      "source_sha256": "a2ac961aa4c55d8a632ef08cb3b11f0537c58830eeb7e130884e039b7cbc7dbb",
+      "line_count": 3745,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/server.h"
+    },
+    {
+      "file": "redis_7.2.5/src/sds.c.html",
+      "sha256": "1c3a876c48482fcba6a8994ffdf2579e39980dad4d07610850ad488a6eeefd68",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/sds.c",
+      "source_commit": null,
+      "source_sha256": "f234153cb7247e00d915428e74785132e4f1d9fe3973fef377f6a638fcc86bdb",
+      "line_count": 1496,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/sds.c"
+    },
+    {
+      "file": "redis_7.2.5/src/object.c.html",
+      "sha256": "5949fe07ea96f4390768b1e6329e0eca99c9f9fe1ff5b194205d15859e957dfc",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/object.c",
+      "source_commit": null,
+      "source_sha256": "6245cdc22667c615dcdabe64bebee734a5e5939f45f2c1ba7890ea3526fb7e2a",
+      "line_count": 1688,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/object.c"
+    },
+    {
+      "file": "redis_7.2.5/src/dict.c.html",
+      "sha256": "9a0695e070127e9d6df608a0e6d4c658353aca3707c6987144ef57f2203ef936",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/dict.c",
+      "source_commit": null,
+      "source_sha256": "81764d1b75a69899ae4ce2cffb344716cb1306002d325644f36d2bfbff08581a",
+      "line_count": 1749,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/dict.c"
+    },
+    {
+      "file": "redis_7.2.5/src/dict.h.html",
+      "sha256": "71bc91dc57d9bad26ed14129ccf6d693efb70d19d34fae78240e53d6cd08f0de",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/dict.h",
+      "source_commit": null,
+      "source_sha256": "82afa3d24e7635e2c6f695686111b6e2f63a1fcc5180ecc1f395262ad3be32b7",
+      "line_count": 231,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/dict.h"
+    },
+    {
+      "file": "redis_7.2.5/src/atomicvar.h.html",
+      "sha256": "ad2fb236eb6fa1fcafae05be9b5e7d655dcbd0073a9d1c932339d73249c4ad76",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/atomicvar.h",
+      "source_commit": null,
+      "source_sha256": "059508d7a9e5f756dbd7fda6854bb1b505f9de00b0f07749eeb0fad08e5972d9",
+      "line_count": 158,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/atomicvar.h"
+    },
+    {
+      "file": "redis_7.2.5/src/aof.c.html",
+      "sha256": "9cd9f7a4c45b5c2054196fd2f60c4cbc12e053eb2ee9db7d9609e84e31045d03",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/aof.c",
+      "source_commit": null,
+      "source_sha256": "962e4dc3df9cec8fe0382530405a11c8435ecf52fbeb41e1f5ac287ccce7d52e",
+      "line_count": 2744,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/aof.c"
+    },
+    {
+      "file": "redis_7.2.5/src/rdb.c.html",
+      "sha256": "ca05f9ecb6d5b99efdd84ed629fdb9b32f8c2ea373f04b0191b78b61ed5f9790",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/rdb.c",
+      "source_commit": null,
+      "source_sha256": "3826ce59a403beb1632e94915dd618bc2c9842ab4bc9d0f11916c21f15f2c9ad",
+      "line_count": 3722,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/rdb.c"
+    },
+    {
+      "file": "redis_7.2.5/src/childinfo.c.html",
+      "sha256": "ae93c40d0ba9866752c1c8eba52751cd92973d387b85e3c5db7e682187003eb0",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/childinfo.c",
+      "source_commit": null,
+      "source_sha256": "aa1332ef93d2b79b28c6206738924c65f99ea2a529ea9461e2b24b8185a8f6da",
+      "line_count": 183,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/childinfo.c"
+    },
+    {
+      "file": "pairec_v2.6.2/go.mod.html",
+      "sha256": "634a756355819ad8827ae37c8163d5a9c940450c8cfd54da15dc81953a36d8b1",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "go.mod",
+      "source_commit": null,
+      "source_sha256": "0369bfaf9f40d5db7d6ad69876965fb9f31aa67abf5da166da75189bf30da599",
+      "line_count": 138,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec4tigerllm_8506/configs/pairec_config.onetrans_rank.json.html",
+      "sha256": "2d3100a68aac54bc7b3fd0583ac4927f6800fd9e06eb34aa91f860ab6b248a0a",
+      "source_repository": "pairec4tigerllm_8506",
+      "source_path": "configs/pairec_config.onetrans_rank.json",
+      "source_commit": "530f77327f0d7f7f15f54b1ddbfe422b58e94a88",
+      "source_sha256": "0c79c16eeddd9eedc6e7ee57e2cf393c0a1f7d32428403eecab92ae924aa9b1e",
+      "line_count": 51,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ]
+    },
+    {
+      "file": "pairec_v2.6.2/web/recommend_controller.go.html",
+      "sha256": "1faa078d5b15bd4db60f18fc99a37d45d354ac55651b113e426ee4ffcd5262bd",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "web/recommend_controller.go",
+      "source_commit": null,
+      "source_sha256": "4f82108b6d9f179c3d5141aab6bde13c3cce3e8bc877ef1a095d2d942b4237a9",
+      "line_count": 176,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/app.go.html",
+      "sha256": "e1374b562353ced8a5c744734f33b649561368a2044c6d0e9d562ed3da0049b7",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "app.go",
+      "source_commit": null,
+      "source_sha256": "f56ef990dc7159197802c56cefe6b89cb69a38bbbe33a264052956623630f3b4",
+      "line_count": 102,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/pipeline/user_recommend.go.html",
+      "sha256": "4e99a2c935943f722dc356ed999909db5e4e2fd3d74c7432de1e666a9bfd0ffd",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/pipeline/user_recommend.go",
+      "source_commit": null,
+      "source_sha256": "72e88d6fbe1138bcdadc6d0d5a3a8cd7620bf4f555b9341f0b0627115ec9ab78",
+      "line_count": 93,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/filter/unique_filter.go.html",
+      "sha256": "1a5d0549a55115e0c9d683c427949ba2be2d5b756c4f226fbd70fecd3ae8b34d",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "filter/unique_filter.go",
+      "source_commit": null,
+      "source_sha256": "4034e50d5c36c3b25db249d36bc67bbbc1f4d4b5ad346f4c09190c35d85cd1f6",
+      "line_count": 54,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/general_rank/general_rank.go.html",
+      "sha256": "c501a7fc036e4900602ae8468859f4fc3f899aec0de9222d15772cd30a83621c",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/general_rank/general_rank.go",
+      "source_commit": null,
+      "source_sha256": "20b03724e5761939d04c08bcd4e90d40833c999c69b66cda3f8700b24b7907ac",
+      "line_count": 263,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/sort/sort.go.html",
+      "sha256": "8681257f7004f2f89e02d0c66832c2b0635af29874452516f6eab4a3a1be77b3",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "sort/sort.go",
+      "source_commit": null,
+      "source_sha256": "c89bb7e18dd3b2af91704f87c5f685963d78d2a1113c1b5ef77798a003e8a63c",
+      "line_count": 219,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/sort/item_score.go.html",
+      "sha256": "4bc25ec61b1dd1ee10178a9358d0dcff63b2f3a3ad7c5050bd905eede3f69f75",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "sort/item_score.go",
+      "source_commit": null,
+      "source_sha256": "8bfb71815e443007b60557134cca25926af97ee3f9bf7383b365e4238f134afa",
+      "line_count": 42,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/feature/user_feature_service.go.html",
+      "sha256": "2ac960a388193f525cdfababbb070a81fb97046f86a690affc11ba42953c2956",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/feature/user_feature_service.go",
+      "source_commit": null,
+      "source_sha256": "8cb77dbf85abe30b6799bbe963e8a57158be139c1a2ceb1866cd0cd30dd6cdaa",
+      "line_count": 262,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "go_go1.24.0/src/runtime/chan.go.html",
+      "sha256": "1c0d90005786ed9b210297f6b9b8dac8c4609d5caec6517e30c9a0390e6e3004",
+      "source_repository": "go_go1.24.0",
+      "source_path": "src/runtime/chan.go",
+      "source_commit": null,
+      "source_sha256": "bea8a142d8854649cb5c9f7302e041fcfe170c9d5b4978d32cc217a08ece4989",
+      "line_count": 967,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "go1.24.0",
+      "source_url": "https://raw.githubusercontent.com/golang/go/go1.24.0/src/runtime/chan.go"
+    },
+    {
+      "file": "go_go1.24.0/src/sync/waitgroup.go.html",
+      "sha256": "f9993ca0e441e3f9b95dc0bbad242f0d0071f44b78164bcf21683feeac4586b5",
+      "source_repository": "go_go1.24.0",
+      "source_path": "src/sync/waitgroup.go",
+      "source_commit": null,
+      "source_sha256": "15f9028c4f7627d58f6beb346eda8257e61aa6c267d45da4557f68df855e1b8f",
+      "line_count": 129,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "go1.24.0",
+      "source_url": "https://raw.githubusercontent.com/golang/go/go1.24.0/src/sync/waitgroup.go"
+    },
+    {
+      "file": "go_go1.24.0/src/runtime/netpoll.go.html",
+      "sha256": "44ff8c7755c3928bfcca70fc2661514cfab2387e7835afb2caa7b6153a957dcc",
+      "source_repository": "go_go1.24.0",
+      "source_path": "src/runtime/netpoll.go",
+      "source_commit": null,
+      "source_sha256": "5e51769ba4a9cea1b0ec54c847c847c8ebbc2cf8ef9c470a34fe7cf0d4c8b743",
+      "line_count": 729,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "go1.24.0",
+      "source_url": "https://raw.githubusercontent.com/golang/go/go1.24.0/src/runtime/netpoll.go"
+    },
+    {
+      "file": "go_go1.24.0/src/runtime/netpoll_epoll.go.html",
+      "sha256": "dff1e20175ae4b1ff5f36b3f89c9f8aea5c4cbd3576a561dd531437dee66155b",
+      "source_repository": "go_go1.24.0",
+      "source_path": "src/runtime/netpoll_epoll.go",
+      "source_commit": null,
+      "source_sha256": "1c1bbe01d3d3f1bbe9e63fe1f401d7d4fa2fa2127456fdb8bfcf66f8bf4a961c",
+      "line_count": 176,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "go1.24.0",
+      "source_url": "https://raw.githubusercontent.com/golang/go/go1.24.0/src/runtime/netpoll_epoll.go"
+    },
+    {
+      "file": "pairec_v2.6.2/service/feature/feature.go.html",
+      "sha256": "327ab513218e8ebb0a2d6653f509458d7b0f5e987a061290678f4a5fdc123114",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/feature/feature.go",
+      "source_commit": null,
+      "source_sha256": "35414516d717f8824a2855a2e30825ef74cd91a81488dadbf20c115d33d78df3",
+      "line_count": 82,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/module/feature_redis_dao.go.html",
+      "sha256": "7bd44072334199f5820f1aa3aea03a2d09cd9c5244905453368c024c93ebbeb7",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "module/feature_redis_dao.go",
+      "source_commit": null,
+      "source_sha256": "515a79bef0a956f6b0e434e7cdcd992d877acffc272d378068f401c5fb5cd8fb",
+      "line_count": 382,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/persist/redisdb/redis.go.html",
+      "sha256": "bc9af6bc6c10443fedd682fd065b86142874a5c4328a776920d4236db07a1a13",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "persist/redisdb/redis.go",
+      "source_commit": null,
+      "source_sha256": "2fc71be1649e5b43cdddb3c23b7f9a0f0a52452d011eed2a818c2e4a4798bac1",
+      "line_count": 138,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "redigo_v1.9.3/redis/pool.go.html",
+      "sha256": "37aedc1d2db03312ae1947811c7a86559aa8a47dc1ed35d67cec3a10b729ebd5",
+      "source_repository": "redigo_v1.9.3",
+      "source_path": "redis/pool.go",
+      "source_commit": null,
+      "source_sha256": "3185d8a98da368708cac964a2ec212eaf2af5498d5eb93a75c926cc0866f87c7",
+      "line_count": 675,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v1.9.3",
+      "source_url": "https://raw.githubusercontent.com/gomodule/redigo/v1.9.3/redis/pool.go"
+    },
+    {
+      "file": "go_go1.24.0/src/runtime/sema.go.html",
+      "sha256": "2524df0af6a09f6418f908cebd3c6ee9277310d5fc8c22daef79fa51b2c83dfc",
+      "source_repository": "go_go1.24.0",
+      "source_path": "src/runtime/sema.go",
+      "source_commit": null,
+      "source_sha256": "6f48724da2c981dace00252024197440cea445da309816a0d81ca97550b14402",
+      "line_count": 711,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "go1.24.0",
+      "source_url": "https://raw.githubusercontent.com/golang/go/go1.24.0/src/runtime/sema.go"
+    },
+    {
+      "file": "pairec_v2.6.2/algorithm/eas/client.go.html",
+      "sha256": "9d10131d3578c2599a010f03e9c4af80a1bfbe30452d276e55059b3ae777da05",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "algorithm/eas/client.go",
+      "source_commit": null,
+      "source_sha256": "dc4037e81a4ff3032e1a3f4bf39cf233d22ac87621bca67de7759c6b24a089cd",
+      "line_count": 108,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/algorithm/eas/model.go.html",
+      "sha256": "8668d2fbd2c14c9bd5e9f49995b1f790c5026ffcb7fded5a97d00cf6eace5b46",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "algorithm/eas/model.go",
+      "source_commit": null,
+      "source_sha256": "13af7490fd9e36e0b30c763f58aae5c425838f599ebde63ef81a7d628e4630a7",
+      "line_count": 215,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "pairec_v2.6.2/service/debug/debug_service.go.html",
+      "sha256": "571716c2e124b0d0ed6f98a057b6b784ef3911c4be92dca1614b637733709477",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/debug/debug_service.go",
+      "source_commit": null,
+      "source_sha256": "8638aee13df712e9f67338a6005edb2c033daf508a4582cb38f38554b87393d3",
+      "line_count": 628,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/engine/frontend.h.html",
+      "sha256": "92d598eda36c787e8552cc4c0b807fda0bc6d193c6cb5d19bca718d0f1d99853",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/engine/frontend.h",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "2b6b368ad547d824b1d42e62754cb5d41d43ffa6b3d7ef1e61650205ed93010b",
+      "line_count": 84,
+      "redacted_lines": [],
+      "referenced_by": [
+        "13_onetrans_process_analysis.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/common/tensor.h.html",
+      "sha256": "e1b63fea045908e034d885cadbe8f6634b49fd91ed732960f37201beba873110",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/common/tensor.h",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "d97bcab04b106b3d8038c231d12a15c9e6c7e90c0d7a10b1c5b3503986242b65",
+      "line_count": 93,
+      "redacted_lines": [],
+      "referenced_by": [
+        "13_onetrans_process_analysis.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/embed_lookup.cpp.html",
+      "sha256": "8b15c129161acec66e945033e3203eb94747ccc8336e01cff80d3edf2907a9e7",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/embed_lookup.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "282293c81740de64527dad72060e2050b92452b74d4a16d08f63227666b57bc2",
+      "line_count": 48,
+      "redacted_lines": [],
+      "referenced_by": [
+        "13_onetrans_process_analysis.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/common/sha256.cpp.html",
+      "sha256": "8f9e53825a66e1f73a1bb27f3550677518de0131847acba05cd089efd29e8660",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/common/sha256.cpp",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "56e73adefbc7a3ef046b87b6bdc97904cbc625cb7e1d17581ae420327d3339a1",
+      "line_count": 102,
+      "redacted_lines": [],
+      "referenced_by": [
+        "13_onetrans_process_analysis.md"
+      ]
+    },
+    {
+      "file": "OneTrans_HSE_project/onetrans/serving/serialize.py.html",
+      "sha256": "72100742ddcf55247b3006b34278a5533d18b3291ce101cdd9b8aa51b4c06756",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "onetrans/serving/serialize.py",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "b4ae71dbc00fffa2b9197ff8d3ebcade96c0658c89d44544411497a2e5f4ab7c",
+      "line_count": 189,
+      "redacted_lines": [],
+      "referenced_by": [
+        "13_onetrans_process_analysis.md"
+      ]
+    },
+    {
+      "file": "go_go1.24.0/LICENSE.html",
+      "sha256": "403d75be973e3743ba3619f257b0946362233892dc25fdada593c378cfd34674",
+      "source_repository": "go_go1.24.0",
+      "source_path": "LICENSE",
+      "source_commit": null,
+      "source_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+      "line_count": 27,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "go1.24.0",
+      "source_url": "https://raw.githubusercontent.com/golang/go/go1.24.0/LICENSE"
+    },
+    {
+      "file": "redigo_v1.9.3/LICENSE.html",
+      "sha256": "caa895702311e5c7c144de51c826ff893ce64174003aebf28fc4d3c459016f4d",
+      "source_repository": "redigo_v1.9.3",
+      "source_path": "LICENSE",
+      "source_commit": null,
+      "source_sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "line_count": 177,
+      "redacted_lines": [],
+      "referenced_by": [
+        "12_pairec_process_analysis.md"
+      ],
+      "source_version": "v1.9.3",
+      "source_url": "https://raw.githubusercontent.com/gomodule/redigo/v1.9.3/LICENSE"
     }
   ]
 }

@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant B as 攒批线程
+    participant Y as Python桥线程
+    participant Q as Python桥等待队列
+    participant C as C++计算池
+    Y->>Y: 批A前向完成，进入done/send
+    Note over Y: 慢接收方导致send等待；A的ctx与结果仍存活
+    B->>Q: 提交后续批，等待队列逐渐增加
+    Q-->>B: 容量内接收
+    B->>Q: 队列已满时再提交
+    Q-->>B: false：拒绝本批
+    B-)C: 本批改交C++计算
+    Note over B,C: CPU和复制负载增加，未解除A的发送阻塞
+    Y->>Y: send返回后处理同批剩余回调
+    Y->>Q: 再次取批
+    Q-->>Y: 取出一批，腾出一个等待名额

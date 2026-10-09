@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant A as 用户1的历史触发协程
+    participant O as Provider.sync.Once
+    participant B as 另一请求的历史触发协程
+    A->>O: Do(loadFallback)，成为执行者
+    O->>O: os.ReadFile，分配原始字节
+    B->>O: Do(loadFallback)，等待同一次初始化
+    Note over B: 等待Once完成<br/>不是另读一遍文件
+    O->>O: JSON解码成全量fallbackCache
+    O-->>A: 初始化函数返回
+    O-->>B: 初始化已完成，等待者恢复后返回
+    A->>A: 查用户1，拆历史字符串并转整数
+    B->>B: 查自己用户，拆字符串并转整数

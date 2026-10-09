@@ -1,0 +1,215 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>pairec_v2.6.2/algorithm/eas/model.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>pairec_v2.6.2/algorithm/eas/model.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v2.6.2</code><br>原文件 SHA256：<code>13af7490fd9e36e0b30c763f58aae5c425838f599ebde63ef81a7d628e4630a7</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>package eas</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a></span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>import (</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>	&quot;errors&quot;</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>	&quot;fmt&quot;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>	&quot;net&quot;</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>	&quot;net/http&quot;</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>	&quot;strings&quot;</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>	&quot;time&quot;</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>	&quot;github.com/alibaba/pairec/v2/log&quot;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>	&quot;github.com/alibaba/pairec/v2/pkg/eas&quot;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>	tensorflow_serving &quot;github.com/alibaba/pairec/v2/pkg/tensorflow_serving/apis&quot;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>	&quot;github.com/alibaba/pairec/v2/recconf&quot;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>	&quot;google.golang.org/grpc&quot;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>	&quot;google.golang.org/grpc/credentials/insecure&quot;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>)</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a></span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>const (</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	Eas_Processor_FM        = &quot;ALINK_FM&quot;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	Eas_Processor_PMML      = &quot;PMML&quot;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	Eas_Processor_TF        = &quot;TensorFlow&quot;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	Eas_Processor_TFServing = &quot;TFServing&quot;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	Eas_Processor_EASYREC   = &quot;EasyRec&quot;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	Eas_Processor_LINUCB    = &quot;Linucb&quot;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a></span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a>type EasModel struct {</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>	retryTimes int</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	name       string</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	request    IEasRequest</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>}</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>func NewEasModel(name string) *EasModel {</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>	return &amp;EasModel{name: name, retryTimes: 2}</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>}</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>func (m *EasModel) Init(conf *recconf.AlgoConfig) error {</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>	if conf.EasConf.Processor == Eas_Processor_PMML {</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>		req := PMMLRequest{}</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>		req.SetUrl(conf.EasConf.Url)</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>		req.SetAuth(conf.EasConf.Auth)</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>		req.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>		req.SetResponseFunc(conf.EasConf.ResponseFuncName)</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>		m.request = &amp;req</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a></span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>		if conf.EasConf.RetryTimes &gt; 0 {</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>			m.retryTimes = conf.EasConf.RetryTimes</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>		}</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>		return nil</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>	} else if conf.EasConf.Processor == Eas_Processor_TF {</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>		req := TFRequest{}</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>		req.SetUrl(conf.EasConf.Url)</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>		req.SetAuth(conf.EasConf.Auth)</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>		req.SetSignatureName(conf.EasConf.SignatureName)</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>		req.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>		req.SetResponseFunc(conf.EasConf.ResponseFuncName)</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>		if len(conf.EasConf.Outputs) &gt; 0 {</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>			req.SetOutputs(conf.EasConf.Outputs)</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>		}</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>		m.request = &amp;req</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>		if conf.EasConf.RetryTimes &gt; 0 {</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>			m.retryTimes = conf.EasConf.RetryTimes</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>		}</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>		return nil</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>	} else if conf.EasConf.Processor == Eas_Processor_FM {</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>		req := NewFMRequest()</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>		req.SetUrl(conf.EasConf.Url)</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>		req.SetAuth(conf.EasConf.Auth)</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>		req.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>		req.SetResponseFunc(conf.EasConf.ResponseFuncName)</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>		m.request = req</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>		if conf.EasConf.RetryTimes &gt; 0 {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>			m.retryTimes = conf.EasConf.RetryTimes</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>		}</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>		return nil</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a></span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>	} else if conf.EasConf.Processor == Eas_Processor_EASYREC &amp;&amp; conf.EasConf.EndpointType == eas.EndpointTypeDocker {</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>		req := HttpEasyrecRequest{}</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>		req.SetUrl(conf.EasConf.Url)</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>		req.SetAuth(conf.EasConf.Auth)</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>		req.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>		req.SetResponseFunc(conf.EasConf.ResponseFuncName)</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>		m.request = &amp;req</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a></span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>		if conf.EasConf.RetryTimes &gt; 0 {</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>			m.retryTimes = conf.EasConf.RetryTimes</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>		}</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>		return nil</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>	} else if conf.EasConf.Processor == Eas_Processor_EASYREC {</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>		req := EasyrecRequest{}</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>		req.SetUrl(conf.EasConf.Url)</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>		req.SetAuth(conf.EasConf.Auth)</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>		req.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>		req.SetResponseFunc(conf.EasConf.ResponseFuncName)</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>		var client *eas.PredictClient</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>		if conf.EasConf.EndpointType == eas.EndpointTypeDirect {</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>			url := strings.ReplaceAll(conf.EasConf.Url, &quot;http://&quot;, &quot;&quot;)</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>			index := strings.Index(url, &quot;/api/predict/&quot;)</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>			endpoint := url[:index]</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>			strs := strings.Split(endpoint, &quot;.&quot;)</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>			region := strs[2]</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>			for i := 0; i &lt; len(strs); i++ {</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>				if strs[i] == &quot;pai-eas&quot; {</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>					region = strs[i-1]</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>					break</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>				}</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>			}</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>			name := url[index+len(&quot;/api/predict/&quot;):]</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>			client = eas.NewPredictClient(fmt.Sprintf(&quot;pai-eas-vpc.%s.aliyuncs.com&quot;, region), name)</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>			client.SetEndpointType(eas.EndpointTypeDirect)</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>		} else {</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>			url := strings.ReplaceAll(conf.EasConf.Url, &quot;http://&quot;, &quot;&quot;)</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>			index := strings.Index(url, &quot;/api/predict/&quot;)</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>			endpoint := url[:index]</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>			name := url[index+len(&quot;/api/predict/&quot;):]</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>			client = eas.NewPredictClient(endpoint, name)</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>		}</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>		client.SetToken(conf.EasConf.Auth)</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>		client.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>		client.SetHttpTransport(&amp;http.Transport{</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>			MaxConnsPerHost:       2000,</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>			MaxIdleConnsPerHost:   300,</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>			MaxIdleConns:          300,</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>			TLSHandshakeTimeout:   100 * time.Millisecond,</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>			ExpectContinueTimeout: 200 * time.Millisecond,</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>			DialContext: (&amp;net.Dialer{</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>				Timeout:   100 * time.Millisecond, // 100ms</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>				KeepAlive: 10 * time.Minute,</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>			}).DialContext,</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>		})</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>		if conf.EasConf.RetryTimes &gt; 0 {</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>			m.retryTimes = conf.EasConf.RetryTimes</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>		}</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>		client.SetRetryCount(m.retryTimes - 1)</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>		// if use eas sdk, we should not retry</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>		m.retryTimes = 1</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>		client.Init()</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>		req.EasClient = client</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>		m.request = &amp;req</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a></span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>		return nil</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>	} else if conf.EasConf.Processor == Eas_Processor_LINUCB {</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>		req := LincubRequest{}</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>		req.SetUrl(conf.EasConf.Url)</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>		req.SetAuth(conf.EasConf.Auth)</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>		req.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>		req.SetResponseFunc(conf.EasConf.ResponseFuncName)</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>		m.request = &amp;req</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a></span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>		if conf.EasConf.RetryTimes &gt; 0 {</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>			m.retryTimes = conf.EasConf.RetryTimes</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>		}</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>		return nil</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a></span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>	} else if conf.EasConf.Processor == Eas_Processor_TFServing {</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>		req := TFServingRequest{}</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>		req.SetUrl(conf.EasConf.Url)</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a>		req.SetModelName(conf.EasConf.ModelName)</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>		req.SetAuth(conf.EasConf.Auth)</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>		req.SetSignatureName(conf.EasConf.SignatureName)</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>		req.SetTimeout(conf.EasConf.Timeout)</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>		req.SetResponseFunc(conf.EasConf.ResponseFuncName)</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>		if len(conf.EasConf.Outputs) &gt; 0 {</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>			req.SetOutputs(conf.EasConf.Outputs)</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>		}</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>		var opts []grpc.DialOption</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a></span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>		conn, err := grpc.Dial(req.url, opts...)</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>		if err != nil {</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>			panic(fmt.Sprintf(&quot;fail to dial: %v&quot;, err))</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>		}</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a></span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>		client := tensorflow_serving.NewPredictionServiceClient(conn)</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>		req.Client = client</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>		m.request = &amp;req</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a></span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>		if conf.EasConf.RetryTimes &gt; 0 {</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>			m.retryTimes = conf.EasConf.RetryTimes</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>		}</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>		return nil</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>	}</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a></span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>	return errors.New(&quot;not found eas Processor:&quot; + conf.EasConf.Processor)</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>}</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>func (m *EasModel) Run(algoData interface{}) (interface{}, error) {</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>	retryTimes := m.retryTimes</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a></span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>	var (</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>		data interface{}</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>		err  error</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>	)</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a></span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>	for {</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>		retryTimes--</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>		data, err = m.request.Invoke(algoData)</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>		if err != nil &amp;&amp; retryTimes == 0 {</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>			return data, err</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>		} else if err == nil {</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>			break</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>		} else if err != nil {</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>			log.Warning(&quot;eas request fail :&quot; + err.Error())</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>		}</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>	}</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a></span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>	if m.request.GetResponseFunc() != nil {</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>		return m.request.GetResponseFunc()(data)</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>	}</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a></span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>	return data, err</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>}</span></pre></html>

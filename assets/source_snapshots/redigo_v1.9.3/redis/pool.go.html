@@ -1,0 +1,675 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>redigo_v1.9.3/redis/pool.go</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>redigo_v1.9.3/redis/pool.go</h1><p>只读源码审阅快照；原文经 HTML 转义，不执行脚本。不是可构建工程。固定版本机制参考，不证明部署环境运行同版本；根目录保留原许可。</p><p>来源版本：<code>v1.9.3</code><br>原文件 SHA256：<code>3185d8a98da368708cac964a2ec212eaf2af5498d5eb93a75c926cc0866f87c7</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// Copyright 2012 Gary Burd</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// Licensed under the Apache License, Version 2.0 (the &quot;License&quot;): you may</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>// not use this file except in compliance with the License. You may obtain</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>// a copy of the License at</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>//</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>//     http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>//</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>// Unless required by applicable law or agreed to in writing, software</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a>// distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>// License for the specific language governing permissions and limitations</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>// under the License.</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a></span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>package redis</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a></span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>import (</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>	&quot;bytes&quot;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>	&quot;context&quot;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a>	&quot;crypto/rand&quot;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>	&quot;crypto/sha1&quot;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>	&quot;errors&quot;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>	&quot;io&quot;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>	&quot;strconv&quot;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>	&quot;sync&quot;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>	&quot;time&quot;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>)</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>var (</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>	_ ConnWithTimeout = (*activeConn)(nil)</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>	_ ConnWithTimeout = (*errorConn)(nil)</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>)</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>var nowFunc = time.Now // for testing</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>// ErrPoolExhausted is returned from a pool connection method (Do, Send,</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>// Receive, Flush, Err) when the maximum number of database connections in the</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>// pool has been reached.</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>var ErrPoolExhausted = errors.New(&quot;redigo: connection pool exhausted&quot;)</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a></span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>var (</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>	errConnClosed = errors.New(&quot;redigo: connection closed&quot;)</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>)</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a></span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>// Pool maintains a pool of connections. The application calls the Get method</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>// to get a connection from the pool and the connection&#x27;s Close method to</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>// return the connection&#x27;s resources to the pool.</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>//</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>// The following example shows how to use a pool in a web application. The</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>// application creates a pool at application startup and makes it available to</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>// request handlers using a package level variable. The pool configuration used</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>// here is an example, not a recommendation.</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>//</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>//  func newPool(addr string) *redis.Pool {</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>//    return &amp;redis.Pool{</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>//      MaxIdle: 3,</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>//      IdleTimeout: 240 * time.Second,</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>//      // Dial or DialContext must be set. When both are set, DialContext takes precedence over Dial.</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>//      Dial: func () (redis.Conn, error) { return redis.Dial(&quot;tcp&quot;, addr) },</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>//    }</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>//  }</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>//</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>//  var (</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>//    pool *redis.Pool</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>//    redisServer = flag.String(&quot;redisServer&quot;, &quot;:6379&quot;, &quot;&quot;)</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>//  )</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>//</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>//  func main() {</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>//    flag.Parse()</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>//    pool = newPool(*redisServer)</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>//    ...</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>//  }</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>//</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>// A request handler gets a connection from the pool and closes the connection</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>// when the handler is done:</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>//</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>//  func serveHome(w http.ResponseWriter, r *http.Request) {</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>//      conn := pool.Get()</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>//      defer conn.Close()</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>//      ...</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>//  }</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>//</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>// Use the Dial function to authenticate connections with the AUTH command or</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>// select a database with the SELECT command:</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>//</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>//  pool := &amp;redis.Pool{</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>//    // Other pool configuration not shown in this example.</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>//    Dial: func () (redis.Conn, error) {</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>//      c, err := redis.Dial(&quot;tcp&quot;, server)</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>//      if err != nil {</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>//        return nil, err</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>//      }</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>//      if _, err := c.Do(&quot;AUTH&quot;, password); err != nil {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>//        c.Close()</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>//        return nil, err</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>//      }</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>//      if _, err := c.Do(&quot;SELECT&quot;, db); err != nil {</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>//        c.Close()</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>//        return nil, err</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>//      }</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>//      return c, nil</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>//    },</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>//  }</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>//</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>// Use the TestOnBorrow function to check the health of an idle connection</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>// before the connection is returned to the application. This example PINGs</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>// connections that have been idle more than a minute:</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>//</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>//  pool := &amp;redis.Pool{</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>//    // Other pool configuration not shown in this example.</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>//    TestOnBorrow: func(c redis.Conn, t time.Time) error {</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>//      if time.Since(t) &lt; time.Minute {</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>//        return nil</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>//      }</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>//      _, err := c.Do(&quot;PING&quot;)</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>//      return err</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>//    },</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>//  }</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>//</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>type Pool struct {</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>	// Dial is an application supplied function for creating and configuring a</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>	// connection.</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>	//</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>	// The connection returned from Dial must not be in a special state</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>	// (subscribed to pubsub channel, transaction started, ...).</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>	Dial func() (Conn, error)</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a></span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>	// DialContext is an application supplied function for creating and configuring a</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>	// connection with the given context.</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>	//</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>	// The connection returned from DialContext must not be in a special state</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>	// (subscribed to pubsub channel, transaction started, ...).</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>	DialContext func(ctx context.Context) (Conn, error)</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a></span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>	// TestOnBorrow is an optional application supplied function for checking</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>	// the health of an idle connection before the connection is used again by</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>	// the application. Argument lastUsed is the time when the connection was returned</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>	// to the pool. If the function returns an error, then the connection is</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>	// closed.</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>	TestOnBorrow func(c Conn, lastUsed time.Time) error</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a></span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>	// TestOnBorrowContext is an optional application supplied function</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>	// for checking the health of an idle connection with the given context</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>	// before the connection is used again by the application.</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>	// Argument lastUsed is the time when the connection was returned</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>	// to the pool. If the function returns an error, then the connection is</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>	// closed.</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>	TestOnBorrowContext func(ctx context.Context, c Conn, lastUsed time.Time) error</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a></span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>	// Maximum number of idle connections in the pool.</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>	MaxIdle int</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a></span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>	// Maximum number of connections allocated by the pool at a given time.</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>	// When zero, there is no limit on the number of connections in the pool.</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>	MaxActive int</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a></span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>	// Close connections after remaining idle for this duration. If the value</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>	// is zero, then idle connections are not closed. Applications should set</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>	// the timeout to a value less than the server&#x27;s timeout.</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>	IdleTimeout time.Duration</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a></span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>	// If Wait is true and the pool is at the MaxActive limit, then Get() waits</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>	// for a connection to be returned to the pool before returning.</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>	Wait bool</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a></span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>	// Close connections older than this duration. If the value is zero, then</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>	// the pool does not close connections based on age.</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>	MaxConnLifetime time.Duration</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>	mu           sync.Mutex    // mu protects the following fields</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>	closed       bool          // set to true when the pool is closed.</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>	active       int           // the number of open connections in the pool</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>	initOnce     sync.Once     // the init ch once func</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>	ch           chan struct{} // limits open connections when p.Wait is true</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>	idle         idleList      // idle connections</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>	waitCount    int64         // total number of connections waited for.</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>	waitDuration time.Duration // total time waited for new connections.</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>}</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a></span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>// NewPool creates a new pool.</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>//</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>// Deprecated: Initialize the Pool directly as shown in the example.</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>func NewPool(newFn func() (Conn, error), maxIdle int) *Pool {</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>	return &amp;Pool{Dial: newFn, MaxIdle: maxIdle}</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>}</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a></span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>// Get gets a connection. The application must close the returned connection.</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>// This method always returns a valid connection so that applications can defer</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>// error handling to the first use of the connection. If there is an error</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>// getting an underlying connection, then the connection Err, Do, Send, Flush</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>// and Receive methods return that error.</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>func (p *Pool) Get() Conn {</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>	// GetContext returns errorConn in the first argument when an error occurs.</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>	c, _ := p.GetContext(context.Background())</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>	return c</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>}</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a></span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>// GetContext gets a connection using the provided context.</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>//</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>// The provided Context must be non-nil. If the context expires before the</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>// connection is complete, an error is returned. Any expiration on the context</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>// will not affect the returned connection.</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>//</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>// If the function completes without error, then the application must close the</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>// returned connection.</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>func (p *Pool) GetContext(ctx context.Context) (Conn, error) {</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>	// Wait until there is a vacant connection in the pool.</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>	waited, err := p.waitVacantConn(ctx)</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>	if err != nil {</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>		return errorConn{err}, err</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>	}</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a></span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>	p.mu.Lock()</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a></span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>	if waited &gt; 0 {</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>		p.waitCount++</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>		p.waitDuration += waited</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>	}</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a></span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>	// Prune stale connections at the back of the idle list.</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>	if p.IdleTimeout &gt; 0 {</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>		n := p.idle.count</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>		for i := 0; i &lt; n &amp;&amp; p.idle.back != nil &amp;&amp; p.idle.back.t.Add(p.IdleTimeout).Before(nowFunc()); i++ {</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>			pc := p.idle.back</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>			p.idle.popBack()</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>			p.mu.Unlock()</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>			pc.c.Close()</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>			p.mu.Lock()</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>			p.active--</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>		}</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>	}</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a></span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>	// Get idle connection from the front of idle list.</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>	for p.idle.front != nil {</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>		pc := p.idle.front</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>		p.idle.popFront()</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>		p.mu.Unlock()</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>		if (p.TestOnBorrow == nil || p.TestOnBorrow(pc.c, pc.t) == nil) &amp;&amp;</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>			(p.TestOnBorrowContext == nil || p.TestOnBorrowContext(ctx, pc.c, pc.t) == nil) &amp;&amp;</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>			(p.MaxConnLifetime == 0 || nowFunc().Sub(pc.created) &lt; p.MaxConnLifetime) {</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>			return &amp;activeConn{p: p, pc: pc}, nil</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>		}</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>		pc.c.Close()</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>		p.mu.Lock()</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>		p.active--</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>	}</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a></span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>	// Check for pool closed before dialing a new connection.</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>	if p.closed {</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>		p.mu.Unlock()</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>		err := errors.New(&quot;redigo: get on closed pool&quot;)</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>		return errorConn{err}, err</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>	}</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a></span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>	// Handle limit for p.Wait == false.</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>	if !p.Wait &amp;&amp; p.MaxActive &gt; 0 &amp;&amp; p.active &gt;= p.MaxActive {</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>		p.mu.Unlock()</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>		return errorConn{ErrPoolExhausted}, ErrPoolExhausted</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>	}</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a></span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>	p.active++</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>	p.mu.Unlock()</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>	c, err := p.dial(ctx)</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>	if err != nil {</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>		p.mu.Lock()</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>		p.active--</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>		if p.ch != nil &amp;&amp; !p.closed {</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>			p.ch &lt;- struct{}{}</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>		}</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>		p.mu.Unlock()</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>		return errorConn{err}, err</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>	}</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>	return &amp;activeConn{p: p, pc: &amp;poolConn{c: c, created: nowFunc()}}, nil</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>}</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a></span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>// PoolStats contains pool statistics.</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>type PoolStats struct {</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>	// ActiveCount is the number of connections in the pool. The count includes</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>	// idle connections and connections in use.</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>	ActiveCount int</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>	// IdleCount is the number of idle connections in the pool.</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>	IdleCount int</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a></span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>	// WaitCount is the total number of connections waited for.</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>	// This value is currently not guaranteed to be 100% accurate.</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>	WaitCount int64</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a></span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>	// WaitDuration is the total time blocked waiting for a new connection.</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>	// This value is currently not guaranteed to be 100% accurate.</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>	WaitDuration time.Duration</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>}</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a></span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>// Stats returns pool&#x27;s statistics.</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>func (p *Pool) Stats() PoolStats {</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>	p.mu.Lock()</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>	stats := PoolStats{</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>		ActiveCount:  p.active,</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>		IdleCount:    p.idle.count,</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>		WaitCount:    p.waitCount,</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>		WaitDuration: p.waitDuration,</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>	}</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>	p.mu.Unlock()</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a></span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>	return stats</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>}</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a></span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>// ActiveCount returns the number of connections in the pool. The count</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>// includes idle connections and connections in use.</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>func (p *Pool) ActiveCount() int {</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>	p.mu.Lock()</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>	active := p.active</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>	p.mu.Unlock()</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>	return active</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>}</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a></span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>// IdleCount returns the number of idle connections in the pool.</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>func (p *Pool) IdleCount() int {</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>	p.mu.Lock()</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>	idle := p.idle.count</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>	p.mu.Unlock()</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>	return idle</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>}</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a></span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>// Close releases the resources used by the pool.</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a>func (p *Pool) Close() error {</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>	p.mu.Lock()</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>	if p.closed {</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>		p.mu.Unlock()</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>		return nil</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>	}</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>	p.closed = true</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>	p.active -= p.idle.count</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>	pc := p.idle.front</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>	p.idle.count = 0</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>	p.idle.front, p.idle.back = nil, nil</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>	if p.ch != nil {</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>		close(p.ch)</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>	}</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>	p.mu.Unlock()</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>	for ; pc != nil; pc = pc.next {</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>		pc.c.Close()</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>	}</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>	return nil</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>}</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a></span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>func (p *Pool) lazyInit() {</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a>	p.initOnce.Do(func() {</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a>		p.ch = make(chan struct{}, p.MaxActive)</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a>		if p.closed {</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a>			close(p.ch)</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a>		} else {</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a>			for i := 0; i &lt; p.MaxActive; i++ {</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a>				p.ch &lt;- struct{}{}</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a>			}</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a>		}</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a>	})</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a>}</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a></span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a>// waitVacantConn waits for a vacant connection in pool if waiting</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a>// is enabled and pool size is limited, otherwise returns instantly.</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>// If ctx expires before that, an error is returned.</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>//</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>// If there were no vacant connection in the pool right away it returns the time spent waiting</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>// for that connection to appear in the pool.</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>func (p *Pool) waitVacantConn(ctx context.Context) (waited time.Duration, err error) {</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>	if !p.Wait || p.MaxActive &lt;= 0 {</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>		// No wait or no connection limit.</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>		return 0, nil</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>	}</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a></span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>	p.lazyInit()</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a></span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>	// wait indicates if we believe it will block so its not 100% accurate</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>	// however for stats it should be good enough.</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>	wait := len(p.ch) == 0</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>	var start time.Time</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>	if wait {</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>		start = time.Now()</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>	}</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a></span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>	select {</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>	case &lt;-p.ch:</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>		// Additionally check that context hasn&#x27;t expired while we were waiting,</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>		// because `select` picks a random `case` if several of them are &quot;ready&quot;.</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>		select {</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>		case &lt;-ctx.Done():</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>			p.ch &lt;- struct{}{}</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>			return 0, ctx.Err()</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>		default:</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>		}</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>	case &lt;-ctx.Done():</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>		return 0, ctx.Err()</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>	}</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a></span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>	if wait {</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>		return time.Since(start), nil</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>	}</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>	return 0, nil</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>}</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a></span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>func (p *Pool) dial(ctx context.Context) (Conn, error) {</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>	if p.DialContext != nil {</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a>		return p.DialContext(ctx)</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>	}</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a>	if p.Dial != nil {</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>		return p.Dial()</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>	}</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>	return nil, errors.New(&quot;redigo: must pass Dial or DialContext to pool&quot;)</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>}</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a></span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>func (p *Pool) put(pc *poolConn, forceClose bool) error {</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>	p.mu.Lock()</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>	if !p.closed &amp;&amp; !forceClose {</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>		pc.t = nowFunc()</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>		p.idle.pushFront(pc)</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>		if p.idle.count &gt; p.MaxIdle {</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>			pc = p.idle.back</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>			p.idle.popBack()</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>		} else {</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>			pc = nil</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>		}</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>	}</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a></span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>	if pc != nil {</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>		p.mu.Unlock()</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>		pc.c.Close()</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>		p.mu.Lock()</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a>		p.active--</span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>	}</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a></span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>	if p.ch != nil &amp;&amp; !p.closed {</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>		p.ch &lt;- struct{}{}</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>	}</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>	p.mu.Unlock()</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>	return nil</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>}</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a></span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>type activeConn struct {</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>	p     *Pool</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>	pc    *poolConn</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>	state int</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>}</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a></span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>var (</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>	sentinel     []byte</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>	sentinelOnce sync.Once</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>)</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a></span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>func initSentinel() {</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>	p := make([]byte, 64)</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>	if _, err := rand.Read(p); err == nil {</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>		sentinel = p</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>	} else {</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>		h := sha1.New()</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>		io.WriteString(h, &quot;Oops, rand failed. Use time instead.&quot;)       // nolint: errcheck</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>		io.WriteString(h, strconv.FormatInt(time.Now().UnixNano(), 10)) // nolint: errcheck</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>		sentinel = h.Sum(nil)</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>	}</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>}</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a></span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>func (ac *activeConn) firstError(errs ...error) error {</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a>	for _, err := range errs[:len(errs)-1] {</span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>		if err != nil {</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>			return err</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>		}</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>	}</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>	return errs[len(errs)-1]</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>}</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a></span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a>func (ac *activeConn) Close() (err error) {</span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a>	pc := ac.pc</span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a>	if pc == nil {</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>		return nil</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a>	}</span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>	ac.pc = nil</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a></span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>	if ac.state&amp;connectionMultiState != 0 {</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>		err = pc.c.Send(&quot;DISCARD&quot;)</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>		ac.state &amp;^= (connectionMultiState | connectionWatchState)</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>	} else if ac.state&amp;connectionWatchState != 0 {</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>		err = pc.c.Send(&quot;UNWATCH&quot;)</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a>		ac.state &amp;^= connectionWatchState</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>	}</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>	if ac.state&amp;connectionSubscribeState != 0 {</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>		err = ac.firstError(err,</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>			pc.c.Send(&quot;UNSUBSCRIBE&quot;),</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>			pc.c.Send(&quot;PUNSUBSCRIBE&quot;),</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>		)</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>		// To detect the end of the message stream, ask the server to echo</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a>		// a sentinel value and read until we see that value.</span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>		sentinelOnce.Do(initSentinel)</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>		err = ac.firstError(err,</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>			pc.c.Send(&quot;ECHO&quot;, sentinel),</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>			pc.c.Flush(),</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>		)</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>		for {</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>			p, err2 := pc.c.Receive()</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>			if err2 != nil {</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>				err = ac.firstError(err, err2)</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>				break</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a>			}</span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>			if p, ok := p.([]byte); ok &amp;&amp; bytes.Equal(p, sentinel) {</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>				ac.state &amp;^= connectionSubscribeState</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a>				break</span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>			}</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a>		}</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a>	}</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a>	_, err2 := pc.c.Do(&quot;&quot;)</span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>	return ac.firstError(</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>		err,</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>		err2,</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>		ac.p.put(pc, ac.state != 0 || pc.c.Err() != nil),</span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>	)</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a>}</span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a></span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>func (ac *activeConn) Err() error {</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>	pc := ac.pc</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>	if pc == nil {</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>		return errConnClosed</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>	}</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>	return pc.c.Err()</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a>}</span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a></span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a>func (ac *activeConn) DoContext(ctx context.Context, commandName string, args ...interface{}) (reply interface{}, err error) {</span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>	pc := ac.pc</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>	if pc == nil {</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a>		return nil, errConnClosed</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a>	}</span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>	cwt, ok := pc.c.(ConnWithContext)</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>	if !ok {</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a>		return nil, errContextNotSupported</span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>	}</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a>	ci := lookupCommandInfo(commandName)</span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a>	ac.state = (ac.state | ci.Set) &amp;^ ci.Clear</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a>	return cwt.DoContext(ctx, commandName, args...)</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a>}</span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a></span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>func (ac *activeConn) Do(commandName string, args ...interface{}) (reply interface{}, err error) {</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a>	pc := ac.pc</span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>	if pc == nil {</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>		return nil, errConnClosed</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a>	}</span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>	ci := lookupCommandInfo(commandName)</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a>	ac.state = (ac.state | ci.Set) &amp;^ ci.Clear</span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a>	return pc.c.Do(commandName, args...)</span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>}</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a></span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>func (ac *activeConn) DoWithTimeout(timeout time.Duration, commandName string, args ...interface{}) (reply interface{}, err error) {</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a>	pc := ac.pc</span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a>	if pc == nil {</span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>		return nil, errConnClosed</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>	}</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a>	cwt, ok := pc.c.(ConnWithTimeout)</span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>	if !ok {</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>		return nil, errTimeoutNotSupported</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>	}</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>	ci := lookupCommandInfo(commandName)</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>	ac.state = (ac.state | ci.Set) &amp;^ ci.Clear</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>	return cwt.DoWithTimeout(timeout, commandName, args...)</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a>}</span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a></span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>func (ac *activeConn) Send(commandName string, args ...interface{}) error {</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a>	pc := ac.pc</span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>	if pc == nil {</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>		return errConnClosed</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>	}</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a>	ci := lookupCommandInfo(commandName)</span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a>	ac.state = (ac.state | ci.Set) &amp;^ ci.Clear</span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>	return pc.c.Send(commandName, args...)</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a>}</span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a></span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>func (ac *activeConn) Flush() error {</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>	pc := ac.pc</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a>	if pc == nil {</span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>		return errConnClosed</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>	}</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a>	return pc.c.Flush()</span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a>}</span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a></span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a>func (ac *activeConn) Receive() (reply interface{}, err error) {</span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a>	pc := ac.pc</span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a>	if pc == nil {</span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a>		return nil, errConnClosed</span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a>	}</span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>	return pc.c.Receive()</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a>}</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a></span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a>func (ac *activeConn) ReceiveContext(ctx context.Context) (reply interface{}, err error) {</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a>	pc := ac.pc</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a>	if pc == nil {</span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a>		return nil, errConnClosed</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a>	}</span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a>	cwt, ok := pc.c.(ConnWithContext)</span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a>	if !ok {</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a>		return nil, errContextNotSupported</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a>	}</span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a>	return cwt.ReceiveContext(ctx)</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a>}</span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a></span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a>func (ac *activeConn) ReceiveWithTimeout(timeout time.Duration) (reply interface{}, err error) {</span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>	pc := ac.pc</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>	if pc == nil {</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a>		return nil, errConnClosed</span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a>	}</span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>	cwt, ok := pc.c.(ConnWithTimeout)</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a>	if !ok {</span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>		return nil, errTimeoutNotSupported</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a>	}</span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a>	return cwt.ReceiveWithTimeout(timeout)</span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>}</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a></span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a>type errorConn struct{ err error }</span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a></span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a>func (ec errorConn) Do(string, ...interface{}) (interface{}, error) { return nil, ec.err }</span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a>func (ec errorConn) DoContext(context.Context, string, ...interface{}) (interface{}, error) {</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a>	return nil, ec.err</span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a>}</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a>func (ec errorConn) DoWithTimeout(time.Duration, string, ...interface{}) (interface{}, error) {</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a>	return nil, ec.err</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a>}</span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a>func (ec errorConn) Send(string, ...interface{}) error                     { return ec.err }</span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a>func (ec errorConn) Err() error                                            { return ec.err }</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a>func (ec errorConn) Close() error                                          { return nil }</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a>func (ec errorConn) Flush() error                                          { return ec.err }</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a>func (ec errorConn) Receive() (interface{}, error)                         { return nil, ec.err }</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>func (ec errorConn) ReceiveContext(context.Context) (interface{}, error)   { return nil, ec.err }</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a>func (ec errorConn) ReceiveWithTimeout(time.Duration) (interface{}, error) { return nil, ec.err }</span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a></span>
+<span class="line" id="L629"><a class="ln" href="#L629">629</a>type idleList struct {</span>
+<span class="line" id="L630"><a class="ln" href="#L630">630</a>	count       int</span>
+<span class="line" id="L631"><a class="ln" href="#L631">631</a>	front, back *poolConn</span>
+<span class="line" id="L632"><a class="ln" href="#L632">632</a>}</span>
+<span class="line" id="L633"><a class="ln" href="#L633">633</a></span>
+<span class="line" id="L634"><a class="ln" href="#L634">634</a>type poolConn struct {</span>
+<span class="line" id="L635"><a class="ln" href="#L635">635</a>	c          Conn</span>
+<span class="line" id="L636"><a class="ln" href="#L636">636</a>	t          time.Time</span>
+<span class="line" id="L637"><a class="ln" href="#L637">637</a>	created    time.Time</span>
+<span class="line" id="L638"><a class="ln" href="#L638">638</a>	next, prev *poolConn</span>
+<span class="line" id="L639"><a class="ln" href="#L639">639</a>}</span>
+<span class="line" id="L640"><a class="ln" href="#L640">640</a></span>
+<span class="line" id="L641"><a class="ln" href="#L641">641</a>func (l *idleList) pushFront(pc *poolConn) {</span>
+<span class="line" id="L642"><a class="ln" href="#L642">642</a>	pc.next = l.front</span>
+<span class="line" id="L643"><a class="ln" href="#L643">643</a>	pc.prev = nil</span>
+<span class="line" id="L644"><a class="ln" href="#L644">644</a>	if l.count == 0 {</span>
+<span class="line" id="L645"><a class="ln" href="#L645">645</a>		l.back = pc</span>
+<span class="line" id="L646"><a class="ln" href="#L646">646</a>	} else {</span>
+<span class="line" id="L647"><a class="ln" href="#L647">647</a>		l.front.prev = pc</span>
+<span class="line" id="L648"><a class="ln" href="#L648">648</a>	}</span>
+<span class="line" id="L649"><a class="ln" href="#L649">649</a>	l.front = pc</span>
+<span class="line" id="L650"><a class="ln" href="#L650">650</a>	l.count++</span>
+<span class="line" id="L651"><a class="ln" href="#L651">651</a>}</span>
+<span class="line" id="L652"><a class="ln" href="#L652">652</a></span>
+<span class="line" id="L653"><a class="ln" href="#L653">653</a>func (l *idleList) popFront() {</span>
+<span class="line" id="L654"><a class="ln" href="#L654">654</a>	pc := l.front</span>
+<span class="line" id="L655"><a class="ln" href="#L655">655</a>	l.count--</span>
+<span class="line" id="L656"><a class="ln" href="#L656">656</a>	if l.count == 0 {</span>
+<span class="line" id="L657"><a class="ln" href="#L657">657</a>		l.front, l.back = nil, nil</span>
+<span class="line" id="L658"><a class="ln" href="#L658">658</a>	} else {</span>
+<span class="line" id="L659"><a class="ln" href="#L659">659</a>		pc.next.prev = nil</span>
+<span class="line" id="L660"><a class="ln" href="#L660">660</a>		l.front = pc.next</span>
+<span class="line" id="L661"><a class="ln" href="#L661">661</a>	}</span>
+<span class="line" id="L662"><a class="ln" href="#L662">662</a>	pc.next, pc.prev = nil, nil</span>
+<span class="line" id="L663"><a class="ln" href="#L663">663</a>}</span>
+<span class="line" id="L664"><a class="ln" href="#L664">664</a></span>
+<span class="line" id="L665"><a class="ln" href="#L665">665</a>func (l *idleList) popBack() {</span>
+<span class="line" id="L666"><a class="ln" href="#L666">666</a>	pc := l.back</span>
+<span class="line" id="L667"><a class="ln" href="#L667">667</a>	l.count--</span>
+<span class="line" id="L668"><a class="ln" href="#L668">668</a>	if l.count == 0 {</span>
+<span class="line" id="L669"><a class="ln" href="#L669">669</a>		l.front, l.back = nil, nil</span>
+<span class="line" id="L670"><a class="ln" href="#L670">670</a>	} else {</span>
+<span class="line" id="L671"><a class="ln" href="#L671">671</a>		pc.prev.next = nil</span>
+<span class="line" id="L672"><a class="ln" href="#L672">672</a>		l.back = pc.prev</span>
+<span class="line" id="L673"><a class="ln" href="#L673">673</a>	}</span>
+<span class="line" id="L674"><a class="ln" href="#L674">674</a>	pc.next, pc.prev = nil, nil</span>
+<span class="line" id="L675"><a class="ln" href="#L675">675</a>}</span></pre></html>
