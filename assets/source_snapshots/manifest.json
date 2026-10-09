@@ -895,7 +895,9 @@
       "line_count": 157,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "05_feature_data.md",
+        "06_rpc.md"
       ]
     },
     {
@@ -908,7 +910,8 @@
       "line_count": 117,
       "redacted_lines": [],
       "referenced_by": [
-        "03_pairec_orchestration.md"
+        "03_pairec_orchestration.md",
+        "06_rpc.md"
       ]
     },
     {
@@ -923,6 +926,170 @@
       "referenced_by": [
         "03_pairec_orchestration.md"
       ]
+    },
+    {
+      "file": "OneTrans_HSE_project/cpp/src/serving/flow.h.html",
+      "sha256": "f17a7593bb1ec8d8429e6b3420b636914db6a99a2bc56c41adeff466d7b08908",
+      "source_repository": "OneTrans_HSE_project",
+      "source_path": "cpp/src/serving/flow.h",
+      "source_commit": "16aecd6f7bd1164bf7760603349e95ae716bf60e",
+      "source_sha256": "78091eb27c26384ff01e6a16c6065a4bfbf0329cc47f49dfc28bae1e04c1e3a2",
+      "line_count": 124,
+      "redacted_lines": [],
+      "referenced_by": [
+        "02_onetrans.md"
+      ]
+    },
+    {
+      "file": "pairec_v2.6.2/service/rank/algo_data.go.html",
+      "sha256": "da9a947c66ebaba1c03819f074ecacb3dfef0ae46f5cacf8225a2aa9e9bf0fb5",
+      "source_repository": "pairec_v2.6.2",
+      "source_path": "service/rank/algo_data.go",
+      "source_commit": null,
+      "source_sha256": "c7724621eb3c1e6e9c7fe8373dbab50e39fb7b8072b85ef1b48f7cc599dcceb1",
+      "line_count": 346,
+      "redacted_lines": [],
+      "referenced_by": [
+        "03_pairec_orchestration.md"
+      ],
+      "source_version": "v2.6.2",
+      "source_archive": "https://proxy.golang.org/github.com/alibaba/pairec/v2/@v/v2.6.2.zip"
+    },
+    {
+      "file": "redis_7.2.5/src/ae.c.html",
+      "sha256": "0c4e4c1f0685bab51f86b7a2e8fe84fc9ddcb0c8520b8e310a953b05f3d949c8",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/ae.c",
+      "source_commit": null,
+      "source_sha256": "7b38b632421cf205a244c1ad1a75f423205d5bf22b320b9160932aecf529340a",
+      "line_count": 512,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/ae.c"
+    },
+    {
+      "file": "redis_7.2.5/src/ae_epoll.c.html",
+      "sha256": "13d75713e0557024fbc4887d89884164fef6385117686a26711cd9526d7ba683",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/ae_epoll.c",
+      "source_commit": null,
+      "source_sha256": "1dec92d5c4dccf03d72c949048b4bce6effd108fbcb0ffc4fc1b02179d3c7f73",
+      "line_count": 139,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/ae_epoll.c"
+    },
+    {
+      "file": "redis_7.2.5/src/bio.c.html",
+      "sha256": "277f005890fdd53732eb2e9d15b487f39e9126975738d6f7f6722d77cf0838b1",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/bio.c",
+      "source_commit": null,
+      "source_sha256": "aae17661db35fdd3a9c346ca17a23999daa4856041be848f9dccfd508ee61319",
+      "line_count": 345,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/bio.c"
+    },
+    {
+      "file": "redis_7.2.5/src/db.c.html",
+      "sha256": "6d5efb8b17976e02f6af21dc37d9a582bd0161473589ba11551e280d48ba6dc2",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/db.c",
+      "source_commit": null,
+      "source_sha256": "84fd7f44d0971cfea3d2a8cca9edd5d90ef59262635c7b3bcbaedbfcfb1365d9",
+      "line_count": 2558,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/db.c"
+    },
+    {
+      "file": "redis_7.2.5/src/networking.c.html",
+      "sha256": "bd846f671f147240ac5a5d79832b076286c3ae904cbe45d0c81c8a79b7b973f2",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/networking.c",
+      "source_commit": null,
+      "source_sha256": "60f35403923bc4c75e0acdda748bb090f1b316815fa6bdeaa26e39fffdbcf2a1",
+      "line_count": 4578,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/networking.c"
+    },
+    {
+      "file": "redis_7.2.5/src/server.c.html",
+      "sha256": "08b9630412f7be2a538d486df5f6f06701098753bd7bdcebc06bdb90d70eed8a",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/server.c",
+      "source_commit": null,
+      "source_sha256": "ff8057c7ca0bd2b3d4406c39dd20dab9f60fea5505365b54ef82f4b1c0a53211",
+      "line_count": 7373,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/server.c"
+    },
+    {
+      "file": "redis_7.2.5/src/socket.c.html",
+      "sha256": "e8c163d080f9fb685bc84bc3c39f345be6d4aaec50660a279c03dd51a1215757",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/socket.c",
+      "source_commit": null,
+      "source_sha256": "1fa876f433888ce772ad0b21f17cec6e659b0c925c533a230d251564c9388e38",
+      "line_count": 471,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/socket.c"
+    },
+    {
+      "file": "redis_7.2.5/src/t_string.c.html",
+      "sha256": "be39cd4d4022546fc283fe98406dde6c2773b9608a90b13e6bc4d3ae32228277",
+      "source_repository": "redis_7.2.5",
+      "source_path": "src/t_string.c",
+      "source_commit": null,
+      "source_sha256": "9fae89d4f0c7355612fe2e5daa8fa859d4df2d8f419fffa78719b07daac60b9f",
+      "line_count": 951,
+      "redacted_lines": [],
+      "referenced_by": [
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/src/t_string.c"
+    },
+    {
+      "file": "redis_7.2.5/COPYING.html",
+      "sha256": "327aa5e65a937a6440596a4642c938c7e46c752028b9899907ac08a3e03d740b",
+      "source_repository": "redis_7.2.5",
+      "source_path": "COPYING",
+      "source_commit": null,
+      "source_sha256": "97f0a15b7bbae580d2609dad2e11f1956ae167be296ab60f4691ab9c30ee9828",
+      "line_count": 10,
+      "redacted_lines": [],
+      "referenced_by": [
+        "09_evidence_and_gaps.md",
+        "11_redis_workload.md"
+      ],
+      "source_version": "7.2.5",
+      "source_url": "https://raw.githubusercontent.com/redis/redis/7.2.5/COPYING"
     }
   ]
 }

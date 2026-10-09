@@ -2,7 +2,7 @@
 
 本章追踪用户 1 的一次推荐请求：**业务接口查什么，产生多少 Redis 命令和字节，这些工作由哪些线程、进程与操作系统资源完成。** 它补充[特征服务五视图](05_feature_data.md)，不重复[键值字典](10_feature_catalog.md)。这里只分析特征服务的 Redis；DataSystem 中的模型注意力状态不在此数据路径内。
 
-以下严格区分三种依据：接口和数据格式是目标设计；字节量由[现有教学样例](assets/walkthrough_sample.json)计算；Redis 内部机制依据官方文档及固定版本源码。**没有运行推荐服务或测得吞吐、时延、CPU、内存峰值。** Redis 版本、单实例/集群、持久化及 IO 线程配置尚未选定，不能据此声称已经部署了某种线程结构。
+以下严格区分三种依据：接口和数据格式是目标设计；字节量由[现有教学样例](assets/walkthrough_sample.json)计算；Redis 内部机制依据官方文档及固定版本源码。**没有运行推荐服务或测得吞吐、时延、CPU、内存峰值。** 下文瓶颈是根据执行机制推导的待验证因素。 Redis 版本、单实例/集群、持久化及 IO 线程配置尚未选定，不能据此声称已经部署了某种线程结构。
 
 ## 1. 一次推荐实际读取什么
 
@@ -75,7 +75,7 @@ reply = array([b"$-1\r\n" if v is None else bulk(v) for v in values])
 
 ### 2.1 MGET 省掉什么，没有省掉什么
 
-MGET 是一条命令读取多个 String。其文档复杂度为 `O(N)`，N 为键数；查找与回复构造仍逐项发生，传输和客户端 JSON 解码还随返回字节量增长。它减少命令往返及解析开销，不会把 10 个键变成一次键查找。[MGET 官方说明](https://redis.io/docs/latest/commands/mget/)、[Redis 7.2.5 的 mgetCommand](https://github.com/redis/redis/blob/7.2.5/src/t_string.c#L510)。
+MGET 是一条命令读取多个 String。其文档复杂度为 `O(N)`，N 为键数；查找与回复构造仍逐项发生，传输和客户端 JSON 解码还随返回字节量增长。它减少命令往返及解析开销，不会把 10 个键变成一次键查找。[MGET 官方说明](https://redis.io/docs/latest/commands/mget/)、[Redis 7.2.5 的 mgetCommand](assets/source_snapshots/redis_7.2.5/src/t_string.c.html#L543)。
 
 ```text
 一条 MGET key1 key2 key3
@@ -104,70 +104,65 @@ pipeline中的 GET key1、GET key2、GET key3
 
 Pipeline 是不逐条等待结果、连续发送多条命令的方式；它减少往返和系统调用机会，但不是事务，也不会自动提供跨槽 MGET。过深的 pipeline 会增加待处理请求与回复缓冲，仍要限制每批条数、字节和等待时间。[官方 pipeline 说明](https://redis.io/docs/latest/develop/using-commands/pipelining/)。
 
-## 3. 特征服务的连接、等待与处理成本
+## 3. Redis 边界前：特征任务与连接额度
 
-以下是目标实现约束，具体线程池和客户端尚未完成：多个业务任务共享长期 Redis 连接，限制等待队列与在途批次；批次完成 RESP 读取后及时释放连接，JSON 解码、版本验证和字段投影在服务进程完成。
+[特征服务进程视图](05_feature_data.md)已用五个候选展开输入、伪代码、等待和结果所有权。本章从客户端提交 Redis 命令处接续：**特征服务尚未实现，不能把目标的等待任务画成已经确定的 OS 线程结构。** 旧适配采用同步 CGO，原生调用线程保留到返回，Go 仍可调度其他任务；仅看 `CallMethod(..., done=NULL)` 不能推导协作挂起。目标 C++ 服务没有这条 Go/C 交接路径，等待方式须按最终客户端核实。
 
 ```text
-接入业务RPC
-  -> 检查版本、期限与数量
-  -> 生成键、去重、按路由和字节上限分批
-  -> 等待连接额度
-  -> 发送RESP，等待该批完整回复
-  -> 恢复原位置，解码JSON，核对版本和history_hash
-  -> 投影业务字段，返回业务RPC
+一个业务任务的期限：接入时单调时钟 + remaining_timeout_ms
+额度覆盖：排队 → 连接/在途额度 → 发送与收齐RESP → 归还额度
+请求计算：校验与拼键在发送前；JSON解码、版本核对、投影在读回后
+结果约束：每条回复归属原请求；任务仍在解码时，缓冲不得被连接复用覆盖
 ```
 
-| 等待或计算 | 谁承担 | 为什么需要单独记录 |
-|---|---|---|
-| 入口排队、并发额度等待 | FeatureService | 服务过载时可能尚未访问 Redis 就超时 |
-| 连接额度等待 | 客户端/连接池 | 连接不足或慢回复会占住在途额度 |
-| RESP 编码与解析 | Redis 客户端和 Redis | 返回值大小影响复制、缓冲和协议处理 |
-| 键查找与数组回复构造 | Redis 命令执行路径 | 与键数、值大小和同实例其他命令有关 |
-| JSON 解码、校验、字段投影 | FeatureService | Redis 将 JSON 当普通字符串，不理解其业务字段 |
-| 响应编码与 bRPC 返回 | FeatureService | 与所选业务字段和调用方读取速度有关 |
+连接数不等于 OS 线程数，也不等于 Redis 命令执行并行度。同一连接是否允许多个在途命令，由客户端协议实现决定。多副本应合计 `副本数 × 每节点连接数` 和在途字节；仅扩大连接池可能把排队从客户端转移到 Redis。
 
-连接池不能按“一请求一连接”无限扩张；也不能把客户端连接数当成 Redis 的执行线程数。是否允许同一连接有多个在途请求，由客户端协议实现决定。增加特征副本时，要同时计算“副本数 × 每节点连接数”及总在途字节，而不是只看单副本配置。
-
-`remaining_timeout_ms` 覆盖本次业务调用的剩余期限，排队、连接等待和重试都继续消耗它。超时取消能够阻止未发出的任务；已经进入 Redis 的普通读命令未必能被客户端即时撤回。不能因为调用方超时，就从负载统计中扣掉已经发出的命令。
-
-发布清单可按已批准事件刷新进程内只读快照，不必每次查管理键。若实现决定逐请求查询清单、追加类型检查、重试或拆批，它们都必须作为新增命令计数，不应隐藏在上述四批账单中。
+超时取消可阻止未发出的任务；已经进入 Redis 的普通读命令不能靠调用方超时即时撤回。清单缓存、类型核验、Cluster 拆批和重试也影响命令数，实施后必须单独记录。基础四批账单只计第 1 节列明的操作。
 
 ## 4. Redis 内部执行：主线程、IO线程和后台进程
 
-### 4.1 先固定版本再解释线程
+### 4.1 参考范围与执行单元
 
-本章用 **Redis Open Source 7.2.5 的 Linux 实现**解释普通 String/MGET 的执行路径；这是机制参考版本，不是项目部署选择。网络 IO 可用线程和普通命令执行是否并行是两个问题，不能用“Redis 永远只有一个线程”概括。
+以下使用 **Redis Open Source 7.2.5、Linux、普通 TCP/RESP2、无 TLS** 的源码路径。这是机制参考，不是项目部署配置。图中 OS 线程由内核调度；当前 MGET 没有“每个键一个协程”的执行结构。
 
-| 执行单元 | 本章参考实现的工作 | 版本或配置条件 |
+| 执行单元 | 工作及所持数据 | 启用条件 |
 |---|---|---|
-| 主事件循环/命令执行线程 | 处理可执行命令、查键、构造回复，并执行维护工作 | 7.2.5 普通 MGET 的键循环在主执行路径；慢批次会延后其他命令 |
-| 可选网络 IO 线程 | socket 读写及部分协议解析 | 7.2.5 的 `io-threads>1` 可分担写，读还取决于 `io-threads-do-reads`；默认不启用多 IO 线程 |
-| 后台工作线程 | 按任务类型处理文件关闭、AOF fsync、延迟释放对象 | 有任务时工作，无任务时等待；不是每条读请求新建线程 |
-| 后台持久化子进程 | BGSAVE 或 AOF 重写 | 满足配置或触发条件时 fork；不是常驻的“每请求写盘线程” |
+| 主线程 | 事件循环、普通命令查键与回复构造；持有数据库及每连接的解析状态 | `io-threads=1` 时也负责网络读写；一次 MGET 的键循环不交给其他命令线程 |
+| 网络 IO 工作线程 | 分配给本线程的连接列表、socket 读写、可选请求解析 | `io-threads>1`；读还需 `io-threads-do-reads=yes`，实际使用取决于线程是否活跃 |
+| `bio_close_file/bio_aof/bio_lazy_free` 三个后台线程 | 各类作业队列；执行关闭文件、AOF 同步、延迟释放 | 服务初始化建立，队列无任务时等待；不是每次 MGET 新建 |
+| 持久化子进程 | fork 后生成 RDB 或重写 AOF | 满足配置或触发条件时创建；读请求不逐条派给子进程 |
 
-7.2.5 网络路径将线程化读取完成的命令交回主执行路径处理，见 [networking.c](https://github.com/redis/redis/blob/7.2.5/src/networking.c#L4124)。后台任务的线程与队列见 [bio.c](https://github.com/redis/redis/blob/7.2.5/src/bio.c#L70)。
-
-版本差异已有具体例子：[7.2.5 配置](https://github.com/redis/redis/blob/7.2.5/redis.conf#L1194)区分写线程与可选读线程；[8.0.0 配置](https://github.com/redis/redis/blob/8.0.0/redis.conf#L1215)说明启用 IO 线程后涵盖读、写和协议解析。不能把某一版本的开关、线程等待方式或 TLS 限制套到所有版本。部署时须记录实际 `redis_version` 与生效配置。
-
-图法：进程与线程关系示意图（非 UML）。包含关系区分进程和线程；箭头表示任务交付或按条件创建，不是业务步骤顺序。
+图法：进程与线程结构示意图（非 UML）。双向边表示同进程任务交接；fork 边表示条件创建。
 
 ```mermaid
 flowchart TB
-    subgraph RedisProcess[进程：redis-server]
-        Main[主线程<br/>事件循环与普通命令执行]
-        IO[可选IO线程<br/>socket读写和协议处理]
-        Bio[后台工作线程<br/>fsync、关闭文件、延迟释放]
-        Main <-->|依版本交付IO工作与结果| IO
-        Main -->|投递后台任务| Bio
+    subgraph RedisProcess[进程：redis-server / 参考7.2.5]
+        Main[主线程<br/>事件循环、MGET键循环、回复构造]
+        IO[可选IO工作线程<br/>socket读写与请求解析]
+        Bio[三个bio后台线程<br/>每工作线程有作业队列]
+        Main <-->|分配连接列表；原子计数确认完成| IO
+        Main -->|共享队列；互斥锁与条件变量| Bio
     end
-    Main -->|BGSAVE触发fork| RDB[子进程：生成RDB]
-    Main -->|重写触发fork| AOF[子进程：重写AOF]
+    Main -->|按条件fork| RDB[子进程：生成RDB]
+    Main -->|按条件fork| AOF[子进程：重写AOF]
 ```
 
-### 4.2 一次 MGET 怎样经过操作系统
+版本和配置应和结论一起记录。[7.2.5 配置](https://github.com/redis/redis/blob/7.2.5/redis.conf)区分写线程与可选读线程；[8.0.0 配置](https://github.com/redis/redis/blob/8.0.0/redis.conf)的 IO 配置描述已经变化。以下的等待循环和同步方法只依据 7.2.5，不能泛化成所有 Redis 版本的永久行为。下文源码链接指向随文归档的该版本官方文件，下载来源与许可见[证据清单](09_evidence_and_gaps.md)。
 
-图法：UML 时序图。展示参考配置 `io-threads=1`、连接已建立、Redis 空闲后接到一次读命令的路径。客户端 IO 是特征服务内部组件；“Redis 所在 OS”是内核执行者，不表示两个容器在同一主机。TCP 消息用异步箭头，系统调用及业务等待用同步箭头。
+### 4.2 用户 1 的四键 MGET：处理、数据流和时序
+
+继续第 1.1 节的 `user_keys`：这是用户属性、历史、64 维向量与兴趣词项的四个完整键。Redis 的 `client *c` 是**一条连接在服务端的状态对象**，不是用户 1 的用户记录；其中 `querybuf` 是已读入的请求字节，`argc/argv` 是解析后的命令参数，`buf/reply` 是待发送回复缓冲。长连接处理后续请求时会继续使用这个连接对象。
+
+| 输入 | 处理 | 输出 |
+|---|---|---|
+| 219 字节 RESP2 请求 | 累积 TCP 字节；收齐数组及各参数才执行 | `argc=5`；`argv=["MGET", user_keys[0], user_keys[1], user_keys[2], user_keys[3]]` |
+| 四个键及当前内存数据库 | `mgetCommand` 按输入次序逐键查找 String | 四个 JSON 值分别为 144、336、638、366 字节 |
+| 四个值 | 构造一个 RESP2 数组回复并写入发送缓冲 | 总计 1,520 字节；数组四个位置均非 nil |
+| 客户端收齐的数组 | 特征服务解码、核对版本与历史摘要 | `user/history/dense_query/sparse_query`，用户身份为 `"1"` |
+
+这一步 Redis 不知道 `history_hash` 的业务含义，也不调用模型。完整业务输入输出见[用户查询请求](assets/request_example/02_user_context.request.json)和[响应](assets/request_example/02_user_context.response.json)。
+
+图法：UML 时序图。展示 `io-threads=1`、连接已建立、主线程从空闲进入处理的成功路径。客户端 IO 属于特征进程；Redis 所在 OS 不暗示两进程同主机。TCP 传输为异步箭头；系统调用与返回为实线调用、虚线返回。
 
 ```mermaid
 sequenceDiagram
@@ -175,24 +170,107 @@ sequenceDiagram
     participant C as 特征客户端IO
     participant K as Redis所在OS
     participant R as Redis主线程
-    F->>C: 提交本批键并等待结果
-    R->>K: epoll_wait，当前无就绪事件
-    C-)K: TCP发送MGET的RESP字节
-    K-->>R: socket可读；线程获得运行机会
-    R->>K: 非阻塞读取socket
-    K-->>R: 已接收的请求字节
-    R->>R: 解析命令；逐键查内存；构造数组回复
-    R->>K: 写入socket发送缓冲
-    K-->>R: 已接受的字节数
+    F->>C: 查询user_keys的4项，等待结果
+    R->>K: aeApiPoll → epoll_wait，无就绪事件
+    C-)K: TCP发送219字节RESP请求
+    K-->>R: 可读事件返回；需取得CPU后处理
+    R->>K: readQueryFromClient → connRead
+    K-->>R: 已到达的字节，累积到querybuf
+    R->>R: processInputBuffer：收齐参数，argc=5
+    R->>R: processCommand → call → mgetCommand
+    R->>R: 顺序查4键，构造1520字节数组回复
+    R->>R: 加入待写连接列表；beforeSleep处理
+    R->>K: writeToClient → socket write/writev
+    K-->>R: 本次接受的字节数
     K-)C: TCP传回回复字节
-    C->>C: 收齐并解析RESP数组
-    C-->>F: 同序值与nil位置
-    F->>F: JSON解码、版本核对、业务响应
+    C->>C: 收齐1个RESP数组，核对4个位置
+    C-->>F: 4个JSON字符串
+    F->>F: JSON解码、业务核验，返回用户上下文
 ```
 
-这是可读的成功轨迹，不是一条命令固定产生一次 `read/write` 的承诺。TCP 可拆包或合并多个命令；部分读写需继续处理。发送缓冲不足时可能返回 `EAGAIN`，Redis 等待可写事件后续发；不会为了这一个慢客户端同步等待整个网络传输完成。[Redis 网络实现](https://github.com/redis/redis/blob/7.2.5/src/networking.c)、[Linux epoll 适配](https://github.com/redis/redis/blob/7.2.5/src/ae_epoll.c#L99)。
+函数对应关系如下。它将网络、命令和数据库访问分开，便于从慢点反查代码；箭头只表示当前普通请求路径，未列所有错误或维护分支。
 
-“就绪”也不等于立刻取得 CPU：内核将可运行线程安排到 CPU，仍受其他任务和容器配额影响。无事件时 `epoll_wait` 可休眠；有持续工作时事件循环继续处理。后台队列没有任务时则可在条件变量等待，被投递任务唤醒，见 [bioProcessBackgroundJobs](https://github.com/redis/redis/blob/7.2.5/src/bio.c#L190)。这些等待机制不能简单换算成“每个 MGET 一次上下文切换”。
+| 阶段 | 可核对的函数链 | 等待或计算发生在哪里 |
+|---|---|---|
+| 等待连接事件 | [`aeMain → aeProcessEvents → aeApiPoll`](assets/source_snapshots/redis_7.2.5/src/ae.c.html#L361) → [`epoll_wait`](assets/source_snapshots/redis_7.2.5/src/ae_epoll.c.html#L109) | 无事件且允许等待时主线程休眠；有事件不等于立即获得 CPU |
+| 读取并解析 | [`connSocketEventHandler`](assets/source_snapshots/redis_7.2.5/src/socket.c.html#L257) → [`readQueryFromClient → processInputBuffer → processMultibulkBuffer`](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L2520) | socket 字节进入 `querybuf`；不足一条命令时保留状态，等待后续可读事件 |
+| 执行命令 | [`processCommandAndResetClient`](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L2462) → [`processCommand → call`](assets/source_snapshots/redis_7.2.5/src/server.c.html#L3833) → [`mgetCommand`](assets/source_snapshots/redis_7.2.5/src/t_string.c.html#L543) | 主线程验证命令并执行键循环；不会每查一个键就切换一个工作线程 |
+| 查找并构造回复 | [`lookupKeyRead → lookupKeyReadWithFlags → lookupKey → dictFind`](assets/source_snapshots/redis_7.2.5/src/db.c.html#L88)；[`addReplyBulk/addReplyNull`](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L1008) | 内存字典查找、命中统计、输出缓冲构造；无逐键文件读取 |
+| 发送回复 | [`beforeSleep`](assets/source_snapshots/redis_7.2.5/src/server.c.html#L1625) → [`handleClientsWithPendingWrites → writeToClient`](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L2023) → [`connSocketWrite/Writev`](assets/source_snapshots/redis_7.2.5/src/socket.c.html#L154) | 先尝试非阻塞发送；剩余未发完则安装可写事件，回调 `sendReplyToClient` 继续 |
+
+图中的 219/1,520 字节不是“一次 read 加一次 write”的承诺：TCP 可拆包，也可合并多个命令。`EAGAIN` 表示本次暂时无法继续 IO；Redis 留下尚未完成的缓冲，等待后续事件，不同步等待慢客户端把全部数据收走。Redis 对 socket 的成功写入仅表示内核接受这些字节，不代表特征服务已经完成解码。
+
+MGET 的主执行逻辑可概括为以下伪代码，`keys` 就是本批输入键列表；JSON 在这里仍是字节字符串：
+
+```python
+reply_elements = []
+for key in keys:
+    value = lookup_in_memory_database(key)  # 对应lookupKeyRead，含失效与统计处理
+    if value is None or value.redis_type != "String":
+        reply_elements.append(RESP_NULL)
+    else:
+        reply_elements.append(resp_bulk(value.bytes))
+append_to_client_output(resp_array(reply_elements))
+```
+
+此处 `RESP_NULL/resp_bulk/resp_array` 分别表示协议空值、带长度字符串、数组编码，不是 Redis 源码中的 Python API。候选五键同理，第五个位置为 nil；不是删去 `9003` 后回四项。本方案不设逐键 TTL，但 Redis 通用查找仍含过期检查；读命令还会更新命中统计及按条件更新访问元数据，不能简单理解为进程内没有任何内存写操作。
+
+### 4.3 开启网络 IO 线程后：并行的是哪一段
+
+7.2.5 用线程私有连接列表分配一批 IO 工作，主线程也处理其中一份。`io-threads=N` 中的 N 包含主线程，额外创建 N−1 个 IO 工作线程。每个列表只由本轮分配到的线程处理；完成计数归零前，主线程不进入该批共享客户端状态的后处理。[初始化与 IOThreadMain](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L4173)。
+
+以两个连接都可读、读线程已启用且处于活跃状态为例。`pending[i]` 在图中简写官方 `io_threads_pending[i]` 原子计数，不是网络请求总量。
+
+```mermaid
+sequenceDiagram
+    participant M as Redis主线程
+    participant W as IO工作线程1
+    M->>M: postponeClientRead：登记待读连接
+    M->>M: beforeSleep：分配连接列表0与1
+    M-)W: 设置READ工作类型与pending[1]计数
+    par 分配给主线程的连接
+        M->>M: readQueryFromClient；读取、解析首条命令
+    and 分配给工作线程的连接
+        W->>W: 读取、解析首条命令；标记CLIENT_PENDING_COMMAND
+        W-)M: 原子写pending[1]=0
+    end
+    M->>M: 确认所有pending为0，再处理共享状态
+    M->>M: processPendingCommandAndInputBuffer
+    M->>M: 顺序执行普通MGET，构造各连接回复
+```
+
+这里的异步箭头表示**同进程共享内存中的工作交接**，不是 socket 或 RPC。线程化读取最多先解析出一条待执行命令，设置 `CLIENT_PENDING_COMMAND`；主线程汇合后才执行，并继续处理缓冲中的后续命令。[读取交接](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L4443)、[解析时的执行限制](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L2559)。
+
+```text
+IOThreadMain：轮询本线程pending计数；有工作则处理自己的连接列表，结束时写0
+主线程汇合：循环读取所有工作线程pending，直到全部为0
+停用IO线程：主线程持有对应mutex；工作线程进入mutex等待
+重新启用：主线程解锁，工作线程获得继续执行的机会
+```
+
+上述循环来自 [IOThreadMain/startThreadedIO/stopThreadedIO](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L4173) 和[写线程分发/汇合](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L4318)。**活跃 IO 线程与主线程汇合包含忙等，即反复读取状态并消耗 CPU；不是统一使用条件变量睡眠。** 待处理连接少时实现会停用多 IO 线程。若工作线程被 OS 延迟调度，主线程等待汇合也可能变慢；增加线程数不保证降低时延，更不会使本例四个键的数据库查找同时执行。
+
+### 4.4 后台任务：条件变量在哪里使用
+
+后台 `bio` 和网络 IO 线程是两套机制。7.2.5 为关闭文件、AOF 同步、延迟释放分配后台工作线程及队列；AOF fsync 与关闭 AOF 共用 `bio_aof`。一次普通 MGET 不会直接创建这些作业。[队列映射](assets/source_snapshots/redis_7.2.5/src/bio.c.html#L66)。
+
+下面按源代码顺序写出同步点。`queue` 是选中工作线程的作业队列，`mutex` 是保护队列的互斥锁，`condition` 是等待/通知使用的条件变量；`job` 是一项文件或释放任务。
+
+```text
+投递方 bioSubmitJob：
+  lock(mutex) → queue.append(job) → 更新计数 → cond_signal(condition) → unlock(mutex)
+
+工作线程 bioProcessBackgroundJobs：
+  lock(mutex)
+  队列空：cond_wait(condition, mutex)  # 等待时释放mutex，返回前重新取得它
+  队列非空：取得队首job → unlock(mutex)
+  执行close/fsync/free                # 耗时工作不在队列锁内
+  lock(mutex) → 删除完成job → 减计数 → 通知等待方 → 继续检查队列
+```
+
+依据：[投递](assets/source_snapshots/redis_7.2.5/src/bio.c.html#L152)、[等待与处理](assets/source_snapshots/redis_7.2.5/src/bio.c.html#L211)。条件通知让等待者有机会继续，不保证马上取得 CPU，也不表示 fsync 已完成。后台 fsync 可能等待存储 IO，延迟释放仍消耗 CPU；共享队列锁与内核调度是不同的等待来源。
+
+通信边界至此可明确：FeatureService ↔ Redis 用 TCP/RESP 进行进程间通信；Redis 内部的 IO 列表、原子计数、mutex 和条件变量是线程同步，没有额外网络跳转。持久化 fork 产生的子进程有独立执行上下文与写时复制内存，不承担本例的业务 RPC；其文件 IO 对在线请求的影响见下一节。
 
 ## 5. CPU、内存、网络和磁盘分别承受什么
 
@@ -203,7 +281,7 @@ sequenceDiagram
 | FeatureService CPU | 21 个键的构造、协议处理；20 条 JSON 的解码、历史摘要与版本核对；业务响应编码 | 进程 CPU、请求分段耗时、解码耗时与返回字节；不能全归因于 Redis |
 | Redis 主线程 CPU | 批命令解析、键哈希查找、数组回复；与其他请求及维护命令竞争 | 各线程 CPU、命令执行时间、排队时延；主线程饱和时多开连接不能并行化同实例键查找 |
 | IO 与内核 CPU | socket 读写、协议处理、网络收发、必要时加解密 | Redis IO 线程配置、系统态 CPU、网络吞吐和重传；TLS 是否启用需另行确认 |
-| 调度 | 可运行线程竞争 CPU，容器达到配额后可能被节流 | CPU 配额、节流时间、运行队列和上下文切换；平均 CPU 不高也可能有调度等待 |
+| 调度 | 可运行线程竞争 CPU；线程化 IO 汇合还要等其他线程完成，容器达到配额后可能被节流 | CPU 配额、节流时间、运行队列和上下文切换；平均 CPU 不高也可能有调度等待 |
 | 内存 | 常驻键值、对象与分配器；输入/输出缓冲；特征进程中的解码对象；发布切换时两版共存 | `used_memory`、RSS、内存配额、缓冲字节、逐记录大小分布；不拿 JSON 字节直接当 RSS |
 | 网络 | 基础投影每请求至少 1,122 字节入 Redis、4,903 字节出 Redis | 分请求字节和实例网络量，另计协议外开销、重试及装载；包数需实际观测 |
 
@@ -237,9 +315,31 @@ S     = 不重复语义编码数，即反向关联键数
 
 旧版本回收同样是写操作。超大 `DEL` 会占用主执行时间；可按受控扫描与批次回收，需要时使用 `UNLINK` 将对象释放交给后台，但后台释放仍消耗 CPU 和内存带宽。不能把“异步”解释为“没有成本”。[UNLINK 官方说明](https://redis.io/docs/latest/commands/unlink/)。
 
-## 6. 怎样把业务请求换算为负载，并验证瓶颈
+## 6. 高并发：请求如何交错，工作积压在哪里
 
-仅在第 1 节基础假设下，令推荐请求速率为 `Q`：
+同一推荐请求的四批有数据依赖，不同请求之间可以交错；完成请求甲的用户四键后，Redis 可以先执行请求乙的候选五键，再处理甲后续的历史编码。这是可发生的顺序，不是调度或公平性保证。图中的连接甲只是可能复用同一连接的例子；目标连接池不保证同一用户或请求始终绑定同一连接。
+
+```text
+连接甲：MGET 用户1的4键 ──等待PaiRec与模型的后续处理── MGET 用户1的历史编码10键
+连接乙：       MGET 另一请求的候选5键
+主线程：       命令甲1 → 命令乙1 → 后续就绪命令
+每条普通MGET：本条键循环完成后，才可能执行另一条普通命令
+```
+
+OS 可以抢占 Redis 主线程去运行别的进程；这不会让另一个 Redis IO 线程接替执行本条 MGET 的数据库循环。过大的批次会延长其他命令的等待。反过来，把批次拆成大量小命令又会增加协议、路由与调度成本，需要同时测条数和字节，不能只设一个很大的 `top_k` 上限。
+
+| 积压位置 | 保存了什么；如何继续 | 负载与控制责任 |
+|---|---|---|
+| 特征入口/连接额度队列 | 尚未发送的业务任务，等额度或期限到达 | FeatureService 限入口并发、排队长度和期限；不能把所有任务无限挂起留在内存 |
+| 客户端发送缓冲、TCP 缓冲 | 已编码命令或尚未被 Redis 读出的字节 | 客户端限制在途条数与字节、复用连接；OS 提供 TCP 流控，但不了解推荐请求是否已过期 |
+| Redis `querybuf` 与待读列表 | 收到但未解析/执行的字节，或待 IO 处理的连接 | Redis 主执行时间、IO 线程与调度共同影响消耗速度；连接更多不等于查键更快 |
+| Redis `buf/reply` 与发送缓冲 | 已生成但未传完的回复 | 慢调用方使输出缓冲增长；核对实际缓冲限制，客户端持续收取并限制深 pipeline |
+| 特征回复缓冲与解码任务 | 收齐的 JSON 及待投影的记录 | 特征服务 CPU 或内存受限时也会积压；读回后应及时解码/释放，不长期占住连接额度 |
+| IO 线程汇合、后台队列 | 一轮 IO 尚未完成，或持久化/释放作业待处理 | IO 忙等消耗 CPU，后台队列有自己的同步；核对线程 CPU、容器节流与磁盘等待 |
+
+Redis 7.2.5 对输入大小和客户端输出缓冲有检查，但阈值/启用条件依配置；它们不能代替业务入口限流。[输入缓冲检查](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L2700)、[输出缓冲检查](assets/source_snapshots/redis_7.2.5/src/networking.c.html#L3848)。客户端超时后的重试还可能与原命令叠加，应使用同一期限和受限重试次数。
+
+仅在第 1 节基础假设下，令推荐请求速率为 `Q`（请求/秒）：
 
 ```text
 feature_rpc_per_second = 4 * Q
@@ -250,6 +350,8 @@ redis_reply_bytes_per_second >= 4903 * Q  # 完整物品值比样例投影更大
 ```
 
 例如 `Q=1000` 只是算术演示，得到 4,000 条基础命令/秒、21,000 个键查找/秒，应用协议请求约 1.122 MB/s、回复至少 4.903 MB/s。**这不是吞吐验收或容量建议。** 真实历史长度、候选上限、编码碰撞、批次拆分、命中率和重试都会改变系数。
+
+## 7. 验证瓶颈时记录什么
 
 | 要回答的问题 | 最少记录什么 | 不能据此直接推出什么 |
 |---|---|---|

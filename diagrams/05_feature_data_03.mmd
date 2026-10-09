@@ -1,20 +1,22 @@
 sequenceDiagram
-    participant A as 特征任务甲
-    participant B as 特征任务乙
-    participant C as 同进程连接池
-    participant R as Redis服务
-    par 请求甲
-        A->>C: acquire(remaining_timeout_ms)
-        C-->>A: 可用连接
-        A->>R: MGET user/history/user_rep对应4键
-        R-->>A: 单个数组回复，含4个位置
-        A->>C: release(connection)，本批RESP读取完成
-        A->>A: 解码；核对版本与history_hash
-    and 请求乙
-        B->>C: acquire(remaining_timeout_ms)
-        C-->>B: 可用连接
-        B->>R: MGET 本请求候选物品键
-        R-->>B: 同序值与缺失位置
-        B->>C: release(connection)，本批RESP读取完成
-        B->>B: 恢复原ID次序，投影所需字段
+    participant A as 请求任务甲：用户1候选
+    participant B as 请求任务乙：另一推荐请求
+    participant C as 同进程Redis访问适配
+    participant R as Redis进程
+    par 甲的五键查询
+        A->>A: 校验版本、期限；生成5键
+        A->>C: read_strings_with_deadline(keys,deadline)
+        C->>C: 在期限内取得连接与在途额度
+        C->>R: MGET 5个item键
+        R-->>C: 4个String和1个nil
+        C->>C: 校验RESP；结果交给甲；归还本批额度
+        C-->>A: 等长raw_values，最后一项None
+        A->>A: 解码与投影；构造5项结果
+    and 乙可同时处于计算或等待
+        B->>B: 校验本请求；生成自身键
+        B->>C: read_strings_with_deadline(keys,deadline)
+        C->>C: 取得额度，或在期限内排队
+        C->>R: 本请求MGET
+        R-->>C: 本请求数组回复
+        C-->>B: 与乙的输入对齐的raw_values
     end

@@ -80,7 +80,9 @@ status = one_of("FOUND", "NOT_FOUND")  # 属性未知用null和missing_fields表
 
 ## 3. 进程视图
 
-图法：UML 时序图。
+### 3.1 目标特征调用
+
+图法：UML 时序图；原生客户端是 PaiRec 进程内的代码，特征服务与 Redis 是独立进程。
 
 ```mermaid
 sequenceDiagram
@@ -110,7 +112,47 @@ if stage_budget <= 0:
 
 超时、取消后，远端计算可能继续完成。当前 OneTrans 没有请求级释放协议；通信层不能承诺取消会删除 KV。目标编排必须区分运输成功与业务成功：例如 `/ingest` 需要检查实际返回的 `accepted`，`/rank` 则要核对 `trace.kv_hit` 及模型执行证据，不能要求不存在的 `ready/executed` 响应字段。
 
-### 等待发生在哪里
+### 3.2 当前跨语言调用：同一进程内发生什么
+
+以已实现的 `Client.Get(key)` 为例，其 IPO（输入、处理、输出）是 `string key → 同步Redis GET → (string value, bool found, error)`。这条旧路径用于解释通信负载；目标编排应调用独立特征服务，不再由 PaiRec 直接查询 Redis。
+
+```go
+// 已有Go封装的正常命中路径摘要；空值、错误另按返回码分支。
+cKey := C.CString(key)                 // 复制到原生内存
+defer C.free(unsafe.Pointer(cKey))
+var cValue *C.char
+rc := C.Clis_RedisGet(c.clis, cKey, &cValue) // 同步调用；返回前不进入下一行
+// 仅在rc==0时：C ABI已用strdup分配结果；复制后由分配方释放。
+value := C.GoString(cValue)
+C.Clis_FreeString(cValue)
+```
+
+图法：UML 时序图。Go 调用任务、C/C++ 调用栈和 bRPC 运行库属于同一进程；生命线用于区分代码职责，不表示固定三条线程。只画命中成功路径。
+
+```mermaid
+sequenceDiagram
+    participant G as Go调用任务
+    participant C as C接口与C++客户端
+    participant B as 同进程bRPC运行库
+    participant R as 外部Redis
+    G->>G: CString复制key
+    G->>C: Clis_RedisGet(key)
+    C->>C: std::string、RedisRequest和独立Controller
+    C->>B: CallMethod(request,response,done=NULL)
+    B->>R: GET key
+    Note over G,C: 调用尚未返回<br/>原生线程留在C调用栈<br/>其他Go任务仍可调度
+    R-->>B: RESP String
+    B-->>C: 调用终态；response可读
+    C->>C: 提取value，strdup分配结果
+    C-->>G: 返回码0及C指针
+    G->>G: GoString复制；释放C结果和key
+```
+
+源码链为 [Go Get](assets/source_snapshots/pairec_sh/pairec-demo/src/stageClient/stageClient.go.html#L82) → [C ABI](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/stageBridge_c.cpp.html#L42) → [Redis Get/SendRequest](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L37)。`SendRequest` 创建本次 Controller 并设置 1000 ms；批量 `MGet` 另走自己的调用代码，不能照抄这个覆盖值。bRPC 在收到响应、错误或超时后使同步调用结束，目标异步完成桥目前并不存在。
+
+输入 C 字符串在 C 调用返回后释放；输出由 C 分配、Go 复制后调用 C 释放。当前路径没有把 Go 指针长期交给远端，也没有零复制输出。请求等待期间仍持有 Controller、协议对象、原生栈和调用缓冲；低 CPU 占用不代表没有资源成本。
+
+### 3.3 等待、唤醒与高并发的 OS 诉求
 
 | 执行边界 | 等待与唤醒 | 对负载判断的影响 |
 |---|---|---|
@@ -119,7 +161,22 @@ if stage_budget <= 0:
 | bRPC 调用与回调 | bthread 在工作 pthread 上调度；同步等待是否让出工作线程取决于实际等待原语，普通阻塞库调用不能自动转换 | 不能把“用了 bthread”当作所有等待均非阻塞的证据；回调也不保证在提交线程执行 |
 | 目标跨语言完成通知 | 必须明确谁持有请求、谁发布终态、谁唤醒 Go 等待者、谁释放结果；当前文档不假定该机制已实现 | 只有接口叫 `Submit` 并不能证明原生工作线程已释放；需要线程与队列证据 |
 
-bRPC 的 Channel 可复用，但 Controller、请求、响应应按调用隔离；避免为了“线程安全”用一把客户端全局锁包住整个 RPC 等待。[bRPC 客户端约定](https://brpc.apache.org/docs/client/basics/)、[bthread 的调度与阻塞边界](https://brpc.apache.org/docs/bthread/bthread/)。Go 执行机制与实际旧客户端的串行锁分析见 [PaiRec 负载分析](03_pairec_orchestration.md)。
+bRPC 的 Channel 可复用，但 Controller、请求、响应应按调用隔离；避免为了“线程安全”用一把客户端全局锁包住整个 RPC 等待。[bRPC 客户端约定](https://brpc.apache.org/docs/client/basics/)、[bthread 的调度与阻塞边界](https://brpc.apache.org/docs/bthread/bthread/)。Go 进入 CGO 时释放执行 Go 代码所需的调度资源，使其他任务可以推进；这不等于原 C 调用线程已退出等待。[Go CGO 实现说明](https://go.dev/src/runtime/cgocall.go)
+
+```text
+λrpc = 每秒实际发出的RPC数；Wrpc = 调用平均停留秒数
+Nrpc ≈ λrpc × Wrpc                       # 稳定状态的在途调用数
+Mcall ≈ Nrpc × 每调用平均保留字节           # 另加共享连接、运行库和线程资源
+# 对同步CGO还要观测留在原生调用中的OS线程；不把Nrpc直接当线程总数。
+```
+
+| 业务负载变化 | 资源及 OS 诉求 | 可能的限制与应用责任 |
+|---|---|---|
+| 候选／历史更多，协议回包更大 | CPU 编解码和复制；Go 堆、原生堆、网络缓冲及带宽 | 批次按字节也应有界；OS 不能替业务裁剪结果 |
+| 下游慢，同步调用在途增多 | 调度更多原生调用线程；保留栈和请求内存，增加连接占用 | 应用需在进入 CGO 前限制并发、等待期限；加线程不提高下游容量 |
+| 大量响应集中完成 | 网络处理、解码、可运行任务和结果汇合同时争 CPU | 观测可运行等待与配额节流；勿把所有尾延迟归为远端模型 |
+| 超时或重试增多 | 定时器、错误回调、可能仍在执行的远端工作 | 统一预算和有界重试由应用负责；本地超时不是远端已经停止的证据 |
+| 请求附带同步日志 | 文件/标准输出 I/O 与可能的锁等待 | 单独记录日志量与等待栈，不将日志写盘算成业务数据库 I/O |
 
 排查时将一次调用分成 `等待容量 → 编码/复制 → 发送 → 等待回复 → 解码 → 发布结果`，同时观测等待队列、线程数、字节数和 CPU 时间。客户端总耗时减服务端耗时仍含排队、调度、编解码与测量边界差异，不能直接命名为“网络时延”。
 

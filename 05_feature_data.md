@@ -113,61 +113,130 @@ type ItemResult<T> = {
 
 ## 3. 进程视图：请求并发、等待与发布切换
 
-### 3.1 在线请求怎样执行
+### 3.1 现有调用代码能证明什么
 
-下表是**目标执行方案**，不是从现有 FeatureService 源码测得的线程结构。首期采用独立 C++ bRPC 服务；处理任务由运行库调度，Redis 连接长期复用并限制在途请求。具体操作系统线程数、连接数和字节上限在部署与测量后确定。
+当前代码是 PaiRec 进程内的 Redis 访问适配，**不是独立 FeatureService**。从代码可以确认以下执行链；运行库如何安排操作系统线程，还需结合实际库版本和调用上下文核实。
 
-| 执行者或状态 | 工作 | 并发与等待 |
-|---|---|---|
-| bRPC 接入与处理任务 | 解码接口、固定请求期限、调用查询逻辑 | 多请求并行；不得为每个 Redis 键创建一个线程 |
-| Redis 客户端与连接池 | 路由、发送批量命令、匹配回复 | 等连接或回复时挂起相应任务；不把任务等待等同于占满一个 CPU 核 |
-| 请求私有结果 | 保存输入顺序、唯一 ID 与读回映射 | 请求间不共享可变结果数组；一请求内可以合并重复 ID |
-| 发布清单快照 | 提供版本、字段和表示规则 | 请求绑定一份只读快照；切换不改写已进入请求的版本 |
-| Redis 服务进程 | 处理实际读命令并返回值 | 与特征服务独立执行；内部线程机制和版本差异见第 11 篇 |
-
-图法：UML 时序图。甲、乙是特征服务中的两个独立请求任务，连接池是同进程组件。`par` 表示客户端任务可交错，**不表示一个 Redis 实例同时执行两条 MGET 的键查找**。
-
-```mermaid
-sequenceDiagram
-    participant A as 特征任务甲
-    participant B as 特征任务乙
-    participant C as 同进程连接池
-    participant R as Redis服务
-    par 请求甲
-        A->>C: acquire(remaining_timeout_ms)
-        C-->>A: 可用连接
-        A->>R: MGET user/history/user_rep对应4键
-        R-->>A: 单个数组回复，含4个位置
-        A->>C: release(connection)，本批RESP读取完成
-        A->>A: 解码；核对版本与history_hash
-    and 请求乙
-        B->>C: acquire(remaining_timeout_ms)
-        C-->>B: 可用连接
-        B->>R: MGET 本请求候选物品键
-        R-->>B: 同序值与缺失位置
-        B->>C: release(connection)，本批RESP读取完成
-        B->>B: 恢复原ID次序，投影所需字段
-    end
+```text
+用户路径：userFeatureFetch → stageClient.Get → C 接口 → Redis_Clientor::Get
+候选路径：itemsFeatureFetch → 每100项顺序分批 → stageClient.MGet
+          → C.Clis_RedisMGet → Redis_Clientor::MGet
+          → Channel.CallMethod(..., done=NULL)返回后 → 解析回复 → 回填Item属性
 ```
 
-图展示两个请求都取得连接的成功分支。连接池耗尽时在剩余期限内等待；超时则终止本批，不能仍然继续发送。连接是否支持多个批次同时在途取决于选定客户端；必须保证回复对应正确，不把连接数当成线程数或 Redis 执行并行度。
+| 代码事实与证据 | 能确定的执行与负载边界 |
+|---|---|
+| [用户 GET、候选逐批 MGET](assets/source_snapshots/pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go.html#L97) | 当前用户路径不是目标的四键查询；候选分批循环没有自行创建并行任务 |
+| [Go/C 参数与结果转换](assets/source_snapshots/pairec_sh/pairec-demo/src/stageClient/stageClient.go.html#L114) | 分配 C 字符串、调用 C 接口、将结果转回 Go 字符串；存在转换与内存分配成本 |
+| [C++ Channel 与 MGET](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L5) | 配置连接池；MGET 在 `CallMethod` 返回后读结果。默认连接超时 100 ms、调用超时 200 ms、最多重试 1 次；单键 GET 经另一函数覆盖为 1,000 ms，不能混用 |
+| [MGET 数组解析缺口](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L136) | 旧代码把一个数组回复当成多条顶层回复，不能用它证明目标批查成功 |
+
+仅 `done=NULL` 不能判定线程模型；本工程的同步 CGO 调用在返回前保留原生调用线程，Go 仍可调度其他任务。保留线程不等于持续消耗 CPU，具体边界见[PaiRec 进程视图](03_pairec_orchestration.md)与[RPC 执行分析](06_rpc.md)。目标独立 FeatureService 的等待实现另行确定，不能从旧适配直接推导。
+
+### 3.2 一批五个候选：输入、处理和输出
+
+本例来自用户 1 的推荐请求。完整输入如下，字段由 PaiRec 在三路候选合并后生成；`remaining_timeout_ms` 是本次特征调用还能使用的毫秒数，并非 Redis 单次尝试固定超时。
+
+```json
+{
+  "request_id": "demo-user-1-001",
+  "release_id": "demo_tenrec_v1",
+  "schema_version": "feature_v1",
+  "remaining_timeout_ms": 650,
+  "item_ids": ["4", "1201", "9002", "9001", "9003"],
+  "fields": ["category_code", "metadata_available", "statistics", "missing_fields"]
+}
+```
+
+| 输入 | 处理 | 输出与归属 |
+|---|---|---|
+| 版本头、650 ms、五个 ID、四个字段名 | 验证已批准发布、字段与上限；将剩余时间转换为进程内单调时钟期限 | 特征任务私有的期限、输入次序与只读发布快照 |
+| 五个 ID | 去重后拼 `rec:qkv:demo_tenrec_v1:item:<item_id>`；按路由及批次限制读 String | 基础单实例情形：一条五键 MGET；回复为四个 JSON 字符串和一个 nil |
+| 回复位置与原 ID | 解码 JSON；核对记录身份、版本；投影所需字段 | 按 `4,1201,9002,9001,9003` 返回五项；前四项 `FOUND`，最后一项 `NOT_FOUND/value=null` |
+
+完整输出见[这次候选查询响应](assets/request_example/08_item_features.response.json)。`FOUND` 表示整条记录存在，记录内属性未知由 `null/missing_fields` 表达；是否剔除候选仍由 PaiRec 决定。Redis 不解析 JSON，也不负责选择业务字段。
+
+下面是**目标处理器伪代码**，辅助函数按注释承担指定动作，不是已存在的 SDK。`request` 是上面的请求对象；`deadline` 在整个处理过程中固定，所有拆批和重试共享它。
 
 ```python
 def batch_get_items(request):
-    manifest = require_ready_release(request.release_id)
+    deadline = monotonic_now_ms() + request.remaining_timeout_ms
+    # 只读快照在本请求结束前保留；校验失败直接返回调用错误。
+    manifest = require_ready_release(request.release_id, request.schema_version)
     require_known_fields(manifest, request.fields)
-    check_deadline_and_limits(request)
-    unique_ids = stable_unique(request.item_ids)
-    keys = [item_key(request.release_id, item_id) for item_id in unique_ids]
-    # 内部按条数、字节量及Redis路由拆批；每批继续扣除同一期限。
-    records_by_id = read_validate_and_decode(keys, unique_ids, manifest)
-    return [project_result(item_id, records_by_id, request.fields)
-            for item_id in request.item_ids]
+    check_deadline_and_limits(deadline, request.item_ids)
+    unique_ids = list(dict.fromkeys(request.item_ids))  # 按首次出现次序去重
+    keys = [f"rec:qkv:{request.release_id}:item:{item_id}" for item_id in unique_ids]
+
+    # 访问适配内部处理连接额度、路由与拆批；返回等长的自有数据，nil为None。
+    # 等待采用回调、协作挂起还是阻塞线程，须由最终客户端实现确定。
+    raw_values = read_strings_with_deadline(keys, deadline)
+    records_by_id = {}
+    for item_id, raw in zip(unique_ids, raw_values):
+        if raw is None:
+            records_by_id[item_id] = None
+        else:
+            record = json.loads(raw)
+            require_record_identity_and_version(record, item_id, manifest)
+            records_by_id[item_id] = record
+
+    results = []
+    for item_id in request.item_ids:  # 恢复重复项及原始次序，不压缩缺失位置
+        record = records_by_id[item_id]
+        results.append({
+            "item_id": item_id,
+            "status": "NOT_FOUND" if record is None else "FOUND",
+            "value": None if record is None else {name: record[name] for name in request.fields}
+        })
+    # 响应头只回传request_id、release_id和schema_version。
+    return response_with_same_request_metadata(request, results)
 ```
 
-`FOUND` 表示整条记录存在，记录内属性未知由 `null/missing_fields` 表达；`NOT_FOUND` 保留原位置。网络、超时、版本或 JSON 解析错误均是调用失败。用户上下文四项数据和四项状态始终返回，未请求项为 `NOT_REQUESTED`。Redis 的批命令及 `nil` 的具体解释见[执行分析](11_redis_workload.md)。
+`read_strings_with_deadline` 必须校验 RESP 数组长度；不能让 `zip` 静默截短错误回复。协议错误、超时、版本或 JSON 错误均为调用失败。nil 可以解释为 `NOT_FOUND` 的前提是装载保证键类型为 String，详见[Redis 命令边界](11_redis_workload.md)。用户上下文查询另需核对历史与派生表示的 `history_hash`，四项状态始终返回，未请求项为 `NOT_REQUESTED`。
 
-### 3.2 离线作业与在线版本怎样同步
+### 3.3 多个请求如何等待、同步并消耗资源
+
+图法：UML 时序图，表示**目标任务分工**。甲和乙是同一特征服务进程内的两个请求任务；Redis 访问适配包含连接管理与协议处理，不另画为独立服务。`par` 表示任务可交错，不承诺一个任务对应一个 OS 线程，也不表示 Redis 同时执行两条 MGET 的键循环。
+
+```mermaid
+sequenceDiagram
+    participant A as 请求任务甲：用户1候选
+    participant B as 请求任务乙：另一推荐请求
+    participant C as 同进程Redis访问适配
+    participant R as Redis进程
+    par 甲的五键查询
+        A->>A: 校验版本、期限；生成5键
+        A->>C: read_strings_with_deadline(keys,deadline)
+        C->>C: 在期限内取得连接与在途额度
+        C->>R: MGET 5个item键
+        R-->>C: 4个String和1个nil
+        C->>C: 校验RESP；结果交给甲；归还本批额度
+        C-->>A: 等长raw_values，最后一项None
+        A->>A: 解码与投影；构造5项结果
+    and 乙可同时处于计算或等待
+        B->>B: 校验本请求；生成自身键
+        B->>C: read_strings_with_deadline(keys,deadline)
+        C->>C: 取得额度，或在期限内排队
+        C->>R: 本请求MGET
+        R-->>C: 本请求数组回复
+        C-->>B: 与乙的输入对齐的raw_values
+    end
+```
+
+图为成功路径。额度不足时仅在剩余期限内等待，过期任务不再发送；回复到达或发生错误后通知原请求任务继续。适配何时归还连接取决于协议实现，但必须完整处理本批回复并保证结果缓冲的所有权，不能让后续请求覆盖仍在解码的数据。
+
+| 处理或同步位置 | 任务/线程行为与 OS 诉求 | 需要控制或测量什么 |
+|---|---|---|
+| RPC 接入、校验、拼键 | 使用 CPU；请求任务由运行库安排到工作线程 | 入口并发、排队时间、CPU 配额与节流；不按每键创建线程 |
+| 等连接、等 Redis 回复 | 业务任务暂停继续处理；具体是运行库挂起任务还是阻塞工作线程尚未定 | 两种方式都需保存请求状态；后者还占线程栈/线程名额，前者恢复仍需调度 |
+| 回复到达、超时与取消 | 客户端须把完成结果交给正确任务，防止完成与超时重复收尾 | 在途批次、缓冲所有权、一次完成约束；具体锁/队列由实现确定 |
+| JSON 解码、版本核对、字段投影 | 消耗特征进程 CPU、分配内存、访问记录；完成等待后仍需拿到 CPU | 解码耗时、值大小、临时对象与返回缓冲；扩大连接池不会减少这些计算 |
+| 发布快照与请求结果 | 多任务共享只读发布快照；每请求持有独立可变结果 | 发布切换时保留旧快照至引用结束；禁止持全局锁等待网络 |
+| 特征响应传回 PaiRec | 业务 bRPC 编码、socket 发送及缓冲 | 响应字节、慢调用方、网络与系统态 CPU；在线查询不逐请求访问磁盘 |
+
+这是目标服务的实现约束，**尚无代码证明线程数、唤醒原语和等待开销**。首期仍需确定 Redis 客户端、回调/等待方式以及连接、批次、排队和字节上限；条件具备后才能分析真实线程调用栈。Redis 进程已有可核对的事件循环、线程同步及高并发积压路径，见[第 11 篇](11_redis_workload.md)。
+
+### 3.4 离线作业与在线版本怎样同步
 
 图法：UML 时序图。装载与查询是不同执行者；发布验收完成前，新版本不能被在线请求选中。
 

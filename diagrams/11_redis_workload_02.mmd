@@ -3,16 +3,19 @@ sequenceDiagram
     participant C as 特征客户端IO
     participant K as Redis所在OS
     participant R as Redis主线程
-    F->>C: 提交本批键并等待结果
-    R->>K: epoll_wait，当前无就绪事件
-    C-)K: TCP发送MGET的RESP字节
-    K-->>R: socket可读；线程获得运行机会
-    R->>K: 非阻塞读取socket
-    K-->>R: 已接收的请求字节
-    R->>R: 解析命令；逐键查内存；构造数组回复
-    R->>K: 写入socket发送缓冲
-    K-->>R: 已接受的字节数
+    F->>C: 查询user_keys的4项，等待结果
+    R->>K: aeApiPoll → epoll_wait，无就绪事件
+    C-)K: TCP发送219字节RESP请求
+    K-->>R: 可读事件返回；需取得CPU后处理
+    R->>K: readQueryFromClient → connRead
+    K-->>R: 已到达的字节，累积到querybuf
+    R->>R: processInputBuffer：收齐参数，argc=5
+    R->>R: processCommand → call → mgetCommand
+    R->>R: 顺序查4键，构造1520字节数组回复
+    R->>R: 加入待写连接列表；beforeSleep处理
+    R->>K: writeToClient → socket write/writev
+    K-->>R: 本次接受的字节数
     K-)C: TCP传回回复字节
-    C->>C: 收齐并解析RESP数组
-    C-->>F: 同序值与nil位置
-    F->>F: JSON解码、版本核对、业务响应
+    C->>C: 收齐1个RESP数组，核对4个位置
+    C-->>F: 4个JSON字符串
+    F->>F: JSON解码、业务核验，返回用户上下文

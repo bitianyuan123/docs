@@ -1,0 +1,139 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>redis_7.2.5/src/ae_epoll.c</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>redis_7.2.5/src/ae_epoll.c</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Redis 7.2.5 固定标签，仅作机制参考，非部署版本；许可见根目录 COPYING.html。</p><p>来源版本：<code>官方参考版本 7.2.5</code><br>原文件 SHA256：<code>1dec92d5c4dccf03d72c949048b4bce6effd108fbcb0ffc4fc1b02179d3c7f73</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>/* Linux epoll(2) based ae.c module</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a> *</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a> * Copyright (c) 2009-2012, Salvatore Sanfilippo &lt;antirez at gmail dot com&gt;</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a> * All rights reserved.</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a> *</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a> * Redistribution and use in source and binary forms, with or without</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a> * modification, are permitted provided that the following conditions are met:</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a> *</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a> *   * Redistributions of source code must retain the above copyright notice,</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a> *     this list of conditions and the following disclaimer.</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a> *   * Redistributions in binary form must reproduce the above copyright</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a> *     notice, this list of conditions and the following disclaimer in the</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a> *     documentation and/or other materials provided with the distribution.</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a> *   * Neither the name of Redis nor the names of its contributors may be used</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a> *     to endorse or promote products derived from this software without</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a> *     specific prior written permission.</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a> *</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a> * POSSIBILITY OF SUCH DAMAGE.</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a> */</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a></span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>#include &lt;sys/epoll.h&gt;</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a></span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>typedef struct aeApiState {</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>    int epfd;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>    struct epoll_event *events;</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>} aeApiState;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a></span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>static int aeApiCreate(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>    aeApiState *state = zmalloc(sizeof(aeApiState));</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a></span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>    if (!state) return -1;</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    state-&gt;events = zmalloc(sizeof(struct epoll_event)*eventLoop-&gt;setsize);</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    if (!state-&gt;events) {</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>        zfree(state);</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>        return -1;</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    }</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>    state-&gt;epfd = epoll_create(1024); /* 1024 is just a hint for the kernel */</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    if (state-&gt;epfd == -1) {</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>        zfree(state-&gt;events);</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>        zfree(state);</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>        return -1;</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    }</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    anetCloexec(state-&gt;epfd);</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    eventLoop-&gt;apidata = state;</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    return 0;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>}</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a></span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>static int aeApiResize(aeEventLoop *eventLoop, int setsize) {</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>    aeApiState *state = eventLoop-&gt;apidata;</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    state-&gt;events = zrealloc(state-&gt;events, sizeof(struct epoll_event)*setsize);</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    return 0;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>}</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a></span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>static void aeApiFree(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    aeApiState *state = eventLoop-&gt;apidata;</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a></span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    close(state-&gt;epfd);</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>    zfree(state-&gt;events);</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    zfree(state);</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>}</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    aeApiState *state = eventLoop-&gt;apidata;</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    struct epoll_event ee = {0}; /* avoid valgrind warning */</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    /* If the fd was already monitored for some event, we need a MOD</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>     * operation. Otherwise we need an ADD operation. */</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    int op = eventLoop-&gt;events[fd].mask == AE_NONE ?</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>            EPOLL_CTL_ADD : EPOLL_CTL_MOD;</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a></span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    ee.events = 0;</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    mask |= eventLoop-&gt;events[fd].mask; /* Merge old events */</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    if (mask &amp; AE_READABLE) ee.events |= EPOLLIN;</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    if (mask &amp; AE_WRITABLE) ee.events |= EPOLLOUT;</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    ee.data.fd = fd;</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    if (epoll_ctl(state-&gt;epfd,op,fd,&amp;ee) == -1) return -1;</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    return 0;</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>}</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a></span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    aeApiState *state = eventLoop-&gt;apidata;</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    struct epoll_event ee = {0}; /* avoid valgrind warning */</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>    int mask = eventLoop-&gt;events[fd].mask &amp; (~delmask);</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a></span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    ee.events = 0;</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    if (mask &amp; AE_READABLE) ee.events |= EPOLLIN;</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    if (mask &amp; AE_WRITABLE) ee.events |= EPOLLOUT;</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    ee.data.fd = fd;</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>    if (mask != AE_NONE) {</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>        epoll_ctl(state-&gt;epfd,EPOLL_CTL_MOD,fd,&amp;ee);</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    } else {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>        /* Note, Kernel &lt; 2.6.9 requires a non null event pointer even for</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>         * EPOLL_CTL_DEL. */</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>        epoll_ctl(state-&gt;epfd,EPOLL_CTL_DEL,fd,&amp;ee);</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    }</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>}</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a></span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    aeApiState *state = eventLoop-&gt;apidata;</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>    int retval, numevents = 0;</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a></span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>    retval = epoll_wait(state-&gt;epfd,state-&gt;events,eventLoop-&gt;setsize,</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>            tvp ? (tvp-&gt;tv_sec*1000 + (tvp-&gt;tv_usec + 999)/1000) : -1);</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>    if (retval &gt; 0) {</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>        int j;</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a></span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>        numevents = retval;</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>        for (j = 0; j &lt; numevents; j++) {</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>            int mask = 0;</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>            struct epoll_event *e = state-&gt;events+j;</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a></span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>            if (e-&gt;events &amp; EPOLLIN) mask |= AE_READABLE;</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>            if (e-&gt;events &amp; EPOLLOUT) mask |= AE_WRITABLE;</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>            if (e-&gt;events &amp; EPOLLERR) mask |= AE_WRITABLE|AE_READABLE;</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>            if (e-&gt;events &amp; EPOLLHUP) mask |= AE_WRITABLE|AE_READABLE;</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>            eventLoop-&gt;fired[j].fd = e-&gt;data.fd;</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>            eventLoop-&gt;fired[j].mask = mask;</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>        }</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>    } else if (retval == -1 &amp;&amp; errno != EINTR) {</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a>        panic(&quot;aeApiPoll: epoll_wait, %s&quot;, strerror(errno));</span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    }</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a></span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>    return numevents;</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>}</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a></span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>static char *aeApiName(void) {</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>    return &quot;epoll&quot;;</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>}</span></pre></html>

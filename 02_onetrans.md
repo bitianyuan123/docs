@@ -196,7 +196,27 @@ type ScoreResponse = { user_id: string; shard: number; kv_hit: boolean; logits: 
 
 ## 3. 进程视图：请求、线程与同步
 
-### 3.1 HTTP 接入与历史计算
+### 3.1 先看一次请求的输入、处理与输出
+
+下面用 IPO（Input、Process、Output，即输入、处理、输出）对应数据和执行者。用户 1 的十项历史与四个候选沿用[整条请求样例](08_request_walkthrough.md)；这里只说明接口和张量形状，**不表示已证明 Provider、TSV 和参数表覆盖这些 ID**。模型形状按第 1.3 节的随库配置。
+
+联网步骤按 `embedding_source=ps`、`kv_backend=datasystem` 的拆分配置展开。本地后端仍经过这些线程阶段，但查表和 KV 读写不构成网络 RPC；代码默认值另列在第 3.4 节。
+
+```python
+user_id = "1"
+history_ids = [2, 3, 80936, 781, 111774, 1230, 26403, 991, 2362, 1202]
+candidate_ids = [4, 1201, 9002, 9001]
+ingest_request = {"user_id": user_id, "item_ids": history_ids,
+                  "timestamps": list(range(10))}  # 占位序号，不参与位置编码
+rank_request = {"request_id": "demo-user-1-001", "user_id": user_id,
+                "items": [{"item_id": str(i)} for i in candidate_ids]}
+```
+
+| 入口与执行者 | 输入 I | 处理 P | 输出 O |
+|---|---|---|---|
+| HTTP 接入线程 | 请求头、JSON 字节 | 读取并解析；`/rank` 从已加载 TSV 装配特征 | 历史 `IngestInput`，或含 15 维用户数值、每项 15 维候选数值及类别 ID 的 `ScoreInput` |
+| 历史任务线程 | 10 个历史 ID | 补成 50 槽位；参数查询、编码、历史前向、序列化、写存储 | 四层 K/V 的 payload；写完后回执 `accepted`、`checksum` |
+| 候选分阶段任务 | 用户及 4 项候选的完整输入 | 参数查询、编码、读取历史、攒批、候选前向 | `[4,2]` 原始输出；HTTP 回调转为同序的 4 个 `{item_id,score}` |
 
 当前 HTTP 服务由一个 `accept` 循环和固定接入线程池组成。接入线程阻塞读取请求头、请求体，解析 JSON；`/rank` 还在该线程中查询已加载的 TSV 内存表。成功提交异步任务后，接入线程便可处理下一连接，不等待模型计算完成。请求体的 `Content-Length` 上限为 16 MiB，尚无单独的候选条数限制。[接入实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/net/http_server.cpp.html#L127)。
 
@@ -209,14 +229,14 @@ sequenceDiagram
     participant H as 历史计算线程池
     participant PS as 参数服务
     participant DS as DataSystem
-    P->>A: POST /ingest {user_id,item_ids,timestamps}
+    P->>A: POST /ingest：用户1，10项历史及占位序号
     A->>A: 读取与解析；检查两个数组等长
-    A-)H: 异步提交历史任务，保存响应回调
+    A-)H: nearline_pool.add：输入与回调
     Note over A: 接入线程提交后可处理下一连接
-    H->>H: 截取末尾50项、左补0、构造掩码
+    H->>H: NearlineWorker.ingest：10项左补40项，构造掩码
     H->>PS: Lookup(model_version + "/item", padded_ids)
     PS-->>H: 50 × 128 个浮点参数
-    H->>H: 历史编码、C++前向、序列化、计算checksum
+    H->>H: encode_s → 四层K/V → 序列化与checksum
     H->>DS: Set(user_model_key, payload)
     DS-->>H: 写入状态
     H->>A: 调用done回调：accepted及计时
@@ -227,45 +247,103 @@ sequenceDiagram
 
 历史任务中的参数查询、CPU 计算和存储写入**串行占用同一个历史线程**；未另投递到候选的参数查询池或 KV 池。每次 `/ingest` 重算完整的截断历史，不是增量追加。`timestamps` 是调用方生成的等长序号；只把末项记到临时记录中，不参与截断、掩码或位置编码，也不随 DataSystem payload 保存。[历史实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp.html#L98)。
 
+本例输入移入历史任务闭包，不依赖原 HTTP 请求体继续存活；该任务依次持有 `[1,50,128]` 历史编码、`[1,50]` 掩码、四层 K/V 和序列化字节。`payload` 移入临时 `UserKVRecord` 后传给存储；它们是同一任务内的处理步骤，没有在参数查询与写存储之间再经过任务队列。存储 SDK 内部是否复制或共享内存须按实际版本验证。
+
 响应回调在哪个线程完成，就由哪个线程直接序列化并 `send` 响应；没有独立响应发送池。每个响应都使用 `Connection: close`。因此慢请求体可能占用接入线程，慢响应接收方可能占用历史线程、候选计算线程或 Python 桥线程。[响应写回](assets/source_snapshots/OneTrans_HSE_project/cpp/src/net/http_server.cpp.html#L251)。
 
-### 3.2 候选请求的分阶段处理
+### 3.2 候选请求：跨线程交付到计算批
 
-图法：进程内任务流示意图（非 UML）。箭头表示提交到下一个执行者；数据库访问发生在相应任务内部。
+`/rank` 使用 `ScoreFlow::submit(input, done)` 的回调版，**不在 HTTP 接入线程等待 future（异步结果对象）**。`submit` 将输入和回调移入一个 `Ctx`（单请求状态对象）；后续队列里的任务捕获 `shared_ptr<Ctx>`，以引用计数共同持有它，使原始输入、阶段结果和回调在接入线程返回后仍然有效。这里是共享所有权；不应把头文件的“move 传递”注释理解为每个阶段都独占整个对象。[请求状态](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.h.html#L65)、[提交入口](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L52)、[HTTP 回调注册](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/server_main.cpp.html#L286)。
+
+图法：UML 时序图，只展开候选进程内部。`-)` 是异步任务交付；各线程对外部 PS 或存储的同步等待写在其处理步骤中，不再增加远端参与者。线程池节点代表本请求当时使用的一个工作线程，不是新增进程。
 
 ```mermaid
-flowchart TD
-    A[HTTP接入线程<br/>解析ID并装配TSV特征] --> L[参数查询线程池<br/>同步Lookup与类别均值]
-    L --> E[编码线程池<br/>数值编码与五组token]
-    E --> K[KV读取线程池<br/>每请求一次Get]
-    K --> Q[攒批队列与单个攒批线程]
-    Q --> M[历史未命中<br/>零logits并直接回调]
-    Q --> B[命中请求拼接候选行<br/>按payload内容去重历史]
-    B -->|桥未启用、不可用<br/>或未接收任务| C[C++计算线程池]
-    B -->|桥可用且接收| Y[Python桥批队列<br/>单个桥线程]
-    C --> R[拆分结果并执行HTTP回调]
-    Y --> R
+sequenceDiagram
+    participant A as HTTP接入线程
+    participant L as 参数查询池线程
+    participant E as 编码池线程
+    participant K as KV池线程
+    participant B as 攒批线程及队列
+    A-)L: lookup_pool.add：共享ctx
+    Note over A: 提交成功后处理下一连接
+    L->>L: lookup_ns：同步查PS、类别均值
+    L-)E: encode_pool.add：共享ctx，含查表结果
+    Note over L: 不等待编码完成，结束本阶段任务
+    E->>E: encode_ns_with → [4,5,128]
+    E-)K: kv_pool.add：共享ctx，移动候选张量
+    K->>K: store.get：等待用户1的历史payload
+    K-)B: 锁内入batch_q，解锁后notify_one
+    Note over K: 入队后结束任务，不等待出批
+    B->>B: take_batch：等首项、满批或窗口超时
+    B->>B: on_batch：处理miss，命中行拼批
 ```
 
-候选参数查询按 `user → item → artist → album` 顺序同步执行，通常是每请求四次 PS `Lookup`；空类别组不发对应请求。不同请求可由查询池并发处理，同一请求内没有并行四表查询。查表发生在攒批之前，批内相同用户也不会合并这些 RPC。[参数前端](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/frontend.cpp.html#L123)、[同步客户端与超时](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/ps_client.cpp.html#L24)。
+| 阶段与关键函数 | 输入 I → 处理 P → 输出 O（4 个候选示例） | 数据交付与保留 |
+|---|---|---|
+| `lookup_ns`，参数查询池 | `ScoreInput` → `user/item/artist/album` 查表与类别均值 → 用户 `[128]`，物品及两个类别组各 `[4,128]` | 写入 `ctx.emb`；各调用顺序等待，其他请求可在同池并发 |
+| `encode_ns_with`，编码池 | 用户与候选数值拼为 `[4,30]` → 分段编码 `[4,240]`、五组投影与归一化 → `[4,5,128]` | `ctx.emb` 清空；候选张量移动进 KV 任务闭包，读取完成后移回 `ctx.ns_emb` |
+| `store.get`，KV 池 | `{model_version,user_id:"1"}` → 同步 SDK 读取并解析格式头 → 只读记录指针或空指针 | `ctx.rec` 保存 payload；每个请求单独 Get，不是跨请求 MGet |
+| `take_batch/on_batch`，攒批线程 | 请求对象列表 → 先返回 miss，再拼命中候选行、按完整 payload 去重 → `BridgeBatch` 与请求行边界 | `ctx` 继续保留原始输入、候选张量和历史记录；新批还复制候选字节和去重后的 payload |
 
-KV 池也是每请求一次 `Get`；注释中的“mget”不能理解成跨请求批量读取。批内历史去重发生在读取之后，并以完整 payload 字节为键，减少后续反序列化次数，不减少已发出的存储查询。[实际读取](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L130)、[去重与拼接](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L230)。
+参数查表通常为四次 PS `Lookup`，空类别组不发对应请求；同一请求没有四表并行，批内相同用户也不合并这些调用。历史去重发生在 Get 之后，减少后续反序列化，不减少存储请求。参数查询见[前端](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/frontend.cpp.html#L123)与[同步客户端](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/ps_client.cpp.html#L24)；阶段交付见[编码到 KV](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L106)。
 
 ```python
-# 攒批单位是请求；计算单位是候选行。
-request_count = len(jobs)                     # 至多 max_batch
-candidate_rows = sum(len(job.items) for job in hit_jobs)
-# KV未命中的请求不进入前向，/rank将其零logits转换为0.5。
+# 假设这一批只有用户1的请求，且历史命中。
+request_count = 1
+candidate_rows = 4
+row0s = [0]                      # 每个命中请求在输出中的起始行
+row_kv_idx = [0, 0, 0, 0]        # 四个候选都使用第0份历史payload
+ns_blob_shape = [4, 5, 128]
+# 多请求批：request_count按请求数计，candidate_rows是各命中请求候选数之和。
+# max_batch限制前者；没有独立的候选行数或批字节上限。
 ```
 
-攒批线程等到首个请求后，最多再等待 `max_wait_ms`，或收够 `max_batch` 个请求便取批。该时间是一次取批的等待窗口，不是排队时延上限；队列已有积压、拼接耗时或响应写回阻塞时，请求可等待更久。候选行数、字节数没有对应的独立批上限。[取批实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L174)。
+`take_batch` 在条件变量上等首项；有首项后再等最多 `max_wait_ms` 或满 `max_batch`。条件变量等待时释放队列锁，返回后重新取得锁；取出任务后才做拼接与计算提交，**不持批队列锁做模型计算**。通知只让等待者有机会继续，不保证立刻获得 CPU，也不表示每次都发生内核 futex 调用。窗口不包含之前的队列积压、前一批拼接或回调时间，因此不是端到端排队上限。[入队与通知](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L145)、[取批](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L174)。
 
-### 3.3 线程池、队列与锁的边界
+### 3.3 候选计算：两种后端与响应回调
+
+批内未命中的请求先由攒批线程产生零 logits，并直接执行 HTTP 回调；`/rank` 将其转换为 0.5。剩余命中行只选择一种后端。桥未启用、不可用或拒绝提交时，进入 C++ 计算池；桥已经接收后发生执行异常，则失败返回，不自动重算。[分支选择](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L192)。
+
+图法：UML 时序图，接续上图命中路径。HTTP 响应代码是原请求保留的回调对象，**不是响应线程或另一队列**；它在调用它的完成线程中执行。GIL 是 Python 解释器访问锁，不是 GPU 锁。
+
+```mermaid
+sequenceDiagram
+    participant B as 攒批线程
+    participant C as C++计算池线程
+    participant Y as Python桥线程及队列
+    participant R as HTTP响应代码
+    alt 桥可用且接收批次
+        B-)Y: submit：移动BridgeBatch，入队并通知
+        Y->>Y: 取批后解锁；取得GIL；调用score_batch
+        Y->>Y: 得到输出bytes，正常释放GIL
+        Y->>R: on_ok → fill_outcomes → 逐请求done
+        R->>R: 首输出sigmoid，写原HTTP连接并关闭
+        R-->>Y: 回调返回，才继续取下一批
+    else 桥未启用、不可用或拒绝提交
+        B-)C: compute_pool.add：保留命中ctx列表
+        C->>C: 历史反序列化、拼接、score_ns_batch
+        C->>R: fill_outcomes → 逐请求done
+        R->>R: 首输出sigmoid，写原HTTP连接并关闭
+        R-->>C: 回调返回，本批任务结束
+    end
+```
+
+| 后端 | 输入 I → 处理 P → 输出 O | 数据及执行边界 |
+|---|---|---|
+| C++ | `ctx.ns_emb` 与去重历史 → 反序列化、复制并拼成计算批、`score_ns_batch` → `[C,2]` float32 | 即使不用 Python，此前也已构造桥用 blob；计算时又复制候选张量。每个候选逐层拼接历史 K/V，没有显式算子线程池 |
+| Python | `BridgeBatch` → C++ 字节复制为 Python `bytes`，候选经 `bytearray` 构造张量，历史解码，PyTorch 前向 → CPU 输出 bytes | 一个桥线程逐批调用；设备由实际初始化选择，CUDA 路径含输入到 GPU、输出到 CPU 的搬运，CPU 路径没有这些 GPU 传输 |
+| 拆分返回 | `[C,2]` → 用 `row0s` 切回每请求 → 示例 `[4,2]` 与四项 sigmoid 分数 | 输出复制进各 `ScoreOutcome`；按请求逐个回调，仍按输入候选顺序返回，不在服务内排序 |
+
+`C` 是一批的命中候选总行数。Python 在一批内每种历史解码一次，但没有跨批的设备历史缓存；模型仍按候选行 stack/cat 历史。桥线程在调用 Python 前等待 GIL，PyTorch 算子内部并行和释放 GIL 的行为取决于所用运行时，不能由桥线程数推断。源码确认的是：桥队列锁在执行前已释放，正常路径先释放桥层 GIL，再回调。[C++ 批处理](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L286)、[桥取批和调用](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L185)、[Python 数据边界](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/bridge_score.py.html#L111)、[按候选复制历史](assets/source_snapshots/OneTrans_HSE_project/onetrans/serving/two_stage.py.html#L191)。
+
+一个慢 HTTP 接收方可能阻塞本批某次 `done`，让同批后续响应等待；Python 桥还会因此推迟下一批。C++ 只占住执行该批的计算线程，其他计算线程仍可运行；全 miss 批的慢发送则占住唯一攒批线程。`shared_ptr` 让队列和批回调引用的 `Ctx` 持续存活，相关输入和历史记录不会因 HTTP 接入线程结束而释放；返回后也要等最后一个持有者结束，不能把 `inflight` 减一当成全部内存已经归还。[逐请求回调](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L340)。
+
+### 3.4 线程池、队列与锁的边界
 
 | 执行者 | 等待与唤醒 | 当前容量或同步机制 |
 |---|---|---|
-| 接入线程 | 等待已接收的连接；随后阻塞 `recv` | 连接队列使用 mutex 和条件变量；无显式队列容量。监听 backlog 为 512，不能代替应用队列上限 |
-| 历史、编码、C++ 计算池 | Folly CPU 线程池调度任务 | `Executor::add` 先读 pending 数，再入队；检查与入队不是同一个原子操作 |
+| 接入线程 | accept 线程把 fd 入队并通知；接入线程取出后阻塞 `recv` | 连接队列使用 mutex 和条件变量；无显式容量。监听 backlog 为 512，不能代替应用队列上限 |
+| 历史、编码、C++ 计算池 | 提交者把闭包交给 Folly，空闲线程由其运行时调度；提交成功不等任务完成 | `Executor::add` 先读 pending 数，再入队；检查与入队不是同一个原子操作 |
 | 参数查询、KV 读取池 | Folly IO 线程池执行同步外部调用 | 虽名为 IO 池，任务仍等待 PS/SDK 返回；不能按纯非阻塞事件处理估算容量 |
 | 攒批线程 | `batch_cv` 等待首项、满批或超时 | `batch_mu` 保护 deque；该 deque 无显式容量限制 |
 | Python 桥线程 | `cv` 等待批次；取出后执行 Python | mutex 保护队列；最多等待 16 个批次，正在执行的批次不计入队列容量 |
@@ -295,19 +373,19 @@ bridge_waiting_batches: 16  # 类成员固定值，不受queue_cap控制
 
 同一二进制总会构造候选流水线和历史池；按入口地址分工，不会自动裁掉另一角色的线程池。`nearline_threads=0` 也不是关闭历史池：通用 Executor 将非正线程数转换为 1。启用 Python 后仍构造 C++ 计算池，供回退使用。具体活跃线程数、SDK 内部线程和算子线程要在运行中观测。[入口默认值](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/server_main.cpp.html#L52)、[计算池创建](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L19)。
 
-### 3.4 过载、后端回退与异常
+### 3.5 过载、后端回退与异常
 
 | 条件 | 当前实际处理 | 需要注意的边界 |
 |---|---|---|
 | 历史池拒绝入队 | 路由捕获异常并返回 HTTP 400 | 当前未将过载单独分类为 429/503 |
 | 候选参数、编码或 KV 池拒绝入队 | `fail_ctx` 经 HTTP 回调返回 503 | 无服务级总截止时间；已开始的同步调用仍按各自超时完成 |
-| KV 不存在、读取错误或 payload 损坏 | 统一为 miss，候选返回零 logits | `/rank` 可返回 HTTP 200 和 0.5，不能当作正常模型结果 |
+| DataSystem 未找到、读取错误或 payload 格式头无法解析 | 返回空记录，按 miss 产生零 logits | `/rank` 可返回 HTTP 200 和 0.5；后续张量解码异常则按计算失败处理，不都归为 miss |
 | Python 不可用，或桥队列拒绝提交 | 进入 C++ 计算池 | 队列回退也可能发生在显式 `python` 模式；桥内执行异常则报错，不自动重算 |
 | C++ 计算池拒绝入队 | `dispatch_cpp` 的 `add` 在当前批线程调用链中无异常捕获 | 异常可能逃出线程并终止进程；不能承诺过载一定返回 503 |
 
-另外两处需要专项验证：Python 初始化超时后，分离的初始化线程仍可能继续并置 `ready=true`，但 `start` 已返回、计算线程未创建；Python 调用抛异常时，也可能跳过末尾的 GIL 释放。它们是根据控制流发现的缺口，本轮未通过故障注入复现。GIL 是解释器访问锁，不是 GPU 锁。[桥初始化](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L106)、[桥执行与异常](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L185)、[未保护的计算提交](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L285)。
+另外两处需要专项验证：Python 初始化超时后，分离的初始化线程仍可能继续并置 `ready=true`，但 `start` 已返回、计算线程未创建；Python 调用抛异常时，也可能跳过末尾的 GIL 释放。它们是根据控制流发现的缺口，本轮未通过故障注入复现。[桥初始化](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L106)、[桥执行与异常](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L185)、[未保护的计算提交](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L285)。
 
-### 3.5 与 PaiRec 的同步关系
+### 3.6 与 PaiRec 的同步关系
 
 ```python
 # gate 是一次历史投递的完成闸门；以下是配套PaiRec当前行为。
@@ -383,14 +461,14 @@ split_process_requirements:
 
 ## 5. 场景视图：一次候选打分的输入输出
 
-以下统一使用[整条请求样例](08_request_walkthrough.md)中的用户 1。十个历史 ID 来自已有 Tenrec 样例；候选 4、1201 仅为构造接口示例，均不是实际召回输出。**尚未证明现有历史提供器返回这组历史，也未证明当前 TSV 覆盖该用户与候选**；不能由特征服务样例推断 OneTrans 已加载相同数据。
+以下统一使用[整条请求样例](08_request_walkthrough.md)中的用户 1。十个历史 ID 来自已有 Tenrec 样例；候选 4、1201、9002、9001 仅为构造接口示例，均不是实际召回输出。**尚未证明现有历史提供器返回这组历史，也未证明当前 TSV 覆盖该用户与候选**；不能由特征服务样例推断 OneTrans 已加载相同数据。
 
 ```python
 # 接口构造示例；不是现有 Provider 已读取的运行结果。
 example_user_id = "1"
 example_history_ids = [2, 3, 80936, 781, 111774, 1230, 26403, 991, 2362, 1202]
 example_timestamps = list(range(10))   # 0..9，与现有调用方的序位构造方式一致
-example_candidate_ids = [4, 1201]
+example_candidate_ids = [4, 1201, 9002, 9001]
 ```
 
 下图展示调用方提供上述样例输入时的数据传递，并使用“历史成功返回后再打分”的顺序表达依赖；配套代码的先查、等待、重查行为见进程视图。
@@ -415,7 +493,7 @@ sequenceDiagram
     S->>DS: Set：用户与模型版本对应的 key，序列化历史 K/V
     DS-->>S: 写入结果
     S-->>P: accepted=true，checksum，reason
-    P->>R: /rank：request_id=req-001，user_id=1，候选 [4,1201]
+    P->>R: /rank：request_id=demo-user-1-001，user_id=1，4项候选
     R->>R: 查内存 TSV 表，装配用户与候选业务特征
     R->>PS: model/user、item、artist、album 表及各组 ID
     PS-->>R: 各组模型向量，缺失行补零
@@ -427,7 +505,7 @@ sequenceDiagram
 ```
 
 ```json
-{"request_id":"req-001","user_id":"1","items":[{"item_id":"4"},{"item_id":"1201"}]}
+{"request_id":"demo-user-1-001","user_id":"1","items":[{"item_id":"4"},{"item_id":"1201"},{"item_id":"9002"},{"item_id":"9001"}]}
 ```
 
 PS 的 value 是模型参数，不是用户画像；DataSystem 的 value 是历史模型计算结果，不是原始历史。DataSystem 实际存 `rec.payload`，只包含序列化格式头和张量，不保存完整 `UserKVRecord` 中的 `created_at/seq_ts_last`。[序列化格式](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/serialize.h.html#L1)；[实际写入](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp.html#L46)。
@@ -440,7 +518,7 @@ PS 的 value 是模型参数，不是用户画像；DataSystem 的 value 是历�
 | 存在同用户旧 K/V | 按用户和模型键直接读取，不核对本次历史 | 命中不能证明使用的是本次请求历史；并发新旧历史有覆盖风险 |
 | PS 未装某行 | 参数服务返回零向量 | 先核对物品、用户、类别参数覆盖；不能凭服务存活证明参数完整 |
 | 用户或物品 TSV 缺行 | 按上文默认值补零 | 应单独记录输入覆盖，避免误认为所有业务特征已加载 |
-| DataSystem 初始化/读取异常 | 初始化结果未强制检查；读取错误、损坏与不存在统一为未命中 | 需要外部探测、服务日志和跨进程读写证据 |
+| DataSystem 初始化/读取异常 | 初始化结果未强制检查；读取错误、格式头无法解析与不存在统一为未命中 | 需要外部探测、服务日志和跨进程读写证据 |
 | 期待请求结束后释放对象 | 只有底层删除接口，没有请求级 `/release` 路由 | 当前按用户覆盖，可配置过期时间；默认 0 表示不过期 |
 
 证据：[未命中不做前向](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L205)、[PS 缺行补零](assets/source_snapshots/OneTrans_HSE_project/deploy/ps/embedding_server.cc.html#L181)、[DataSystem 错误处理](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp.html#L31)。
@@ -465,20 +543,7 @@ assert all_scores_are_finite
 
 本节把源码可确认的工作量与待测瓶颈分开。它用于设计观测和选择测试变量，不提供未经实测的 QPS、延迟或硬件配置。先记录实际模型形状、请求候选数、历史长度、KV 命中率、后端和并发度；只有这些条件一致，结果才可比较。
 
-### 6.1 两种后端实际执行什么
-
-| 路径 | 计算与数据移动 | 负载含义 |
-|---|---|---|
-| 历史 C++ 路径 | 50 个槽位的查表、输入编码、四层历史前向；生成各层 K/V，序列化并计算 SHA256，然后写存储 | 每请求一个历史任务。短历史仍按固定张量宽度投影、分配和存储；掩码不等于把张量压成有效项长度 |
-| 候选 C++ 路径 | 请求特征张量先拼成 `BridgeBatch`；随后仍进入 C++ 分支，反序列化去重历史，再复制并拼成计算批；各层为每个候选复制历史 K/V 与候选 K/V | 当前 C++ 分支也支付了先构造桥输入的开销；复用历史指针不等于所有计算都零复制 |
-| 候选 Python 路径 | C++ blob → Python `bytes`；候选再经 `bytearray` 构造张量；历史逐个反序列化；按设备执行 `.to(device)`；逐候选 stack/cat 后前向；结果 `.to("cpu")` 并转 bytes 返回 C++ | 有 CUDA 时包含 CPU→GPU 输入与 GPU→CPU 输出传输；批内去重不跨批保存设备历史缓存。Python 后端使用 CPU 时不发生这些 GPU 传输 |
-| 启动及常驻内存 | C++ 读取整份权重 blob，并复制出模型、前端和参数表；选择 PS 前已经加载本地参数表。Python 启用后还会加载其模型；TSV 全量装入内存 | 不能认为使用 PS 就自动省掉本地参数表内存，也不能只用模型文件大小估算进程 RSS |
-
-C++ 数值原语直接用循环实现矩阵乘、归一化、注意力和前馈网络，源码没有显式调用 BLAS 或把单个前向拆到多个算子线程。任务间并行来自计算池；编译器向量化与实际 CPU 效率需测量。Python 则调用 PyTorch 算子，实际线程数和注意力内核选择依赖 PyTorch、设备与输入形状，不由 `compute_threads` 控制。[C++ 原语](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/model.cpp.html#L14)、[矩阵循环及权重复制](assets/source_snapshots/OneTrans_HSE_project/cpp/src/common/tensor.cpp.html#L11)。
-
-Python 只有一个桥消费线程按批调用 Python；底层算子的并行度另由运行时决定，不能从桥线程数推断。C++ 通过 GIL 进入解释器；本实现要等这一批返回并完成回调后，桥线程才取下一批。回调在 `call_score` 正常释放 GIL 后执行。[桥字节边界](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/compute_bridge.cpp.html#L206)、[Python 输入与输出](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/bridge_score.py.html#L111)、[按候选复制历史](assets/source_snapshots/OneTrans_HSE_project/onetrans/serving/two_stage.py.html#L191)。
-
-### 6.2 可由形状计算的负载基数
+### 6.1 由一次请求推导数据量与计算量
 
 下面的数字只适用于随库的 128 维、4 层、float32 模型。`M` 是单请求候选数，`C` 是一次命中计算批的候选总行数，`U` 是批内不同历史 payload 数；`S_l` 是第 l 层保存的历史宽度。
 
@@ -512,18 +577,43 @@ kv_read_bytes_per_second = rank_calls_per_second * kv_hit_rate * average_payload
 
 存储 SDK 内部是否用共享内存、网络复制或其他传输，须按部署版本和连接方式验证。OneTrans 当前只设置 DataSystem host/port，没有提供足以断言“远端零复制”或“每次一定走网卡”的证据。[SDK 接入边界](assets/source_snapshots/OneTrans_HSE_project/cpp/src/kv/datasystem_store.cpp.html#L31)。
 
+### 6.2 高并发：压力在哪里积累、怎样传到下游
+
+各阶段成功投递后，上一个执行者就结束本阶段任务；它不会等待下一阶段有空闲线程再返回。因此分池隔离了执行者，**没有形成全链路容量控制**。`inflight` 只是计数；连接队列和攒批队列无显式上限，其余软限制及回退条件见第 3.4—3.5 节。
+
+```python
+# 估算用符号，不是新增监控API；i表示一个按请求处理的阶段。
+inflight_growth_i = admitted_per_second_i - finished_per_second_i
+# admitted只计已接收任务，finished含成功与失败；差值是本阶段总在途变化率。
+# 工作线程持续忙碌且差值为正时，等待任务及其保留数据增加。
+utilization_i = admitted_per_second_i * mean_task_occupancy_seconds_i / worker_count_i
+# occupancy含同步外部等待；接近1时通常会放大排队，不能直接当容量承诺。
+# 攒批、Python桥和C++批计算须改按批计数，并同时记录每批候选行数。
+```
+
+| 触发与阶段积压 | 向下游或内存传递的影响 | 应同时观察的证据 |
+|---|---|---|
+| 历史请求增加，或 PS / Set 变慢 → 历史线程被占用更久 → 历史任务积压 | 每任务保留输入和 HTTP 连接；默认线程数不会限制已经接入的请求。增大线程数会增加 PS / 存储并发，也增加并行前向的 CPU 与临时内存 | 历史入队到开始、PS/Set 分段耗时、线程 CPU、队列字节与 fd 数 |
+| 候选到达增加 → 参数查询池等待四次 RPC，或编码池算不过来 → 各自队列增长 | 参数服务承受按请求重复查表；编码前保留原始输入和查表向量。增加查询线程不能消除 PS 服务端瓶颈 | PS 调用数/延迟与编码 CPU；分别看池前排队，不只看 `feature_us` |
+| Get 变慢 → KV 池占用时间增长 → 已编码请求排队 | 每个等待任务已持有候选张量；恢复后可集中进入攒批队列，后续计算压力随之上升 | Get 错误与耗时、KV 队列、候选张量驻留字节、随后批量大小 |
+| 拼批或 miss 响应变慢 → 唯一攒批线程不能及时取下一批 | `batch_q` 保留输入、候选张量和各请求的历史 payload；读取已完成，不能靠批内去重挽回此前查询量或全部副本内存 | 攒批前等待、拼接/哈希耗时、miss 回调发送时间、RSS |
+| Python 处理批次较慢 → 桥队列达到容量 → 新批回退 C++ | CPU 计算及内存复制突然增加，可能挤占编码和 HTTP 的调度时间；Python 批仍在进行，两种后端可以处理不同批次 | 桥队列、`flow.bridge_overflow`、分后端批数、CPU 配额节流和请求延迟 |
+| 客户端读响应慢 → 完成线程阻塞发送 → 同批后续回调等待 | 仍保留该批的请求引用与临时结果；桥线程延迟下一批，C++ 少一个可用计算线程；客户端断开也不取消此前的计算 | 响应发送耗时、发送等待栈、计算已结束但未完成的请求数 |
+
+这些是源码支持的传播路径，哪一项先限制吞吐必须测量。`max_batch` 变大可以减少批数，但每批候选与复制量也增大；`max_wait_ms` 只限制攒批窗口，不能治理上游积压。重查一次 `/rank` 会重做参数查询、编码和 Get；沿用 PaiRec 旧闸门逻辑时要把这部分计入到达率。
+
 ### 6.3 操作系统资源与待测瓶颈
 
 | 子系统 | 源码已确认的负载 | 如何验证是否成为瓶颈；尚未实测 |
 |---|---|---|
-| CPU 调度 | 多个 Folly 池、攒批线程、HTTP 线程、可选桥线程同时存在；同步 I/O 占用任务执行者，CPU 回退会突然增加计算工作 | 分线程 CPU、运行队列、上下文切换、CPU 配额节流；核对慢的是执行还是等候，不先把线程数设成核数倍数 |
+| CPU 调度 | 多个池及攒批、HTTP、桥线程竞争调度；C++ 原语为矩阵与注意力循环，未显式调用 BLAS 或多算子线程；Python 算子线程另由运行时决定 | 分线程 CPU、运行队列、上下文切换、CPU 配额节流；核对慢的是执行还是等候，不先把线程数设成核数倍数 |
 | 锁与同步 | 连接队列、攒批队列、桥队列使用 mutex/条件变量；指标使用共享 mutex；PS 热门 ID 可能落在同一分片锁 | 采样等待栈、锁等待时间、各队列深度；“锁存在”不能直接推导“锁已成为瓶颈” |
 | 内存与分配器 | 特征、payload、批拼接、反序列化、逐层中间张量均分配或复制；无界连接和攒批队列可持有大量请求数据 | RSS、分配热点、页错误、内存带宽、队列驻留字节；区分常驻模型与积压请求 |
 | 网络与 socket | HTTP 每响应关闭连接；PS 每请求多次同步查表；DataSystem 逐请求读写；回调直接发送 HTTP | 连接建立次数、打开的 fd、TCP 队列、重传、PS/SDK耗时与发送阻塞；HTTP短连接负载需单独计入 |
 | 文件与页缓存 | 模型和 TSV 在启动时读入；`/rank` 的 TSV 查询是内存访问 | 分开记录启动文件 I/O 与稳态请求；不能把每次 TSV 查表计为一次磁盘读。DataSystem/etcd的磁盘行为另看其配置 |
 | GPU及设备传输 | 仅启用 CUDA 的 Python 候选路径涉及；桥进行输入搬运、算子提交及结果回传 | GPU利用率、算子时间、传输量、同步等待与显存峰值；小批可能受提交和复制开销影响，需用剖析结果确认 |
 
-对一个稳定阶段，可用 `到达率 × 平均占用时间 / 并行执行数` 粗看饱和趋势。同步 RPC 占用时间包含外部等待；接近饱和后排队会放大尾延迟。该估算不包含批处理、回退、共享锁及多阶段竞争，不能当作容量承诺。`max_batch` 变大可能提高 Python 算子批量，也会增加临时内存和等待；C++ 分支的候选循环不保证同样收益。
+常驻内存还包括启动时读入的整份权重 blob、复制出的模型/前端/本地参数表及全量 TSV；本地参数表在选择 PS 前已加载，启用 Python 又会加载其模型。因此 RSS 基线不能只取模型文件大小，使用 PS 也不自动去掉本地参数副本。[入口装载](assets/source_snapshots/OneTrans_HSE_project/cpp/tools/server_main.cpp.html#L141)、[C++ 原语](assets/source_snapshots/OneTrans_HSE_project/cpp/src/engine/model.cpp.html#L14)、[矩阵循环及复制](assets/source_snapshots/OneTrans_HSE_project/cpp/src/common/tensor.cpp.html#L11)。
 
 当前 HTTP 还缺少 socket 读写超时、完整短写重试和总在途限制；关闭阶段也需要单独验证：HTTP 等待异步请求最多约 10 秒，但 Flow 先停攒批线程再等待池排空，没有明确逐项拒绝所有遗留批任务。不要据此宣称已实现完整的优雅退出。[HTTP 生命周期](assets/source_snapshots/OneTrans_HSE_project/cpp/src/net/http_server.cpp.html#L172)、[流水线停止顺序](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L37)。
 
@@ -541,7 +631,18 @@ kv_read_bytes_per_second = rank_calls_per_second * kv_hit_rate * average_payload
 
 依据：[批次计数和回填](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L192)、[C++计时](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/flow.cpp.html#L316)、[指标桶实现](assets/source_snapshots/OneTrans_HSE_project/cpp/src/serving/pipeline.cpp.html#L39)。
 
-首轮观测应补齐每阶段的入队、开始、结束时间，候选行数与字节数，桥排队及设备执行时间，DataSystem 错误类型，以及 HTTP 接收至发送完成的总时长。测量由外部回放产生负载，不往模型服务加入压力模拟模块。按以下少量变量逐项改变即可定位主要限制：
+首轮观测按同一请求记录以下时间；这是待补的观测边界，不表示当前 trace 已有这些字段。
+
+```python
+queue_wait_us = task_started_us - task_enqueued_us
+stage_occupancy_us = task_finished_us - task_started_us
+response_send_us = response_closed_us - response_send_started_us
+request_total_us = response_closed_us - request_first_byte_us
+# lookup/encode/KV/compute分别记录入队与运行；桥与计算批另关联batch_id。
+# 不能把各请求共享的整批计算时间反复相加，当作进程CPU时间。
+```
+
+再关联候选行数、驻留字节、实际后端与设备、PS/存储错误，便能区分“CPU在计算、线程在等外部服务、任务在等线程、结果在等发送”。测量由外部回放产生负载，不往模型服务加入压力模拟模块。按以下少量变量逐项改变即可定位主要限制：
 
 ```yaml
 measurement_cases:

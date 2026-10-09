@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant M as Redis主线程
+    participant W as IO工作线程1
+    M->>M: postponeClientRead：登记待读连接
+    M->>M: beforeSleep：分配连接列表0与1
+    M-)W: 设置READ工作类型与pending[1]计数
+    par 分配给主线程的连接
+        M->>M: readQueryFromClient；读取、解析首条命令
+    and 分配给工作线程的连接
+        W->>W: 读取、解析首条命令；标记CLIENT_PENDING_COMMAND
+        W-)M: 原子写pending[1]=0
+    end
+    M->>M: 确认所有pending为0，再处理共享状态
+    M->>M: processPendingCommandAndInputBuffer
+    M->>M: 顺序执行普通MGET，构造各连接回复

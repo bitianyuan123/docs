@@ -360,7 +360,9 @@ generative_response = {"items": [
     for x in generation_wire_response["recommendations"]]}
 ```
 
-目标生成服务新增特征反查；现有实现仍是本地映射。既有 protobuf 的 `history` 每项确为 `{value:[...]}`，返回确为 `recommendations`；目标版本头需要另外补齐。[生成协议源码](assets/source_snapshots/pairec4tigerllm/proto/recommend.proto.html#L7)。TensorRT-LLM 的模型缓存由实际块生命周期触发 DataSystem 读写，与上述业务映射查询分开，内部细节见[生成服务视图](04_generative_recall.md)。
+目标生成服务新增特征反查；现有实现仍是本地映射。既有 protobuf 的 `history` 每项确为 `{value:[...]}`，返回确为 `recommendations`；目标版本头需要另外补齐。[生成协议源码](assets/source_snapshots/pairec4tigerllm/proto/recommend.proto.html#L7)。请求中的 `temperature/beam_width` 是协议字段；当前原生 TRT 后端使用启动配置建立采样参数，没有直接使用这两个请求值，不能以字段已发送证明配置已生效。请求 `topk` 则限制返回候选数，不限制此前枚举的编码组合数。
+
+TensorRT-LLM 的模型缓存由实际块生命周期触发 DataSystem 读写，与上述业务映射查询分开。采样、组合枚举和缓存的执行边界见[生成服务视图](04_generative_recall.md)。
 
 ### 4.3 三路候选与召回合并
 

@@ -1,0 +1,124 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>OneTrans_HSE_project/cpp/src/serving/flow.h</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>OneTrans_HSE_project/cpp/src/serving/flow.h</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。</p><p>来源版本：<code>16aecd6f7bd1164bf7760603349e95ae716bf60e</code><br>原文件 SHA256：<code>78091eb27c26384ff01e6a16c6065a4bfbf0329cc47f49dfc28bae1e04c1e3a2</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>// SEDA 分阶段在线打分流水线（§7.4.3）。</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a>//</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a>// 阶段链（每阶段独立线程池，有界队列背压）：</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a>//   EmbedLookup Pool → Frontend Encode Pool → KV I/O Pool → 攒批线程</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a>//   → PythonComputeBridge（持 GIL 的 PyTorch 前向）或 Compute Pool（C++ CPU 降级）</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a>//</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a>// GIL 边界：除最终计算批投递给桥线程外，全部阶段在纯 C++ 线程池上运行</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a>// （docs/detailed_design.md §7.4.2 线程池清单 / §7.4.9 锁分析）。</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a>#pragma once</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a></span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a>#include &lt;atomic&gt;</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a>#include &lt;chrono&gt;</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a>#include &lt;condition_variable&gt;</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a>#include &lt;deque&gt;</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a>#include &lt;future&gt;</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a>#include &lt;memory&gt;</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a>#include &lt;mutex&gt;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a>#include &lt;string&gt;</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a>#include &lt;vector&gt;</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a></span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a>#include &quot;common/executor.h&quot;</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a>#include &quot;engine/frontend.h&quot;</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a>#include &quot;engine/two_stage.h&quot;</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a>#include &quot;kv/serialize.h&quot;</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a>#include &quot;kv/store.h&quot;</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a>#include &quot;serving/compute_bridge.h&quot;</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a>#include &quot;serving/pipeline.h&quot;  // Metrics / ScoreOutcome / ScoreInput</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a></span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a>namespace onetrans {</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a></span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>class ScoreFlow {</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a>public:</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>    struct Config {</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>        int lookup_threads = 4;    // EmbedLookup Pool（IO）</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>        int encode_threads = 2;    // Frontend Encode Pool（CPU）</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>        int kv_threads = 4;        // KV I/O Pool（IO）</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>        int compute_threads = 0;   // Compute Pool（C++ 降级路径；≤0 → 硬件核数）</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>        size_t queue_cap = 1024;   // 各池入口有界队列容量</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>        size_t max_batch = 16;     // 攒批上限（请求数）</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>        int batch_wait_ms = 5;     // 攒批窗口</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>    };</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a></span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    // bridge 可为 nullptr（强制 C++ 路径）</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    ScoreFlow(const EmbeddingFrontend&amp; frontend, const TwoStageRunner&amp; runner,</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>              KVStore&amp; store, const LookupFn&amp; lookup, Metrics&amp; metrics,</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>              PythonComputeBridge* bridge, std::string model_version, Config cfg);</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    ~ScoreFlow();</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a></span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>    void start();</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    void stop();</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a></span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>    // 回调式提交（生产路径）：完成线程直接调用 done</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>    // （err 非空 = 流水线失败，outcome 无效）。done 保证恰好调用一次。</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>    using ScoreDone = std::function&lt;void(ScoreOutcome out, const std::string&amp; err)&gt;;</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    void submit(ScoreInput input, ScoreDone done);</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a></span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    // future 便利版（测试/工具）：内部包装回调</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>    std::future&lt;ScoreOutcome&gt; submit(ScoreInput input);</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a></span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>    // 当前实际生效的计算后端（观测 / healthz）</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>    std::string backend() const;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>    size_t inflight() const { return inflight_.load(std::memory_order_relaxed); }</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a></span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>private:</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a>    struct Ctx {  // 单请求贯穿流水线的共享状态（阶段间 move 传递所有权）</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>        ScoreInput input;</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>        ScoreDone done;                          // 完成回调（恰好一次）</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>        NsEmbeddings emb;                         // lookup 阶段产出</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>        Tensor ns_emb;                           // encode 阶段产出 [M, Ns, D]</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>        std::shared_ptr&lt;const UserKVRecord&gt; rec;  // kv 阶段产出（miss 为 null）</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>        int32_t kv_idx = -1;                      // 批内 KV payload 去重下标</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>        // 单请求 stage 耗时(us)，供 /rank trace 与 PaiRec service_phase 观测</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>        int64_t feature_us = 0, compute_us = 0, backend_rpc_us = 0;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>        int64_t lookup_us = 0, encode_us = 0, kv_us = 0;</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>        int64_t batch_wait_us = 0, batch_compute_us = 0;  // 攒批等待 + 批次真实前向</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>        int32_t batch_size = 0;                            // 所属批次的请求数</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>        std::chrono::steady_clock::time_point enqueued_at; // 进入攒批队列时刻（batch_wait 基）</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    };</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    using CtxPtr = std::shared_ptr&lt;Ctx&gt;;</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    // 阶段（各自 add 到对应池；满时快速失败回填 503 语义异常）</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    void stage_lookup(const CtxPtr&amp; ctx);</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    void stage_encode(const CtxPtr&amp; ctx);</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    void stage_kv(const CtxPtr&amp; ctx, Tensor ns_emb);</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a></span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    // 攒批线程主循环</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    void batch_loop();</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    std::vector&lt;CtxPtr&gt; take_batch();</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>    // 出批处理：拼 ns_blob + KV 去重 + 槽位表 → bridge / compute pool</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    void on_batch(std::vector&lt;CtxPtr&gt; jobs);</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    // C++ CPU 降级路径（在 Compute Pool 上执行 score_ns_batch）</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    void dispatch_cpp(std::vector&lt;CtxPtr&gt; hits);</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    // 回填：logits blob fp32 [rows, T] 按槽位切分（miss 已在 on_batch 前置回填）</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>    void fill_outcomes(const std::vector&lt;CtxPtr&gt;&amp; hits, const std::vector&lt;int64_t&gt;&amp; row0s,</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>                       const std::string&amp; logits_blob, int64_t T);</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>    void fail_ctx(const CtxPtr&amp; ctx, const std::string&amp; err);</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a></span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    const EmbeddingFrontend&amp; frontend_;</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    const TwoStageRunner&amp; runner_;</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>    KVStore&amp; store_;</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>    LookupFn lookup_;</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>    Metrics&amp; metrics_;</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    PythonComputeBridge* bridge_;</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>    std::string model_version_;</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    Config cfg_;</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a></span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>    ExecutorSet executors_;</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>    std::shared_ptr&lt;Executor&gt; lookup_pool_;</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>    std::shared_ptr&lt;Executor&gt; encode_pool_;</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    std::shared_ptr&lt;Executor&gt; kv_pool_;</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>    std::shared_ptr&lt;Executor&gt; compute_pool_;</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a></span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>    // 攒批队列（独立于各池：批线程单消费者）</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>    std::mutex batch_mu_;</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>    std::condition_variable batch_cv_;</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>    std::deque&lt;CtxPtr&gt; batch_q_;</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>    bool batch_stop_ = false;</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>    std::thread batch_thread_;</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a></span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>    std::atomic&lt;size_t&gt; inflight_{0};</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>    std::atomic&lt;bool&gt; running_{false};</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>};</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a></span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>}  // namespace onetrans</span></pre></html>

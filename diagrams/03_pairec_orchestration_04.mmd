@@ -1,12 +1,25 @@
-flowchart LR
-    subgraph GatewayPod[入口Pod]
-        subgraph GatewayContainer[Nginx容器]
-            N[Nginx主进程与工作进程]
+sequenceDiagram
+    participant P as 请求协程
+    participant B as 批次任务组：2个协调协程
+    participant A as 算法任务组：每批1个协程
+    participant M as 配置的算法实现
+    participant Q as responseCh，容量2
+    P->>P: 构造2个IAlgoData，填满requestCh
+    P-)B: 启动2个批次协调协程
+    B->>B: 各取一个批次；各自wg.Add(1)
+    B-)A: 每批启动1个算法协程
+    par 算法执行
+        A->>M: algorithm.Run(name,algoData.GetFeatures())
+        M-->>A: []AlgoResponse或error
+        A->>A: 保存结果或错误；defer wg.Done()
+    and 批次汇合
+        B->>B: wg.Wait()，等该批算法计数归零
+        Note over A,B: 最后一个Done使Wait可返回<br/>Wait返回后才提交该批
+        B-)Q: responseCh <- algoData
+    and 请求回填
+        loop 接收2批
+            P->>Q: algoData = <-responseCh
+            Q-->>P: 一个已结束的批次
+            P->>P: 按批内位置写算法分，再算Item.Score
         end
     end
-    subgraph AppPod[PaiRec Pod]
-        subgraph AppContainer[推荐应用容器]
-            P[一个PaiRec应用进程<br/>Go运行时与原生bRPC运行时<br/>内含请求协程与历史worker]
-        end
-    end
-    N <-->|HTTP| P

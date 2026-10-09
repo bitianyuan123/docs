@@ -1,41 +1,29 @@
 sequenceDiagram
-    participant N as Nginx
-    participant P as PaiRec请求任务
-    participant H as PaiRec历史任务
-    participant F as 特征服务
-    participant DB as Redis
-    participant R as 三路召回任务
-    participant OH as OneTrans历史进程
-    participant OD as OneTrans候选进程
-    N->>P: recommend({uid:"1",scene_id:"home_feed",size:10})
-    P->>P: 固定request_id、release_id和期限
-    P-)H: 启动用户1的历史任务
-    par 候选准备
-        P->>F: GetUserContext(user_id="1",release_id)
-        F->>DB: 读取该版本用户、历史与查询表示
-        DB-->>F: 用户记录、10项历史、向量和词项
-        F-->>P: user_context及版本、缺失状态
-        P->>R: 三路并发，使用user_context与场景预算
-        R->>F: 生成分支：10项历史ID查询SID
-        F->>DB: 批读物品SID
-        DB-->>F: 同序SID记录
-        F-->>R: results中的semantic_id
-        Note over R: 向量/稀疏并行检索；生成推理后另向特征服务反查ID
-        R-->>P: 向量[1201,9001,3,4]；稀疏[4,9002,9003]；生成[4,1201,9002]
-        P->>P: 合并去重去已看 → [4,1201,9002,9001,9003]
-        P->>F: BatchGetItemFeatures(上述5个ID,release_id)
-        F->>DB: 批读5项业务属性
-        DB-->>F: 4项记录；9003缺失
-        F-->>P: 按输入位置返回FOUND/NOT_FOUND
-        P->>P: 剔除9003 → [4,1201,9002,9001]
-    and 历史计算
-        H->>H: Provider读取用户1历史；构造ingest_request
-        H->>OH: POST /ingest，user_id="1"，10项整数ID及等长timestamps
-        OH-->>H: accepted=true（计算与KV写入已结束）
-        H-)P: 历史任务结果，保存供汇合检查
+    participant P as 请求协程
+    participant R as 历史召回协程
+    participant Q as ingest队列
+    participant W as 常驻worker
+    participant L as 本请求latch
+    participant H as OneTrans历史进程
+    participant D as OneTrans候选进程
+    P-)R: 框架启动历史召回任务，user="1"
+    R->>R: Provider取历史；构造ingestRequest及latch
+    R-)Q: queue <- req（任务指针）
+    R-)P: 通过召回结果channel提交nil，插件结束
+    par 后台历史任务
+        W->>Q: 接收任务；队空时等待
+        Q-->>W: ingestRequest指针
+        W->>H: HTTP /ingest，user_id="1"，10项历史
+        H-->>W: HTTP状态或传输错误
+        W->>L: Done()，sync.Once内close(ch)
+        L-->>W: 已放行，worker可继续取下一项
+    and 请求继续
+        P->>P: 收齐其他召回、完成候选准备，进入Sort
+        P->>D: 首次HTTP /rank，4个候选ID
+        D-->>P: rankResponse，trace.kv_hit=false
+        P->>L: Wait(timeout)
+        L-->>P: true=channel已关闭；false=定时器到期
+        P->>D: 再次HTTP /rank，仍是相同4个候选
+        D-->>P: rankResponse或调用错误
+        P->>P: 校验响应；成功时按ID回填并稳定排序
     end
-    P->>P: 两条路径均成功；候选ID转为rank请求的字符串
-    P->>OD: POST /rank，user_id="1"，items=[4,1201,9002,9001]
-    OD-->>P: score=[0.72,0.86,0.63,0.91]，kv_hit=true
-    P->>P: 核对ID与分数；重排 → [9001,1201,4,9002]
-    P-->>N: items共4项，returned_size=4，shortfall=true

@@ -128,104 +128,231 @@ type OneTransClient interface {
 
 当前原生库的构建、字符串复制和释放见 [Go 封装](assets/source_snapshots/pairec_sh/pairec-demo/src/stageClient/stageClient.go.html#L17)与 [C 接口](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/stageBridge_c.cpp.html#L63)。源码里的客户端不是独立服务进程。
 
-## 3. 进程视图：执行单元、并发与同步
+## 3. 进程视图：沿已实现代码追踪一次请求
 
-### 3.1 官方默认链路实际怎样分支
+本节先说明已实现的内部机制，再说明目标编排。IPO 指 Input／Process／Output，即输入、处理和输出。样例仍用用户 `"1"`；候选和分数是教学值，不是运行记录。框架例子假设相应插件与算法已配置，不表示当前场景已经启用它们。
 
-以下是官方 `UserRecommendService.Recommend` 的执行结构。`pipeline` 是框架中“额外完整推荐路径”的配置名，不泛指每个处理步骤；场景配置了额外路径，才会有对应业务工作。
+### 3.1 默认入口：数据在哪些阶段改变
+
+官方 `UserRecommendService.Recommend` 先加载用户特征，再并行执行主路径和可选的额外完整推荐路径。源码里的 `pipeline` 指后一种配置路径，不是泛指每个处理步骤。
 
 ```text
-处理当前请求的协程
-  LoadUserFeatures（先完成用户特征加载）
-  ├─ 额外路径入口协程 → 按场景启动各条pipeline → 收齐各路径结果
-  │    每条路径可自行召回、过滤、特征加载、打分与排序
-  └─ 当前协程：主路径召回 → Filter → GeneralRank → Features → Rank
-       等待额外路径入口的WaitGroup
-       按ID合并主路径与额外路径物品 → Sort → 截断
-       派生特征日志、样本日志等后台任务
+请求协程：User{Id:"1"} + RecommendContext{RecommendId:"demo-user-1-001", ...}
+  LoadUserFeatures → 修改User.Properties
+  ├─ 额外路径入口协程 → 启动场景配置的各条pipeline → 收齐结果
+  │    每条路径可自行召回、过滤、加载特征、打分与排序
+  └─ 当前协程：Recall → Filter → GeneralRank → Features → Rank
+       wg.Wait()：额外路径未结束则等待，入口协程Done后才能继续
+       mergePipelineItems → Sort → 按size截断 → 返回[]*module.Item
+       特征日志、样本日志等另起后台任务
 ```
 
-`GeneralRank` 是框架的通用前置打分阶段；本场景没有新增粗排模型，不能因为框架存在调用就宣称本场景执行了它。[官方主链](assets/source_snapshots/pairec_v2.6.2/service/user_recommend.go.html#L45)及[额外路径入口](assets/source_snapshots/pairec_v2.6.2/service/pipeline/pipeline.go.html#L45)给出了上述分支和汇合。
-
-| 官方代码中的并发点 | 实际执行与等待 | 对本场景的意义 |
+| 已实现阶段 | 输入 → 处理 → 输出 | 执行者与数据边界 |
 |---|---|---|
-| 召回分发 | 每个已选召回一个协程；容量为召回数的 channel 收结果，父任务固定次数接收 | 返回先后影响原始拼接次序；目标按来源规则重组，不拿完成顺序作业务排序 |
-| 特征加载器 | `async=true` 时每个加载器及可选回调起协程，`WaitGroup.Wait` 等待；否则顺序加载 | 配置和 DAO 内部分批决定并发，不能只数顶层框 |
-| 默认 Rank | 每个候选批次一个协程；每批再按算法列表派生协程；批内 WaitGroup、批间结果 channel | 批数×算法数可放大调用量；当前 OneTrans 适配位于 Sort，不能直接套用此 Rank 扇出 |
-| 额外完整路径 | 与主路径共享用户和请求上下文，各走自己的阶段后汇合 | 配错场景可能重复取数与计算；目标本场景不启用第二套完整编排 |
+| 用户与候选特征加载 | `User/Item` 指针 → DAO 取数及解码 → 更新 `Properties` | 加载器可按 `async` 配置起协程，以 WaitGroup 汇合；不是目标独立特征服务 |
+| 召回 | 用户对象、场景选出的插件 → 每路调用一次 → 多路 `[]*Item` 拼接 | 子协程共享用户和上下文指针；请求协程接收结果，见 3.2 |
+| 默认 Rank | 候选及其特征 → 分批、调用算法、按批内位置写分 → 修改原 `Item` 的算法分和 `Score` | 批次协调协程、算法协程与请求协程分工，见 3.3 |
+| 额外路径汇合、Sort | 主路径与额外路径物品 → 按 ID 合并属性、排序、截断 → 最终列表 | 请求协程等待后执行；同 ID 合并属性，不是把两路分数直接相加 |
 
-依据：[召回 channel](assets/source_snapshots/pairec_v2.6.2/service/recall.go.html#L119)、[特征并发](assets/source_snapshots/pairec_v2.6.2/service/feature/feature_service.go.html#L77)、[Rank 分批与嵌套协程](assets/source_snapshots/pairec_v2.6.2/service/rank/rank_service.go.html#L250)。这些固定次数 channel 接收和 `WaitGroup.Wait` 本身不带请求取消；召回 panic 被转换为空结果，不能代替目标的显式错误传播。
+`GeneralRank` 是框架的通用前置打分调用；目标场景没有新增粗排模型。当前 OneTrans 适配位于 `Sort`，不能把默认 `Rank` 的批次×算法并发当作 OneTrans 当前行为。额外完整路径只有配置了才产生业务工作；目标场景不再叠加第二套完整推荐链。[官方主链](assets/source_snapshots/pairec_v2.6.2/service/user_recommend.go.html#L45)、[额外路径](assets/source_snapshots/pairec_v2.6.2/service/pipeline/pipeline.go.html#L45)、[内部特征加载器](assets/source_snapshots/pairec_v2.6.2/service/feature/feature_service.go.html#L77)
 
-### 3.2 当前 OneTrans：后台队列与请求闸门
+### 3.2 召回：三个生产者怎样把候选交给请求协程
 
-现有历史计算借用召回插件入口，但不返回候选。Provider 优先读取可选 Kafka 消费者的内存缓存，未命中再查本地 JSON 缓存。第一次访问本地后备数据会在 `sync.Once` 内读取并解码整个文件；后续按用户查询，并解析 `click_history`。这是实际存在的本地 I/O 和常驻内存，不能把当前编排描述成无本地数据状态。[Provider 源码](assets/source_snapshots/pairec4tigerllm_8506/services/feature/provider.go.html#L108)
-
-当前调用方构造的 `timestamps` 是与历史 ID 等长的占位序号 `0..n-1`，不是 Unix 时间，也不参与模型位置编码。
-
-```go
-// 按当前源码简化：说明现状，不是目标实现。
-req := provider.BuildIngest(user)  // 整数item_ids；等长占位序号timestamps
-if len(req.ItemIDs) == 0 { return } // 当前不投递，也不创建闸门
-latch := NewLatch()                // 每个请求一个；不是跨请求的用户锁
-select {
-case queue <- req:                 // 非阻塞尝试入队，交给后台worker
-default:
-    if injectSync { ingest(req) }  // 队满可同步兜底，错误未传播给主请求
-    latch.Done()                   // 丢弃任务也会放行
-}
-// 后台worker：从queue取任务 → HTTP ingest → 无论成功失败都latch.Done()
-// 精排侧：先HTTP rank；kv_hit=false且有latch时，等待后再HTTP rank一次。
-```
-
-上面省略的关联是：`req` 和请求上下文保存同一 `latch`。实际[闸门](assets/source_snapshots/pairec4tigerllm_8506/services/scachelatch/scachelatch.go.html#L25)用 `sync.Once` 保证 channel 只关闭一次；`Wait` 用 `select` 等 channel 关闭或定时器。**关闭代表这次投递已结束，不能证明历史写入成功。**
-
-| 现状细节 | 负载和正确性含义 |
-|---|---|
-| 每个历史阶段实例默认队列 1024、worker 4，可被配置覆盖 | 长驻 worker 池真实存在；队列限制待处理数，每个 worker 顺序发 HTTP；同步兜底开启后在途数可超过 4 |
-| HTTP ingest 只检查状态码，不解析 `accepted`；成功或失败都放行 | 目标须解析业务结果，并把成功或错误带回等待方 |
-| 首次 rank miss 后忽略 `Wait` 返回值，再查一次 | 即使等待超时也会重查；注释与实现有差异，以实现为准；单请求可能增加一次 rank RPC |
-| ingest 使用 `context.Background()`，rank 使用无请求上下文的 `NewRequest` | 当前主要靠各 HTTP Client 超时，不能宣称前端断连已取消后端请求 |
-| Kafka 用后台协程消费并以 `sync.Map` 替换用户记录 | 与在线请求共享内存；容量随已见用户增长，源码未设置淘汰上限 |
-
-依据：[队列、worker 与放行](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L154)、[HTTP ingest](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L104)、[miss 后重查](assets/source_snapshots/pairec4tigerllm_8506/services/sort/onetrans_rank_sort.go.html#L154)、[HTTP rank](assets/source_snapshots/pairec4tigerllm_8506/services/sort/onetrans_rank_sort.go.html#L245)、[Kafka 缓存](assets/source_snapshots/pairec4tigerllm_8506/services/feature/consumer.go.html#L100)。
-
-### 3.3 目标请求任务怎样并行、汇合
-
-图中“任务”是一次业务工作，可以由协程执行；图不是固定线程分配，也不要求每个阶段增加一层 worker 池。请求处理协程负责候选合并和重排，历史任务与三个召回分支是主要并发点。
-
-图法：任务与同步示意图（非 UML，箭头表示执行依赖）。
-
-```mermaid
-flowchart TB
-    Start[请求任务：固定版本、规则、期限] --> Context[查询用户上下文]
-    Start --> History[历史任务：Provider取数并等待ingest结果]
-    Context --> Vector[向量任务]
-    Context --> Sparse[稀疏任务]
-    Context --> Generate[生成任务：历史ID查SID，再生成候选]
-    Vector --> Join[收齐三路结果，检查错误]
-    Sparse --> Join
-    Generate --> Join
-    Join --> Merge[按来源融合、去重、已看过滤]
-    Merge --> Items[批查候选属性、资格检查]
-    Items --> Gate[候选可用且历史写入成功]
-    History --> Gate
-    Gate --> Rank[调用rank并核对ID、分数和kv_hit]
-    Rank --> End[按规则重排并返回]
-```
-
-目标任务须返回**结果和错误**。可以采用有界结果 channel 与单一汇合方；`WaitGroup` 只表达“任务都结束”，不保存错误、不会自动取消，也不限制任务数。父请求取消后，子任务仍须有退出及结果回收路径，不能向无人接收的无缓冲 channel 永久发送。结果容器由分支独占，成功汇合后交给请求任务；共享上下文只读，避免几个分支同时改同一 map 或候选分数。
+`RecallService.GetItems(user, context)` 根据场景、类别和配置选出召回插件，再启动协程。下例用“向量／稀疏／生成”标识三个插件结果；框架只负责分发，不理解各插件内部的模型协议。
 
 ```python
-# 控制流伪代码；start_task启动任务并保存其结果或错误。
-# wait在请求剩余期限内取结果；任一必需任务失败会触发取消。
+# 输入是进程内User和RecommendContext对象，下列字典仅展示相关字段。
+recall_input = {"user.Id":"1", "context.RecommendId":"demo-user-1-001",
+                "context.scene":"home_feed", "context.category":"feed"}
+# 输出实际是[]*module.Item；以下摘录Id、RetrieveId字段。
+vector_items = [{"Id":x,"RetrieveId":"vector"} for x in ["1201","9001","3","4"]]
+sparse_items = [{"Id":x,"RetrieveId":"sparse"} for x in ["4","9002","9003"]]
+generated_items = [{"Id":x,"RetrieveId":"generation"} for x in ["4","1201","9002"]]
+# 一种完成顺序下：ret = sparse_items + vector_items + generated_items
+# GetItems本身不去重，因此"1201"在ret中仍有两项；此例只说明内部容器。
+```
+
+```go
+// 对应service/recall.go:119-143；省略查配置及panic恢复代码。
+ch := make(chan []*module.Item, len(recalls)) // 三路时容量为3
+for _, plugin := range recalls {
+    go func(plugin recall.Recall) {
+        items := plugin.GetCandidateItems(user, context)
+        ch <- items                        // 每路只提交一次结果
+    }(plugin)
+}
+for i := 0; i < len(recalls); i++ {
+    items := <-ch                          // 队列为空才挂起请求协程
+    ret = append(ret, items...)             // 复制元素指针，不深拷贝Item
+}
+close(ch)
+```
+
+图法：UML 时序图。三个召回参与者是同进程协程，channel 是同步对象，不是服务；`-)` 表示启动任务或投递缓冲结果。图中插件计算用自调用表示，其内部可以计算、访问缓存或等待后端。
+
+```mermaid
+sequenceDiagram
+    participant P as 请求协程
+    participant V as 向量召回协程
+    participant S as 稀疏召回协程
+    participant G as 生成召回协程
+    participant Q as 结果channel，容量3
+    P-)V: go GetCandidateItems(user="1",context)
+    P-)S: go GetCandidateItems(user="1",context)
+    P-)G: go GetCandidateItems(user="1",context)
+    par 向量分支
+        V->>V: 插件处理输入，得到vector_items
+        V-)Q: ch <- vector_items
+    and 稀疏分支
+        S->>S: 插件处理输入，得到sparse_items
+        S-)Q: ch <- sparse_items
+    and 生成分支
+        G->>G: 插件处理输入，得到generated_items
+        G-)Q: ch <- generated_items
+    and 请求汇合
+        loop 接收3次
+            P->>Q: items = <-ch；空时等待
+            Q-->>P: 一路候选切片
+            P->>P: append到ret
+        end
+    end
+    P->>P: close(ch)，进入后续Filter
+```
+
+- **等待与唤醒**：父协程可能多次在 `<-ch` 等待；任何一路发送后，等待条件满足。已收到结果时直接取缓冲，不必挂起。三路各发一次、容量为三，结果发送本身不需要等父协程逐项消费。
+- **数据所有权**：channel 传递切片，`append` 传递物品指针；框架没有深拷贝或强制只读。插件返回后继续修改同一物品会破坏交接约定。共享 User／Context 的短锁也不意味着其所有字段都能任意并发修改。
+- **失败与取消**：原实现的 `defer recover` 会发送 `nil`，使接收计数仍能完成，但不会返回结构化错误；接收循环没有 `select` 监听请求取消。插件不返回时，这一层不能自行完成。不能把“收到空切片”和“该召回执行成功”混为一谈。[对应源码](assets/source_snapshots/pairec_v2.6.2/service/recall.go.html#L119)
+
+### 3.3 默认 Rank：批次协调、算法执行与回填
+
+这是官方 Rank 的独立教学例子，**不是当前 OneTrans HTTP 打分路径**。假设四个候选进入默认算法、`BatchCount=2`、仅配置一个算法 `score_model`，没有自定义打分分流。
+
+```python
+rank_items = ["4", "1201", "9002", "9001"]  # 对应四个已有Item指针
+batches = [["4","1201"], ["9002","9001"]]  # 每批同时持有特征与Item列表
+algorithm_results = [[0.72,0.86], [0.63,0.91]]
+# 算法返回形状为[]response.AlgoResponse，普通单分值路径使用GetScore()。
+# 第j个响应写到该批第j个Item：例如"1201".AlgoScores["score_model"] = 0.86。
+# 配置的RankScore表达式再计算Item.Score；Rank本身不决定最终排序次序。
+```
+
+框架先准备好所有 `IAlgoData` 批次，放入容量为批数的 `requestCh`；每批一个协调协程，再为每个算法起一个子协程。本例新建 `2 + 2×1 = 4` 个协程，不包含请求协程、日志及其他阶段。[批次构造](assets/source_snapshots/pairec_v2.6.2/service/rank/rank_service.go.html#L163)、[启动与汇合](assets/source_snapshots/pairec_v2.6.2/service/rank/rank_service.go.html#L248)
+
+图法：UML 时序图。批次任务组和算法任务组生命线分别汇总其明确标注的协程实例，不代表一个协程串行处理两批；两批可交错执行，每批的 `WaitGroup` 是独立对象。“算法实现”是被调用对象，可能内部访问后端，不表示另建了一个服务进程。
+
+```mermaid
+sequenceDiagram
+    participant P as 请求协程
+    participant B as 批次任务组：2个协调协程
+    participant A as 算法任务组：每批1个协程
+    participant M as 配置的算法实现
+    participant Q as responseCh，容量2
+    P->>P: 构造2个IAlgoData，填满requestCh
+    P-)B: 启动2个批次协调协程
+    B->>B: 各取一个批次；各自wg.Add(1)
+    B-)A: 每批启动1个算法协程
+    par 算法执行
+        A->>M: algorithm.Run(name,algoData.GetFeatures())
+        M-->>A: []AlgoResponse或error
+        A->>A: 保存结果或错误；defer wg.Done()
+    and 批次汇合
+        B->>B: wg.Wait()，等该批算法计数归零
+        Note over A,B: 最后一个Done使Wait可返回<br/>Wait返回后才提交该批
+        B-)Q: responseCh <- algoData
+    and 请求回填
+        loop 接收2批
+            P->>Q: algoData = <-responseCh
+            Q-->>P: 一个已结束的批次
+            P->>P: 按批内位置写算法分，再算Item.Score
+        end
+    end
+```
+
+数据交接有两层：算法协程写该批的结果容器，`Done` 使批次协调者可继续；协调者发送 `algoData` 后，请求协程才读取并回填 Item。请求协程可能先拿到第二批，但该批自带 Item 列表，因此不会写到第一批。框架按响应位置回填，循环取“响应数与候选数的较小值”，不是目标 OneTrans 的逐 ID 完整性校验；不能宣称默认 Rank 已拒绝缺分或多分。[位置回填](assets/source_snapshots/pairec_v2.6.2/service/rank/rank_service.go.html#L303)
+
+`WaitGroup` 不带取消，也不保存错误；算法错误另存于 `algoData`。每批有独立结果容器，`SetAlgoResult` 用 mutex 保护结果map写入；但 `SetError` 是未加锁赋值，多算法同时报错存在并发写风险。这个问题不能靠最后一次 `Wait` 修复。批内算法共享输入，应按只读使用；完成写入后再 `Done`，批次发出后不再修改。[结果与错误字段](assets/source_snapshots/pairec_v2.6.2/service/rank/algo_data.go.html#L42)、[批次浅拷贝](assets/source_snapshots/pairec_v2.6.2/service/rank/algo_data.go.html#L119)
+
+### 3.4 当前 OneTrans：入队不等于历史完成，闸门也不等于成功
+
+当前历史阶段借用召回插件入口，不返回候选。其输入先经过 Provider，再成为独立的 `ingestRequest`；精排由之后的 `OneTransRankSort.Sort` 执行。
+
+```python
+# 假定Provider覆盖用户1；用于说明格式，不证明本地文件已有该用户。
+provider_history = [2,3,80936,781,111774,1230,26403,991,2362,1202]
+ingest_request = {"user_id":"1", "item_ids":provider_history,
+                  "timestamps":list(range(10))}
+# timestamps是等长占位序号，不是Unix时间，也不参与模型位置编码。
+rank_request = {"request_id":"demo-user-1-001", "user_id":"1",
+                "items":[{"item_id":x} for x in ["4","1201","9002","9001"]]}
+# 这里只摘录HTTP业务字段；rank适配器另带context观测字段。
+# ingestRequest还持有latch指针，但json:"-"保证它不进入HTTP请求。
+```
+
+| Input／Process／Output | 代码中的处理和数据交接 |
+|---|---|
+| 用户 ID → Provider → 历史整数数组 | 可选 Kafka `sync.Map` 命中则读缓存；否则首次 `sync.Once` 内全文件读取、解码，随后按用户查找并解析 `click_history` |
+| 历史数组 → BuildIngest → 队列任务 | 复制为新的 `[]int64`、构造等长 timestamps；创建请求自己的 latch，任务与 RecommendContext 引用同一 latch |
+| 队列任务 → worker → HTTP结果及结束通知 | worker独占取出的任务，同步等待 `/ingest`；只检查状态码，未解析 `accepted`；无论成功失败都关闭 latch channel |
+| 候选指针 → Sort → 更新分数和顺序 | 检查候选 ID，构造 JSON；首次 `/rank` miss 且有 latch 时才等待，再查一次；校验响应后按 ID 回填，稳定排序 |
+
+图法：UML 时序图。展示“任务成功入队、首次 rank 未命中”的一种交互；三个本地执行者分别是请求协程、历史召回协程和常驻 worker，队列及闸门是同步对象。其他召回及中间阶段省略，但请求仍会等待它们完成。
+
+```mermaid
+sequenceDiagram
+    participant P as 请求协程
+    participant R as 历史召回协程
+    participant Q as ingest队列
+    participant W as 常驻worker
+    participant L as 本请求latch
+    participant H as OneTrans历史进程
+    participant D as OneTrans候选进程
+    P-)R: 框架启动历史召回任务，user="1"
+    R->>R: Provider取历史；构造ingestRequest及latch
+    R-)Q: queue <- req（任务指针）
+    R-)P: 通过召回结果channel提交nil，插件结束
+    par 后台历史任务
+        W->>Q: 接收任务；队空时等待
+        Q-->>W: ingestRequest指针
+        W->>H: HTTP /ingest，user_id="1"，10项历史
+        H-->>W: HTTP状态或传输错误
+        W->>L: Done()，sync.Once内close(ch)
+        L-->>W: 已放行，worker可继续取下一项
+    and 请求继续
+        P->>P: 收齐其他召回、完成候选准备，进入Sort
+        P->>D: 首次HTTP /rank，4个候选ID
+        D-->>P: rankResponse，trace.kv_hit=false
+        P->>L: Wait(timeout)
+        L-->>P: true=channel已关闭；false=定时器到期
+        P->>D: 再次HTTP /rank，仍是相同4个候选
+        D-->>P: rankResponse或调用错误
+        P->>P: 校验响应；成功时按ID回填并稳定排序
+    end
+```
+
+等待和唤醒须按实际代码理解：
+
+1. `select { case queue <- req: ...; default: ... }` **不会等队列腾位**。队满默认丢弃并 `Done`；开启 `injectSync` 时由历史召回协程同步发 ingest，随后也 `Done`。入队正常时，`queue` 唤醒一个等待接收的 worker；该 worker 不固定对应某个用户。
+2. worker 空闲时等待队列，拿到任务后等待 HTTP。返回、错误或客户端超时后执行 `Done`；`close(ch)` 使等待此 latch 的 `Wait` 可返回。如果已关闭，后来的 `Wait` 立即返回；没有必要再挂起。
+3. 第一次 rank 命中时不等 latch。未命中且有 latch 时，关闭或定时器到期都能结束等待；调用方忽略 true／false，**两种情况都会再次 rank**。当前代码注释与此处实现有差异，以实现为准。
+4. 该 latch 每请求创建，既不是用户互斥锁，也不包含写入成功信息；队列满、HTTP失败仍能放行。Provider无历史时不建 latch。当前 ingest 用 `context.Background()`，rank也未绑定前端请求 context，因此请求结束不保证队列中的历史任务和 HTTP 调用已取消。
+
+每个历史阶段实例默认 `queue_size=1024, worker_num=4`，配置可以覆盖；同步兜底开启后在途 ingest 可超过 worker 数。首次 Provider 冷加载还会让同一 Provider 的其他首次调用等待 `sync.Once` 完成；这是在线请求可能经历的文件 I/O、解码和同步等待，不是每请求读一个小文件。[Provider](assets/source_snapshots/pairec4tigerllm_8506/services/feature/provider.go.html#L108)、[构造、队列及worker](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L72)、[入队与队满](assets/source_snapshots/pairec4tigerllm_8506/services/recall/onetrans_s_stage.go.html#L230)、[Latch](assets/source_snapshots/pairec4tigerllm_8506/services/scachelatch/scachelatch.go.html#L24)、[rank及回填](assets/source_snapshots/pairec4tigerllm_8506/services/sort/onetrans_rank_sort.go.html#L108)
+
+### 3.5 目标 RecommendEngine：要改变的是交接契约
+
+目标保留 Provider 来源和现有 OneTrans 字段，但要求任务返回结果或错误；先确认历史写入成功，再提交唯一一次 rank。下列为**目标控制流伪代码，不是当前已实现路径**；具体用户 1 场景见第 5 节。
+
+```python
+# 参数来自已校验请求及固定的场景配置；辅助函数不是现有SDK方法。
+user_id, release_id = "1", "demo_tenrec_v1"
 history_task = start_task(lambda: ingest_from_existing_provider(user_id))
-user_context = features.GetUserContext(user_query)
+user_context = features.GetUserContext({"user_id":user_id,"release_id":release_id})
 recall_results = wait_three_required_recalls(user_context, fixed_policy)
 candidates = merge_by_source_and_remove_seen(recall_results, user_context.history)
 item_features = features.BatchGetItemFeatures(query_for(candidates))
 rankable = apply_eligibility(candidates, item_features)
-ingested = history_task.wait()
-require(ingested.accepted)  # 已解析业务响应，不能只看HTTP 200
+ingested = history_task.wait()    # 剩余期限内取结果；错误向上传播
+require(ingested.accepted)        # 解析业务响应，不能只看HTTP 200
 if not rankable:
     return empty_response(reason="no_eligible_candidates")
 scores = onetrans.Rank(user_id, ids(rankable))
@@ -233,37 +360,33 @@ require(scores.trace.kv_hit and same_ids_and_finite_scores(scores, rankable))
 return rerank(scores, item_features, fixed_policy)
 ```
 
-`fixed_policy` 是请求开始固定的规则，`ids` 提取物品 ID，`require` 失败即终止请求；它们不是框架 API。融合最多保留 10 个生成候选，再由稀疏、向量轮询补至最多 50 个；原始分数不跨来源相加。重排按 OneTrans 分数降序，同分保留合并顺序；人工屏蔽默认空。
+`fixed_policy` 是请求开始固定的规则，`ids` 提取 ID，`require` 失败即终止请求。目标的并发结果容器由各分支独占，汇合后由请求任务统一修改候选；必需任务失败触发取消。取消后子任务仍须能结束和回收，不能向无人接收的无缓冲 channel 永久发送。`WaitGroup` 本身不能替代错误传播、超时或容量限制。
 
-| 汇合或异常 | 目标行为 |
-|---|---|
-| 用户特征缺失、版本错误或必需召回失败 | 返回明确阶段错误，停止提交新阶段，取消其他任务的可取消等待 |
-| 候选属性缺失 | 按明确规则剔除并记录 ID；不伪造库存、价格或零向量 |
-| 历史不存在、ingest 失败、rank 未命中 KV | 严格场景判失败；不把未执行历史计算或统一 0.5 分当作成功 |
-| 同用户并发写不同历史 | 联调先明确串行约束或补充版本校验；当前 KV 按模型版本与用户存储，闸门不能隔离不同请求 |
-| 超时、前端断连 | 取消本地等待不等于远端计算停止；在途原生调用安全结束后释放内存 |
+融合最多保留 10 个生成候选，再由稀疏、向量轮询补至最多 50 个；不同召回的原始分数不相加。重排按 OneTrans 分数降序，同分保留合并顺序；人工屏蔽默认空。候选属性缺失按规则剔除；缺历史、必需召回错误、ingest失败或rank未命中，严格场景报告明确错误。
 
-全请求联调上限 25 秒；特征 RPC 各 1 秒，向量／稀疏各 5 秒，生成／历史／精排各 10 秒，每次取阶段上限与剩余总时间的较小值。这些是联调配置，不是性能目标。目标默认不自动重试模型请求，也没有承诺 OneTrans 已支持请求级 KV 释放。
+请求总期限初值为 25 秒；特征 RPC 各 1 秒，向量／稀疏各 5 秒，生成／历史／精排各 10 秒，均受剩余总时间约束。这是联调配置，不是性能目标。默认不自动重试模型请求；取消本地等待不证明远端计算停止。当前 KV 按模型版本和用户存储，单请求 latch 不能防止同用户覆盖；仍须明确串行约束或补充版本校验，也不宣称已有请求级 KV 释放。
 
-### 3.4 协程、线程和等待究竟消耗什么
+### 3.6 同步 CGO：同一进程内还有另一种等待
 
-Go 的 goroutine 是可调度的协程，OS thread 是操作系统线程，两者不是一一对应。Go 运行时通常用 `G` 表示协程、`M` 表示线程、`P` 表示执行 Go 代码所需的调度资源；`GOMAXPROCS` 决定 P 的数量，**不限制整进程的线程数或原生代码 CPU 使用量**。本文称业务执行者为“请求协程”，不借用运行时系统栈的 `g0` 名字。[Go 调度器说明](https://go.dev/src/runtime/HACKING)
+不能把上述 channel 等待套用到原生 RPC。当前 Redis／OpenSearch 适配是同步 `Go → C ABI → C++ → bRPC`，以一次 `MGet(keys)` 为例：
 
-| 工作 | 等待位置与恢复条件 | 资源判断 |
-|---|---|---|
-| Go HTTP 客户端等待可轮询网络连接 | 网络未就绪时可挂起协程；连接就绪或超时后恢复为可运行状态 | 不要求每个等待各占一个线程；仍占请求对象、连接、缓冲和协程栈 |
-| channel 收结果、WaitGroup 汇合 | 无结果／计数未归零时挂起；发送、关闭或最后一次 Done 满足等待条件 | 唤醒不等于立即获得 CPU；不能把每次交接说成一次固定的内核 futex 操作 |
-| Go Mutex／RWMutex | 保护共享对象，竞争时等待持有者释放 | 锁内只做短操作；不要把远程等待放进共享锁区间 |
-| 同步 CGO 调用原生 bRPC | 请求协程等待 C 函数返回；调用线程留在原生调用栈 | Go 可让其他线程继续执行 Go；不能按 Go netpoll 模型视作已释放调用线程 |
-| JSON 解码、复制、哈希去重、排序 | 获得 CPU 后执行，与其他可运行任务竞争 | 后端已返回，本地排队、GC 和解码仍会延长等待 |
+```text
+输入：keys[] → 输出：与输入对齐的values[]或error
+调用协程执行：C.CString逐键复制，准备C指针数组
+  → C.Clis_RedisMGet：进入原生调用，Go调用点尚未返回
+  → C++构造请求，CallMethod(..., done=NULL)等待响应/错误/超时
+  → C++分配结果数组及字符串，返回C接口
+  → Go用C.GoString复制结果，调用Clis_FreeStringArray释放原生结果
+  → defer释放输入C字符串，返回Go的[]string
+```
 
-Go 官方定义了挂起与重新进入可运行队列的区别；`WaitGroup` 等待计数归零的行为见 [sync 文档](https://pkg.go.dev/sync#WaitGroup)。Go HTTP 可轮询网络读写使用运行时网络等待，见 [Go 网络 FD 等待](https://go.dev/src/internal/poll/fd_poll_runtime.go)。不能据此推出“整个 PaiRec 的网络 I/O 都不会增加线程”：本工程还有 CGO 和本地文件读取。
+这条路径既有网络等待，也有两侧分配和复制。同步 C 调用期间，原生调用线程仍被占用，不能用来执行另一段普通 Go 代码；Go运行时允许其他线程推进其他协程。bRPC后台工作线程也在同一进程内。大量慢原生调用可能增加线程、线程栈和调度负担；是否、增加多少必须测量，不能假定每个RPC都会新建线程。[CGO 实现](https://go.dev/src/runtime/cgocall.go)、[bRPC 同步调用](https://brpc.apache.org/docs/client/basics/#synchronous-call)、[实际Go封装](assets/source_snapshots/pairec_sh/pairec-demo/src/stageClient/stageClient.go.html#L119)、[原生Redis调用](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L130)
 
-当前原生客户端是 `Go → C ABI → C++ → bRPC CallMethod(..., done=NULL)` 的**同步调用**。bRPC 收到响应、错误或超时后才返回；其后台工作线程与 Go 调度器在同一进程内各自工作。Go 会进入外部调用状态，使其他 Go 工作可以推进，但 C 调用尚未完成。[CGO 实现](https://go.dev/src/runtime/cgocall.go)与 [bRPC 同步调用约定](https://brpc.apache.org/docs/client/basics/#synchronous-call)
+已有 Redis 物品 DAO 按 100 项顺序 MGET，并非每项派一个协程，也不是已完成的独立特征服务。当前封装没有供请求 context 直接取消原生调用的接口；返回前的内存不能提前释放。目标封装的生命周期要求见[通信视图](06_rpc.md)。
 
-现有 Redis／OpenSearch 适配证明了这种调用形式，未实现目标业务 RPC 的异步完成通知。请求字符串通过 `C.CString` 复制，响应经过 C 分配、`C.GoString` 复制和显式释放；大批量数据会经过 Go 与原生内存。已有 Redis 物品 DAO 按 100 项顺序 MGET，不能描述成一项一条协程或已完成独立特征服务。[原生调用](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/redis_client.cpp.html#L37)、[数据复制](assets/source_snapshots/pairec_sh/pairec-demo/src/stageClient/stageClient.go.html#L115)、[DAO 分批](assets/source_snapshots/pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go.html#L122)
+Go将协程称为G、OS线程称为M、执行Go代码的调度资源称为P；`GOMAXPROCS`决定P的数量，不是整进程线程或原生CPU上限。channel／WaitGroup条件满足仅使等待协程**可运行**，之后仍要获得调度；Go网络可轮询等待可挂起协程，不要求每个等待独占线程。这里不把每次唤醒等同于一次内核futex，也不把业务请求称作运行时的g0。[Go调度说明](https://go.dev/src/runtime/HACKING)、[网络等待实现](https://go.dev/src/internal/poll/fd_poll_runtime.go)
 
-源码还有请求对象的短锁：[User 属性](assets/source_snapshots/pairec_v2.6.2/module/user.go.html#L88)、[Item 属性](assets/source_snapshots/pairec_v2.6.2/module/item.go.html#L262)、[上下文参数](assets/source_snapshots/pairec_v2.6.2/context/recommend_context.go.html#L88)。[算法注册表](assets/source_snapshots/pairec_v2.6.2/algorithm/algorithm.go.html#L107)只在查找时持读锁，调用算法前释放；不能写成全程持有全局锁。争用程度须测量，不能仅因看见锁就认定它是瓶颈。
+共享对象仍须遵守锁和所有权：User／Item属性、Context参数各有短锁；算法注册表只在查找时持读锁，执行算法前已释放。锁不能代替任务完成同步；后端慢也不能直接归因为锁争用。[User](assets/source_snapshots/pairec_v2.6.2/module/user.go.html#L88)、[Item](assets/source_snapshots/pairec_v2.6.2/module/item.go.html#L262)、[Context](assets/source_snapshots/pairec_v2.6.2/context/recommend_context.go.html#L88)、[算法注册表](assets/source_snapshots/pairec_v2.6.2/algorithm/algorithm.go.html#L107)
 
 ## 4. 物理视图：Pod、容器与进程
 
@@ -366,47 +489,99 @@ sequenceDiagram
 | 某路返回慢或失败 | 期限内结束，其他任务能回收；无遗留无限等待或无界重试 |
 | 人工发布、屏蔽或预算切换 | 新请求使用新配置，已开始的请求仍用旧快照；诊断停用阶段须明确标记 |
 
-## 6. 负载模型：怎样判断瓶颈，怎样验证
+## 6. 高并发负载：由调用数和等待时间推到资源需求
 
-以下公式用于选择观测项，不预测 QPS 或硬件数量。计数必须对应选定场景和实际开关，不能把默认框架的最大扇出直接算到目标链路。
+本节只推导 PaiRec 进程的需求；模型服务计算和数据库执行另见对应模块。以下数值是**演算输入，不是实测配置或性能承诺**。先数实际执行的任务，再乘其存活时间，不能用 QPS 直接当并发数。
 
-```text
-λ = 每秒进入该PaiRec实例的请求数；W = 请求平均在该实例停留的秒数
-N ≈ λ × W                 # 稳定负载下的平均在途请求数，不是每秒创建数
+### 6.1 单请求工作量与在途数
 
-框架某一Rank阶段：n=进入默认算法的候选数，b=每批上限，a=算法数，B=ceil(n/b)
-  算法调用数 = B × a       # 每算法每批一次；不含内部重试/扇出
-  新建协程数 = B + B×a    # 批次协调＋算法任务；不含另行配置的自定义打分及日志
-  多条完整路径启用时，各路径分别计算后相加
+```python
+# 官方框架例子，与3.2/3.3对应；不含可选pipeline、自定义打分、日志和插件内部任务。
+recall_count = 3
+candidate_count, batch_size, algorithm_count = 4, 2, 1
+batch_count = 2
+new_recall_goroutines = recall_count                       # 3
+new_rank_goroutines = batch_count * (1 + algorithm_count)  # 4
+algorithm_calls = batch_count * algorithm_count           # 2
+# 这是阶段创建总数；召回结束后才进入Rank，不表示7个协程一直同时存活。
 
-当前历史队列：w=worker数，s=一次ingest平均占用worker的秒数
-  worker服务能力约为 w/s 次每秒（不含队满同步兜底）
-  到达速度持续超过此值 → 队列增长 → 队满丢弃或同步兜底
+# 目标链路正常业务调用；不是上述默认Rank例子。
+pairec_outbound_calls = 3 + 3 + 1 + 1  # 特征、召回、ingest、rank，共8次
+# 生成服务另向特征服务反查一次；数据库拆批、模型内部调用不计在此。
 ```
 
-`N` 是按请求停留时间统计的并发量；框架公式是一次请求创建的任务数量，两者不能直接相乘当成某时刻存活协程数。目标要求一次三路召回、一次 ingest 和一次 rank，不继承默认 Rank 的批次×算法扇出；模型服务内部是否分批由服务自己决定。
-
-目标正常请求的 PaiRec 出站业务调用为 `3次特征 + 3次召回 + 1次ingest + 1次rank = 8次`，生成服务另作一次特征反查。计数不含拆批、重试、数据库访问及模型服务内部通信；历史为空或阶段失败不会执行完整的 8 次。当前旧 OneTrans 调用方在 miss 路径可能再增加一次 rank。
+当前 OneTrans 的 miss 分支额外发一次 rank，且首次 rank、闸门等待、第二次 rank各有等待成本；不能只用一个 rank 超时代表这条旧路径的总时长。目标 Engine改为先汇合历史与候选、只发一次rank，关键路径为：
 
 ```text
-Tc = 用户特征耗时
-     + max(向量耗时, 稀疏耗时, 历史SID查询耗时+生成召回耗时)
-     + 合并耗时 + 候选属性查询耗时 + 资格检查耗时
-Th = Provider读取耗时 + 历史任务排队耗时 + ingest调用耗时
-Trequest ≈ 入口耗时 + max(Tc, Th) + rank调用耗时 + 重排及响应耗时
+Tc = 用户特征查询 + max(向量召回, 稀疏召回, 历史SID查询+生成召回)
+     + 候选合并 + 属性查询 + 资格检查
+Th = Provider读取 + 历史任务排队 + ingest
+Trequest ≈ 入口处理 + max(Tc, Th) + rank + 重排与响应
 ```
 
-每段耗时是墙钟时间，包含段内调度、排队和网络等待；生成召回包含服务端反查。公式假定成功路径、历史与候选并行、单次 rank，不适用于旧版“先 rank 再等闸门”。客户端总耗时减服务端计算耗时，也不能直接当成网络耗时，中间还有排队、序列化和调度。
+每段是墙钟时间，包含本段排队、执行和等待；生成召回含服务端SID反查。下式用于稳定采样窗口；`λ` 是实际进入该实例的请求率，`W` 是平均停留秒数。
 
-| 可能受限的资源 | 源码支持的机制与增长因素 | 确认所需观测 |
+```text
+平均在途请求 N ≈ λ × W
+示例：λ=1000/s、W=0.2s → N≈200
+      相同请求率、W=2s → N≈2000
+
+某类任务的平均存活数 ≈ 该类任务每秒启动数 × 平均存活秒数
+原生同步调用在途 C ≈ 每秒原生调用数 × 平均C调用停留秒数
+```
+
+后端变慢，即使每请求候选数不变，等待中的请求、协程、特征引用和响应缓冲也会增加。若这些请求的响应集中到达，会出现一批协程同时变为可运行，随后还要解码、回填和排序；网络完成与业务完成之间的调度排队因此值得单独观察。不能据此直接认定CPU已经饱和。
+
+### 6.2 历史队列：固定worker如何被高请求率压满
+
+```python
+# 当前代码有界队列的假设演算：未开启同步兜底，起始为空。
+worker_count, queue_capacity = 4, 1024
+mean_ingest_seconds = 0.1
+history_arrivals_per_second = 100
+service_per_second = worker_count / mean_ingest_seconds   # 约40
+backlog_growth_per_second = 100 - 40                      # 约60
+seconds_to_fill = 1024 / 60                               # 约17.1秒
+# 忽略启动瞬间、时延波动和失败，不能作为告警阈值或容量测试结果。
+```
+
+队列限制的是等待任务数，不限制每项历史长度，也不替前端做入站限流。队满时默认丢弃历史任务并放行latch；开启同步兜底则把等待移回召回协程，可能增加在途HTTP数和推荐延迟。仅增加队列容量会让更多任务及其历史驻留、更晚得到处理，不提高worker的处理速度。
+
+这类积压还可能超出原请求生命周期：当前队列任务未携带前端取消，旧请求结束后仍可能发ingest、写入用户级KV。操作系统无法知道这次历史计算是否已失去业务意义，需要应用决定过期丢弃、取消传播、同用户顺序及容量策略。
+
+### 6.3 内存与网络：哪些数据随等待保留
+
+```text
+Q = 排队的ingest任务数；H = 每任务平均历史项数
+队列中两组int64数组的有效数据至少为 Q × H × (8+8) 字节
+  # item_ids与timestamps；还没算slice容量、任务对象、用户ID和latch。
+
+进程活跃内存约由以下部分组成：
+  Provider常驻缓存
+  + 在途请求各自的User、Item、特征、序列化缓冲
+  + 队列与worker持有的ingest任务
+  + Go协程栈、OS线程栈、原生客户端内存及连接缓冲
+  # 分项统计时排除共享指针的重复计数；这不是RSS的精确加法公式。
+
+出站应用字节率 = 各方法实际调用率 × 该方法平均请求/响应字节数，再求和
+  # TCP/TLS开销、重传另计；不能用RPC次数代替带宽。
+```
+
+默认召回channel传递物品指针，并未复制整份特征，但会让其继续存活到消费者释放引用。默认Rank准备多个批次，各批保留Item列表和算法输入直到回填；更多候选或算法增加序列化与结果容器。当前Provider后备JSON全量装入内存，Kafka缓存也未设置淘汰上限；这部分不随请求结束释放。[Provider缓存](assets/source_snapshots/pairec4tigerllm_8506/services/feature/provider.go.html#L108)、[Kafka写入](assets/source_snapshots/pairec4tigerllm_8506/services/feature/consumer.go.html#L160)
+
+同步CGO同时保留Go对象、C/C++副本和调用线程；调用变慢时，这些资源的驻留时间增加。Go heap不能覆盖原生堆和线程栈，RSS与Go heap之间的差额也不能全部认定为泄漏。复制、分配及GC的CPU成本与网络等待应分开测量。
+
+### 6.4 操作系统诉求与应用职责分开验收
+
+| 从哪条执行路径观察 | 对操作系统／运行时的资源诉求 | 应用自身必须完成的工作与观测 |
 |---|---|---|
-| CPU 与可运行任务 | 编解码、C/Go 字符串复制、历史解析、候选哈希去重和排序；多请求争用 Go 与原生线程 | CPU profile、trace中的可运行等待、容器CPU节流、Go／原生分别占用多少 |
-| I/O 与工作队列 | 三路取最慢必需分支；历史 worker 被长 ingest 占用；首次 Provider 全文件读取 | 阶段起止、队列长度及排队时间、队满次数；首请求与缓存命中分开 |
-| 同步与共享状态 | channel、WaitGroup、请求属性锁、算法注册表锁；唤醒后仍可能排队 | block／mutex profile及调用栈；不把正常等待远端误判为锁热点 |
-| Go 与原生内存 | 在途请求、候选、特征、JSON字节、复制缓冲、协程栈；Provider全量缓存和队列 | RSS与Go heap、分配速率、GC时间、队列字节、缓存用户数；差值不全是泄漏 |
-| 网络与连接 | 字节随历史长、候选数、向量维度增长；连接复用和在途上限影响等待 | 分方法请求数及字节、连接创建/复用、错误与超时；远端耗时与本地等待分开 |
-| 原生调用线程 | 同步CGO调用在途时间增加，调用线程停留原生栈；bRPC运行时也用CPU和内存 | OS线程数、CGO次数和耗时、原生栈采样；不能只看goroutine数 |
+| 召回、Rank结果集中返回 | 调度可运行协程与线程；提供CPU配额和公平的执行机会 | 限制实际扇出；记录响应到达至结果消费的时间；用trace区分可运行排队和后端等待 |
+| JSON、特征复制、分数回填、排序 | CPU时间、内存分配与带宽 | 控制候选、字段和批次字节；用CPU/分配profile确认热点，不能假定当前50候选必然受排序限制 |
+| HTTP及原生bRPC等待 | 网络就绪通知、连接缓冲、线程与文件描述符资源 | 连接复用、在途上限、阶段期限和取消；记录连接等待、调用字节及错误，不用“增加线程”替代容量设计 |
+| Provider首次读取及常驻缓存 | 文件读取、页缓存、内存容量 | 记录冷加载时间及缓存大小；决定装载时机、失败处理与淘汰；不能让OS推断哪些用户记录可丢弃 |
+| channel、WaitGroup、latch及短锁 | 高效等待与唤醒；唤醒后的调度 | 保证结果交接、计数、成功状态和所有权正确；block/mutex profile定位具体等待点 |
+| 慢下游、高并发、前端断连 | 可观测的CPU节流、线程数、RSS及网络状态 | 有界接纳和队列、过期任务处置、停止无用调用、安全释放原生内存；测请求结束后的剩余工作 |
 
-去重通常随输入候选总数线性增长，排序开销随候选数增加。目标候选上限为 50，没有依据声称某个复杂重排算法已成为瓶颈，也不加入放大压力的额外循环。
+每次验证固定版本、历史长度、召回数、批大小、算法数、候选数、请求率及队列配置；至少记录 `request_id, stage, enqueue_at, start_at, rpc_done_at, consumed_at, result_status`。这些是**建议新增或统一的观测字段**：分别计算排队、调用、结果等待消费时间，不声称现有代码已全部埋点。不能用客户端总时长减模型计算时长直接推算网络时延。
 
-验证时固定版本、历史长度、三路预算、候选数、请求并发和历史队列配置，关联同一 `request_id` 下的阶段事件。用 Go 的 CPU／heap／goroutine／block／mutex profile、执行 trace 与进程级原生采样区分计算、等待、调度和内存；工具作用及观测开销见 [Go 官方诊断说明](https://go.dev/doc/diagnostics)。本轮没有运行压测，仍需实测各阶段延迟分布、线程增长、队满阈值、内存峰值和取消后的回收时间。
+Go的CPU／heap／goroutine／block／mutex profile和执行trace负责解释Go侧，进程及原生采样补充CGO、bRPC线程和内存，工具作用与观测开销见[官方诊断说明](https://go.dev/doc/diagnostics)。本轮未运行压测；各阶段延迟分布、调度等待、队满阈值、线程增长、内存峰值及取消后的回收时间仍须实测。

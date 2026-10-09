@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant P as PaiRec
+    participant F as 特征服务
+    participant G as 生成服务
+    P->>F: 历史物品ID查询SID，release=A
+    F-->>P: SID列表，sid_version=S
+    P->>G: 使用A和S的历史SID
+    G->>G: 实际生成输出SID
+    G->>F: 按输出SID反查物品，仍固定A和S
+    alt 版本一致且查询成功
+        F-->>G: 每个SID的物品列表及缺失状态
+        G-->>P: 合法原始候选ID
+    else 版本错误或数据库不可用
+        F-->>G: 明确错误
+        G-->>P: 生成阶段失败
+    end

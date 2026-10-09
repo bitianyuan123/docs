@@ -4,14 +4,14 @@ sequenceDiagram
     participant H as 历史计算线程池
     participant PS as 参数服务
     participant DS as DataSystem
-    P->>A: POST /ingest {user_id,item_ids,timestamps}
+    P->>A: POST /ingest：用户1，10项历史及占位序号
     A->>A: 读取与解析；检查两个数组等长
-    A-)H: 异步提交历史任务，保存响应回调
+    A-)H: nearline_pool.add：输入与回调
     Note over A: 接入线程提交后可处理下一连接
-    H->>H: 截取末尾50项、左补0、构造掩码
+    H->>H: NearlineWorker.ingest：10项左补40项，构造掩码
     H->>PS: Lookup(model_version + "/item", padded_ids)
     PS-->>H: 50 × 128 个浮点参数
-    H->>H: 历史编码、C++前向、序列化、计算checksum
+    H->>H: encode_s → 四层K/V → 序列化与checksum
     H->>DS: Set(user_model_key, payload)
     DS-->>H: 写入状态
     H->>A: 调用done回调：accepted及计时

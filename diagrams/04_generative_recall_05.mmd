@@ -1,8 +1,17 @@
-flowchart TD
-    H[用户1的10项真实历史ID] --> M[特征服务查询实际SID]
-    M --> Q{存在可用的模型历史}
-    Q -->|否| E[明确空历史或失败]
-    Q -->|是| G[TRT执行真实生成]
-    G --> R[特征服务按生成SID反查物品列表]
-    R --> D[按稳定次序展开并去重]
-    D --> C[返回实际候选，允许不足topk]
+flowchart LR
+    subgraph PP[Pod：推荐编排]
+        P[容器：PaiRec<br/>进程：推荐程序]
+    end
+    subgraph GP[Pod：生成式召回]
+        G[容器：生成服务<br/>进程：brpc_inference_server<br/>内含 TRT Executor]
+    end
+    subgraph FP[Pod：特征服务]
+        F[容器：特征服务<br/>进程：特征查询程序]
+    end
+    subgraph WP[Pod 类型：模型缓存]
+        K[容器：DataSystem worker<br/>进程：worker]
+    end
+    P <-->|bRPC| G
+    P <-->|特征RPC| F
+    G <-->|编码反查RPC| F
+    G <-->|SDK连接| K

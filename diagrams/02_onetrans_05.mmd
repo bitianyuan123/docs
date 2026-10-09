@@ -1,30 +1,19 @@
-flowchart TB
-    subgraph Gateway[Pod：网关]
-        N[容器：Nginx<br/>进程：master与worker]
+sequenceDiagram
+    participant B as 攒批线程
+    participant C as C++计算池线程
+    participant Y as Python桥线程及队列
+    participant R as HTTP响应代码
+    alt 桥可用且接收批次
+        B-)Y: submit：移动BridgeBatch，入队并通知
+        Y->>Y: 取批后解锁；取得GIL；调用score_batch
+        Y->>Y: 得到输出bytes，正常释放GIL
+        Y->>R: on_ok → fill_outcomes → 逐请求done
+        R->>R: 首输出sigmoid，写原HTTP连接并关闭
+        R-->>Y: 回调返回，才继续取下一批
+    else 桥未启用、不可用或拒绝提交
+        B-)C: compute_pool.add：保留命中ctx列表
+        C->>C: 历史反序列化、拼接、score_ns_batch
+        C->>R: fill_outcomes → 逐请求done
+        R->>R: 首输出sigmoid，写原HTTP连接并关闭
+        R-->>C: 回调返回，本批任务结束
     end
-    subgraph Orchestrator[Pod：推荐编排]
-        P[容器：PaiRec<br/>进程：推荐程序<br/>内含历史提供器]
-    end
-    subgraph History[Pod：历史计算]
-        H[容器：OneTrans<br/>进程：onetrans_server]
-    end
-    subgraph Candidate[Pod：候选打分]
-        R[容器：OneTrans<br/>进程：onetrans_server]
-    end
-    subgraph Parameter[Pod：模型参数服务]
-        PS[容器：参数服务<br/>进程：embedding_server]
-    end
-    subgraph Worker[Pod：DataSystem worker]
-        W[容器：DataSystem<br/>进程：datasystem_worker]
-    end
-    subgraph Metadata[Pod：DataSystem元数据]
-        E[容器：etcd<br/>进程：etcd]
-    end
-    N <-->|HTTP| P
-    P <-->|HTTP ingest| H
-    P <-->|HTTP rank| R
-    H <-->|参数连接| PS
-    R <-->|参数连接| PS
-    H <-->|历史状态连接| W
-    R <-->|历史状态连接| W
-    W <-->|集群元数据连接| E

@@ -30,6 +30,8 @@
 
 并发分析另核对了官方 v2.6.2 模块归档，保存[主编排源码](assets/source_snapshots/pairec_v2.6.2/service/user_recommend.go.html#L45)及相关依赖快照；当前工程内的 vendor 可能带项目改动，不与干净上游混用。用户提供的前期 PaiRec 分析用作线索，线程与调度结论按当前证据重新判断。
 
+Redis 内部机制采用官方 **7.2.5 固定标签**作为参考，未将它指定为部署版本。事件、网络、数据库和后台任务的原始文件及 [COPYING 许可](assets/source_snapshots/redis_7.2.5/COPYING.html)随仓库保存；下载源为官方 `redis/redis` 仓库对应标签，逐文件 URL、原文与快照摘要见[来源清单](assets/source_snapshots/manifest.json)。这些证据只支持明确版本下的函数链与同步机制，不证明实际集群的线程或持久化配置。
+
 | 需要辨清的事实 | 源码证据及意义 |
 |---|---|
 | 已有用户特征前置接线 | [注册位置](assets/source_snapshots/pairec_sh/pairec-demo/src/dao/feature_brpc_redis_dao.go.html#L252)，不能再说完全没前置；也不能据此说独立特征服务已完成 |
@@ -81,7 +83,9 @@ verify_history_consistency_failure_paths_and_resource_bounds()
 
 当前 `/rank` 对外是 sigmoid 后的分数，不是 `/score` 的两列 logits。验收脚本应针对真实接口取证；需要的观测若当前响应没有，就从日志或必要的后续观测改造取得，不能在文档里虚构字段。精排 `0.5` 也可能是合法模型输出，因此不能只按数值判断 miss；必须结合实际执行记录。
 
-负载分析见 [PaiRec](03_pairec_orchestration.md)、[OneTrans](02_onetrans.md)和 [Redis](11_redis_workload.md)。确定瓶颈前，应固定源码与运行库版本、启用后端、容器配额、历史长度、候选数量和载荷字节，同一采样窗口关联阶段等待、CPU 时间、调度限流、内存与网络/磁盘 I/O。本文给出源码机制与测量方法，尚无这套目标系统的吞吐、延迟分位或瓶颈排名。
+负载分析见 [PaiRec](03_pairec_orchestration.md)、[OneTrans](02_onetrans.md)、[Redis](11_redis_workload.md)及[生成召回](04_generative_recall.md)。确定瓶颈前，应固定源码与运行库版本、启用后端、容器配额、历史长度、候选数量和载荷字节，同一采样窗口关联阶段等待、CPU 时间、调度限流、内存与网络/磁盘 I/O。本文给出源码机制与测量方法，尚无这套目标系统的吞吐、延迟分位或瓶颈排名。
+
+负载证据应能回答一条完整因果链：哪种输入增加了哪段代码的工作，数据在哪个队列或对象里停留，等待结束由谁触发，CPU、内存或 I/O 指标是否与此同步变化。请求数、候选行数、模型采样数、Redis 命令数和 socket 数分别计量；例如生成服务在 topk 截取前先枚举编码组合、OneTrans 按请求攒批却按候选行计算，不能只按最终返回条数估算内部工作量。
 
 ## 5. 文档审阅与验证范围
 

@@ -1,12 +1,16 @@
-flowchart LR
-    subgraph PP[Pod：推荐编排]
-        P[容器：PaiRec<br/>进程：推荐程序<br/>Go运行时与原生客户端库]
-    end
-    subgraph FP[Pod：特征服务]
-        F[容器：特征服务<br/>进程：特征查询程序]
-    end
-    subgraph RP[Pod：特征数据库]
-        R[容器：Redis<br/>进程：redis-server]
-    end
-    P <-->|bRPC| F
-    F <-->|Redis RESP| R
+sequenceDiagram
+    participant G as Go调用任务
+    participant C as C接口与C++客户端
+    participant B as 同进程bRPC运行库
+    participant R as 外部Redis
+    G->>G: CString复制key
+    G->>C: Clis_RedisGet(key)
+    C->>C: std::string、RedisRequest和独立Controller
+    C->>B: CallMethod(request,response,done=NULL)
+    B->>R: GET key
+    Note over G,C: 调用尚未返回<br/>原生线程留在C调用栈<br/>其他Go任务仍可调度
+    R-->>B: RESP String
+    B-->>C: 调用终态；response可读
+    C->>C: 提取value，strdup分配结果
+    C-->>G: 返回码0及C指针
+    G->>G: GoString复制；释放C结果和key

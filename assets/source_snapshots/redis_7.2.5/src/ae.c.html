@@ -1,0 +1,512 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>redis_7.2.5/src/ae.c</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>redis_7.2.5/src/ae.c</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Redis 7.2.5 固定标签，仅作机制参考，非部署版本；许可见根目录 COPYING.html。</p><p>来源版本：<code>官方参考版本 7.2.5</code><br>原文件 SHA256：<code>7b38b632421cf205a244c1ad1a75f423205d5bf22b320b9160932aecf529340a</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>/* A simple event-driven programming library. Originally I wrote this code</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a> * for the Jim&#x27;s event-loop (Jim is a Tcl interpreter) but later translated</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a> * it in form of a library for easy reuse.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a> *</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a> * Copyright (c) 2006-2010, Salvatore Sanfilippo &lt;antirez at gmail dot com&gt;</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a> * All rights reserved.</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a> *</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a> * Redistribution and use in source and binary forms, with or without</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a> * modification, are permitted provided that the following conditions are met:</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a> *</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a> *   * Redistributions of source code must retain the above copyright notice,</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a> *     this list of conditions and the following disclaimer.</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a> *   * Redistributions in binary form must reproduce the above copyright</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a> *     notice, this list of conditions and the following disclaimer in the</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a> *     documentation and/or other materials provided with the distribution.</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a> *   * Neither the name of Redis nor the names of its contributors may be used</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a> *     to endorse or promote products derived from this software without</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a> *     specific prior written permission.</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a> *</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a> * POSSIBILITY OF SUCH DAMAGE.</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a> */</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>#include &quot;ae.h&quot;</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>#include &quot;anet.h&quot;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a>#include &quot;redisassert.h&quot;</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a></span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a>#include &lt;stdio.h&gt;</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a>#include &lt;sys/time.h&gt;</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a>#include &lt;sys/types.h&gt;</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>#include &lt;unistd.h&gt;</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>#include &lt;stdlib.h&gt;</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>#include &lt;poll.h&gt;</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>#include &lt;string.h&gt;</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>#include &lt;time.h&gt;</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>#include &lt;errno.h&gt;</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a></span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>#include &quot;zmalloc.h&quot;</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>#include &quot;config.h&quot;</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a></span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>/* Include the best multiplexing layer supported by this system.</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a> * The following should be ordered by performances, descending. */</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>#ifdef HAVE_EVPORT</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a>#include &quot;ae_evport.c&quot;</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>#else</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a>    #ifdef HAVE_EPOLL</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a>    #include &quot;ae_epoll.c&quot;</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a>    #else</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a>        #ifdef HAVE_KQUEUE</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a>        #include &quot;ae_kqueue.c&quot;</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a>        #else</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a>        #include &quot;ae_select.c&quot;</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a>        #endif</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>    #endif</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>#endif</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a></span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a></span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>aeEventLoop *aeCreateEventLoop(int setsize) {</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    aeEventLoop *eventLoop;</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    int i;</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a></span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>    monotonicInit();    /* just in case the calling app didn&#x27;t initialize */</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a></span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>    if ((eventLoop = zmalloc(sizeof(*eventLoop))) == NULL) goto err;</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>    eventLoop-&gt;events = zmalloc(sizeof(aeFileEvent)*setsize);</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    eventLoop-&gt;fired = zmalloc(sizeof(aeFiredEvent)*setsize);</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    if (eventLoop-&gt;events == NULL || eventLoop-&gt;fired == NULL) goto err;</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    eventLoop-&gt;setsize = setsize;</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    eventLoop-&gt;timeEventHead = NULL;</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>    eventLoop-&gt;timeEventNextId = 0;</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a>    eventLoop-&gt;stop = 0;</span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>    eventLoop-&gt;maxfd = -1;</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>    eventLoop-&gt;beforesleep = NULL;</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>    eventLoop-&gt;aftersleep = NULL;</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>    eventLoop-&gt;flags = 0;</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    if (aeApiCreate(eventLoop) == -1) goto err;</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    /* Events with mask == AE_NONE are not set. So let&#x27;s initialize the</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>     * vector with it. */</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a>    for (i = 0; i &lt; setsize; i++)</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>        eventLoop-&gt;events[i].mask = AE_NONE;</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    return eventLoop;</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a></span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>err:</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    if (eventLoop) {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>        zfree(eventLoop-&gt;events);</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>        zfree(eventLoop-&gt;fired);</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>        zfree(eventLoop);</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    }</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>    return NULL;</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>}</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a></span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>/* Return the current set size. */</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>int aeGetSetSize(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    return eventLoop-&gt;setsize;</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>}</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a></span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>/*</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a> * Tell the event processing to change the wait timeout as soon as possible.</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a> *</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a> * Note: it just means you turn on/off the global AE_DONT_WAIT.</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a> */</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a>void aeSetDontWait(aeEventLoop *eventLoop, int noWait) {</span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>    if (noWait)</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>        eventLoop-&gt;flags |= AE_DONT_WAIT;</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>    else</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a>        eventLoop-&gt;flags &amp;= ~AE_DONT_WAIT;</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>}</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a></span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>/* Resize the maximum set size of the event loop.</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a> * If the requested set size is smaller than the current set size, but</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a> * there is already a file descriptor in use that is &gt;= the requested</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a> * set size minus one, AE_ERR is returned and the operation is not</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a> * performed at all.</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a> *</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a> * Otherwise AE_OK is returned and the operation is successful. */</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>int aeResizeSetSize(aeEventLoop *eventLoop, int setsize) {</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    int i;</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a></span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    if (setsize == eventLoop-&gt;setsize) return AE_OK;</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>    if (eventLoop-&gt;maxfd &gt;= setsize) return AE_ERR;</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>    if (aeApiResize(eventLoop,setsize) == -1) return AE_ERR;</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a></span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    eventLoop-&gt;events = zrealloc(eventLoop-&gt;events,sizeof(aeFileEvent)*setsize);</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>    eventLoop-&gt;fired = zrealloc(eventLoop-&gt;fired,sizeof(aeFiredEvent)*setsize);</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>    eventLoop-&gt;setsize = setsize;</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a></span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>    /* Make sure that if we created new slots, they are initialized with</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>     * an AE_NONE mask. */</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>    for (i = eventLoop-&gt;maxfd+1; i &lt; setsize; i++)</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>        eventLoop-&gt;events[i].mask = AE_NONE;</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>    return AE_OK;</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>}</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a></span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>void aeDeleteEventLoop(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>    aeApiFree(eventLoop);</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>    zfree(eventLoop-&gt;events);</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>    zfree(eventLoop-&gt;fired);</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a></span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>    /* Free the time events list. */</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>    aeTimeEvent *next_te, *te = eventLoop-&gt;timeEventHead;</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>    while (te) {</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a>        next_te = te-&gt;next;</span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>        zfree(te);</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>        te = next_te;</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>    }</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>    zfree(eventLoop);</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>}</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a></span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>void aeStop(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>    eventLoop-&gt;stop = 1;</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>}</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a></span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>        aeFileProc *proc, void *clientData)</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>{</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>    if (fd &gt;= eventLoop-&gt;setsize) {</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>        errno = ERANGE;</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>        return AE_ERR;</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>    }</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>    aeFileEvent *fe = &amp;eventLoop-&gt;events[fd];</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a></span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>    if (aeApiAddEvent(eventLoop, fd, mask) == -1)</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>        return AE_ERR;</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>    fe-&gt;mask |= mask;</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    if (mask &amp; AE_READABLE) fe-&gt;rfileProc = proc;</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>    if (mask &amp; AE_WRITABLE) fe-&gt;wfileProc = proc;</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>    fe-&gt;clientData = clientData;</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>    if (fd &gt; eventLoop-&gt;maxfd)</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>        eventLoop-&gt;maxfd = fd;</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>    return AE_OK;</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>}</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a></span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>{</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>    if (fd &gt;= eventLoop-&gt;setsize) return;</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>    aeFileEvent *fe = &amp;eventLoop-&gt;events[fd];</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>    if (fe-&gt;mask == AE_NONE) return;</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a></span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>    /* We want to always remove AE_BARRIER if set when AE_WRITABLE</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>     * is removed. */</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>    if (mask &amp; AE_WRITABLE) mask |= AE_BARRIER;</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a></span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>    aeApiDelEvent(eventLoop, fd, mask);</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>    fe-&gt;mask = fe-&gt;mask &amp; (~mask);</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>    if (fd == eventLoop-&gt;maxfd &amp;&amp; fe-&gt;mask == AE_NONE) {</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a>        /* Update the max fd */</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>        int j;</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a></span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>        for (j = eventLoop-&gt;maxfd-1; j &gt;= 0; j--)</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>            if (eventLoop-&gt;events[j].mask != AE_NONE) break;</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>        eventLoop-&gt;maxfd = j;</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a>    }</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>}</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a></span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a>void *aeGetFileClientData(aeEventLoop *eventLoop, int fd) {</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>    if (fd &gt;= eventLoop-&gt;setsize) return NULL;</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>    aeFileEvent *fe = &amp;eventLoop-&gt;events[fd];</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>    if (fe-&gt;mask == AE_NONE) return NULL;</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a></span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>    return fe-&gt;clientData;</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>}</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a></span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>int aeGetFileEvents(aeEventLoop *eventLoop, int fd) {</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>    if (fd &gt;= eventLoop-&gt;setsize) return 0;</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>    aeFileEvent *fe = &amp;eventLoop-&gt;events[fd];</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a></span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>    return fe-&gt;mask;</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>}</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a></span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>long long aeCreateTimeEvent(aeEventLoop *eventLoop, long long milliseconds,</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>        aeTimeProc *proc, void *clientData,</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>        aeEventFinalizerProc *finalizerProc)</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>{</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>    long long id = eventLoop-&gt;timeEventNextId++;</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>    aeTimeEvent *te;</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a></span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>    te = zmalloc(sizeof(*te));</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>    if (te == NULL) return AE_ERR;</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>    te-&gt;id = id;</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>    te-&gt;when = getMonotonicUs() + milliseconds * 1000;</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>    te-&gt;timeProc = proc;</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>    te-&gt;finalizerProc = finalizerProc;</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>    te-&gt;clientData = clientData;</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>    te-&gt;prev = NULL;</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>    te-&gt;next = eventLoop-&gt;timeEventHead;</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>    te-&gt;refcount = 0;</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>    if (te-&gt;next)</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>        te-&gt;next-&gt;prev = te;</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>    eventLoop-&gt;timeEventHead = te;</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>    return id;</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>}</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a></span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>int aeDeleteTimeEvent(aeEventLoop *eventLoop, long long id)</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>{</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>    aeTimeEvent *te = eventLoop-&gt;timeEventHead;</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>    while(te) {</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>        if (te-&gt;id == id) {</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>            te-&gt;id = AE_DELETED_EVENT_ID;</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>            return AE_OK;</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>        }</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>        te = te-&gt;next;</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>    }</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>    return AE_ERR; /* NO event with the specified ID found */</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>}</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a></span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>/* How many microseconds until the first timer should fire.</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a> * If there are no timers, -1 is returned.</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a> *</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a> * Note that&#x27;s O(N) since time events are unsorted.</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a> * Possible optimizations (not needed by Redis so far, but...):</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a> * 1) Insert the event in order, so that the nearest is just the head.</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a> *    Much better but still insertion or deletion of timers is O(N).</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a> * 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a> */</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>static int64_t usUntilEarliestTimer(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>    aeTimeEvent *te = eventLoop-&gt;timeEventHead;</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>    if (te == NULL) return -1;</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a></span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>    aeTimeEvent *earliest = NULL;</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>    while (te) {</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>        if ((!earliest || te-&gt;when &lt; earliest-&gt;when) &amp;&amp; te-&gt;id != AE_DELETED_EVENT_ID)</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>            earliest = te;</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>        te = te-&gt;next;</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>    }</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a></span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>    monotime now = getMonotonicUs();</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>    return (now &gt;= earliest-&gt;when) ? 0 : earliest-&gt;when - now;</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>}</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a></span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>/* Process time events */</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>static int processTimeEvents(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>    int processed = 0;</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>    aeTimeEvent *te;</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>    long long maxId;</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a></span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>    te = eventLoop-&gt;timeEventHead;</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>    maxId = eventLoop-&gt;timeEventNextId-1;</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>    monotime now = getMonotonicUs();</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>    while(te) {</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>        long long id;</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a></span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>        /* Remove events scheduled for deletion. */</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a>        if (te-&gt;id == AE_DELETED_EVENT_ID) {</span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>            aeTimeEvent *next = te-&gt;next;</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>            /* If a reference exists for this timer event,</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>             * don&#x27;t free it. This is currently incremented</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>             * for recursive timerProc calls */</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>            if (te-&gt;refcount) {</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>                te = next;</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>                continue;</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>            }</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>            if (te-&gt;prev)</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>                te-&gt;prev-&gt;next = te-&gt;next;</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>            else</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>                eventLoop-&gt;timeEventHead = te-&gt;next;</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>            if (te-&gt;next)</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>                te-&gt;next-&gt;prev = te-&gt;prev;</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>            if (te-&gt;finalizerProc) {</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>                te-&gt;finalizerProc(eventLoop, te-&gt;clientData);</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>                now = getMonotonicUs();</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>            }</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>            zfree(te);</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a>            te = next;</span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>            continue;</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>        }</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a></span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>        /* Make sure we don&#x27;t process time events created by time events in</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>         * this iteration. Note that this check is currently useless: we always</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>         * add new timers on the head, however if we change the implementation</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>         * detail, this check may be useful again: we keep it here for future</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>         * defense. */</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>        if (te-&gt;id &gt; maxId) {</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>            te = te-&gt;next;</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>            continue;</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>        }</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a></span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>        if (te-&gt;when &lt;= now) {</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>            int retval;</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a></span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>            id = te-&gt;id;</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>            te-&gt;refcount++;</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>            retval = te-&gt;timeProc(eventLoop, id, te-&gt;clientData);</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>            te-&gt;refcount--;</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>            processed++;</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>            now = getMonotonicUs();</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>            if (retval != AE_NOMORE) {</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>                te-&gt;when = now + (monotime)retval * 1000;</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>            } else {</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>                te-&gt;id = AE_DELETED_EVENT_ID;</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>            }</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>        }</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>        te = te-&gt;next;</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>    }</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>    return processed;</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>}</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a></span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a>/* Process every pending time event, then every pending file event</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a> * (that may be registered by time event callbacks just processed).</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a> * Without special flags the function sleeps until some file event</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a> * fires, or when the next time event occurs (if any).</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a> *</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a> * If flags is 0, the function does nothing and returns.</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a> * if flags has AE_ALL_EVENTS set, all the kind of events are processed.</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a> * if flags has AE_FILE_EVENTS set, file events are processed.</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a> * if flags has AE_TIME_EVENTS set, time events are processed.</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a> * if flags has AE_DONT_WAIT set, the function returns ASAP once all</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a> * the events that can be handled without a wait are processed.</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a> * if flags has AE_CALL_AFTER_SLEEP set, the aftersleep callback is called.</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a> * if flags has AE_CALL_BEFORE_SLEEP set, the beforesleep callback is called.</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a> *</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a> * The function returns the number of events processed. */</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>int aeProcessEvents(aeEventLoop *eventLoop, int flags)</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>{</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>    int processed = 0, numevents;</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a></span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a>    /* Nothing to do? return ASAP */</span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>    if (!(flags &amp; AE_TIME_EVENTS) &amp;&amp; !(flags &amp; AE_FILE_EVENTS)) return 0;</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a></span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>    /* Note that we want to call aeApiPoll() even if there are no</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a>     * file events to process as long as we want to process time</span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>     * events, in order to sleep until the next time event is ready</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a>     * to fire. */</span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>    if (eventLoop-&gt;maxfd != -1 ||</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>        ((flags &amp; AE_TIME_EVENTS) &amp;&amp; !(flags &amp; AE_DONT_WAIT))) {</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a>        int j;</span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>        struct timeval tv, *tvp = NULL; /* NULL means infinite wait. */</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>        int64_t usUntilTimer;</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a></span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a>        if (eventLoop-&gt;beforesleep != NULL &amp;&amp; (flags &amp; AE_CALL_BEFORE_SLEEP))</span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>            eventLoop-&gt;beforesleep(eventLoop);</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a></span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>        /* The eventLoop-&gt;flags may be changed inside beforesleep.</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>         * So we should check it after beforesleep be called. At the same time,</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>         * the parameter flags always should have the highest priority.</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a>         * That is to say, once the parameter flag is set to AE_DONT_WAIT,</span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>         * no matter what value eventLoop-&gt;flags is set to, we should ignore it. */</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>        if ((flags &amp; AE_DONT_WAIT) || (eventLoop-&gt;flags &amp; AE_DONT_WAIT)) {</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a>            tv.tv_sec = tv.tv_usec = 0;</span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>            tvp = &amp;tv;</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>        } else if (flags &amp; AE_TIME_EVENTS) {</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>            usUntilTimer = usUntilEarliestTimer(eventLoop);</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>            if (usUntilTimer &gt;= 0) {</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>                tv.tv_sec = usUntilTimer / 1000000;</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>                tv.tv_usec = usUntilTimer % 1000000;</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a>                tvp = &amp;tv;</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>            }</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>        }</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>        /* Call the multiplexing API, will return only on timeout or when</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>         * some event fires. */</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>        numevents = aeApiPoll(eventLoop, tvp);</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a></span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>        /* Don&#x27;t process file events if not requested. */</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>        if (!(flags &amp; AE_FILE_EVENTS)) {</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a>            numevents = 0;</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>        }</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a></span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>        /* After sleep callback. */</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>        if (eventLoop-&gt;aftersleep != NULL &amp;&amp; flags &amp; AE_CALL_AFTER_SLEEP)</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>            eventLoop-&gt;aftersleep(eventLoop);</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a></span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>        for (j = 0; j &lt; numevents; j++) {</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>            int fd = eventLoop-&gt;fired[j].fd;</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>            aeFileEvent *fe = &amp;eventLoop-&gt;events[fd];</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>            int mask = eventLoop-&gt;fired[j].mask;</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>            int fired = 0; /* Number of events fired for current fd. */</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a></span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>            /* Normally we execute the readable event first, and the writable</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>             * event later. This is useful as sometimes we may be able</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>             * to serve the reply of a query immediately after processing the</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a>             * query.</span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>             *</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>             * However if AE_BARRIER is set in the mask, our application is</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>             * asking us to do the reverse: never fire the writable event</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>             * after the readable. In such a case, we invert the calls.</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>             * This is useful when, for instance, we want to do things</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>             * in the beforeSleep() hook, like fsyncing a file to disk,</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>             * before replying to a client. */</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>            int invert = fe-&gt;mask &amp; AE_BARRIER;</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a></span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>            /* Note the &quot;fe-&gt;mask &amp; mask &amp; ...&quot; code: maybe an already</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a>             * processed event removed an element that fired and we still</span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>             * didn&#x27;t processed, so we check if the event is still valid.</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>             *</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>             * Fire the readable event if the call sequence is not</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>             * inverted. */</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>            if (!invert &amp;&amp; fe-&gt;mask &amp; mask &amp; AE_READABLE) {</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>                fe-&gt;rfileProc(eventLoop,fd,fe-&gt;clientData,mask);</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a>                fired++;</span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>                fe = &amp;eventLoop-&gt;events[fd]; /* Refresh in case of resize. */</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>            }</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a></span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a>            /* Fire the writable event. */</span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>            if (fe-&gt;mask &amp; mask &amp; AE_WRITABLE) {</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>                if (!fired || fe-&gt;wfileProc != fe-&gt;rfileProc) {</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>                    fe-&gt;wfileProc(eventLoop,fd,fe-&gt;clientData,mask);</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>                    fired++;</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a>                }</span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>            }</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a></span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a>            /* If we have to invert the call, fire the readable event now</span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>             * after the writable one. */</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>            if (invert) {</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>                fe = &amp;eventLoop-&gt;events[fd]; /* Refresh in case of resize. */</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>                if ((fe-&gt;mask &amp; mask &amp; AE_READABLE) &amp;&amp;</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a>                    (!fired || fe-&gt;wfileProc != fe-&gt;rfileProc))</span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>                {</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>                    fe-&gt;rfileProc(eventLoop,fd,fe-&gt;clientData,mask);</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>                    fired++;</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>                }</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>            }</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a></span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>            processed++;</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a>        }</span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>    }</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>    /* Check time events */</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>    if (flags &amp; AE_TIME_EVENTS)</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a>        processed += processTimeEvents(eventLoop);</span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a></span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>    return processed; /* return the number of processed file/time events */</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>}</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a></span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a>/* Wait for milliseconds until the given file descriptor becomes</span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a> * writable/readable/exception */</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>int aeWait(int fd, int mask, long long milliseconds) {</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a>    struct pollfd pfd;</span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a>    int retmask = 0, retval;</span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a></span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>    memset(&amp;pfd, 0, sizeof(pfd));</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>    pfd.fd = fd;</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>    if (mask &amp; AE_READABLE) pfd.events |= POLLIN;</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>    if (mask &amp; AE_WRITABLE) pfd.events |= POLLOUT;</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a></span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a>    if ((retval = poll(&amp;pfd, 1, milliseconds))== 1) {</span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>        if (pfd.revents &amp; POLLIN) retmask |= AE_READABLE;</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>        if (pfd.revents &amp; POLLOUT) retmask |= AE_WRITABLE;</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>        if (pfd.revents &amp; POLLERR) retmask |= AE_WRITABLE;</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a>        if (pfd.revents &amp; POLLHUP) retmask |= AE_WRITABLE;</span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>        return retmask;</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>    } else {</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>        return retval;</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a>    }</span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>}</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a></span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>void aeMain(aeEventLoop *eventLoop) {</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>    eventLoop-&gt;stop = 0;</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>    while (!eventLoop-&gt;stop) {</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>        aeProcessEvents(eventLoop, AE_ALL_EVENTS|</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>                                   AE_CALL_BEFORE_SLEEP|</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>                                   AE_CALL_AFTER_SLEEP);</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>    }</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>}</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a></span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>char *aeGetApiName(void) {</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>    return aeApiName();</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a>}</span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a></span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a>void aeSetBeforeSleepProc(aeEventLoop *eventLoop, aeBeforeSleepProc *beforesleep) {</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a>    eventLoop-&gt;beforesleep = beforesleep;</span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a>}</span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a></span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>void aeSetAfterSleepProc(aeEventLoop *eventLoop, aeBeforeSleepProc *aftersleep) {</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>    eventLoop-&gt;aftersleep = aftersleep;</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>}</span></pre></html>

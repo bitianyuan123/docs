@@ -1,11 +1,18 @@
-flowchart TD
-    A[HTTP接入线程<br/>解析ID并装配TSV特征] --> L[参数查询线程池<br/>同步Lookup与类别均值]
-    L --> E[编码线程池<br/>数值编码与五组token]
-    E --> K[KV读取线程池<br/>每请求一次Get]
-    K --> Q[攒批队列与单个攒批线程]
-    Q --> M[历史未命中<br/>零logits并直接回调]
-    Q --> B[命中请求拼接候选行<br/>按payload内容去重历史]
-    B -->|桥未启用、不可用<br/>或未接收任务| C[C++计算线程池]
-    B -->|桥可用且接收| Y[Python桥批队列<br/>单个桥线程]
-    C --> R[拆分结果并执行HTTP回调]
-    Y --> R
+sequenceDiagram
+    participant A as HTTP接入线程
+    participant L as 参数查询池线程
+    participant E as 编码池线程
+    participant K as KV池线程
+    participant B as 攒批线程及队列
+    A-)L: lookup_pool.add：共享ctx
+    Note over A: 提交成功后处理下一连接
+    L->>L: lookup_ns：同步查PS、类别均值
+    L-)E: encode_pool.add：共享ctx，含查表结果
+    Note over L: 不等待编码完成，结束本阶段任务
+    E->>E: encode_ns_with → [4,5,128]
+    E-)K: kv_pool.add：共享ctx，移动候选张量
+    K->>K: store.get：等待用户1的历史payload
+    K-)B: 锁内入batch_q，解锁后notify_one
+    Note over K: 入队后结束任务，不等待出批
+    B->>B: take_batch：等首项、满批或窗口超时
+    B->>B: on_batch：处理miss，命中行拼批

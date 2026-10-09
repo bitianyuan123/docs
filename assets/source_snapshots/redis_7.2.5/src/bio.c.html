@@ -1,0 +1,345 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>redis_7.2.5/src/bio.c</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>redis_7.2.5/src/bio.c</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Redis 7.2.5 固定标签，仅作机制参考，非部署版本；许可见根目录 COPYING.html。</p><p>来源版本：<code>官方参考版本 7.2.5</code><br>原文件 SHA256：<code>aae17661db35fdd3a9c346ca17a23999daa4856041be848f9dccfd508ee61319</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>/* Background I/O service for Redis.</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a> *</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a> * This file implements operations that we need to perform in the background.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a> * Currently there is only a single operation, that is a background close(2)</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a> * system call. This is needed as when the process is the last owner of a</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a> * reference to a file closing it means unlinking it, and the deletion of the</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a> * file is slow, blocking the server.</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a> *</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a> * In the future we&#x27;ll either continue implementing new things we need or</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a> * we&#x27;ll switch to libeio. However there are probably long term uses for this</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a> * file as we may want to put here Redis specific background tasks (for instance</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a> * it is not impossible that we&#x27;ll need a non blocking FLUSHDB/FLUSHALL</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a> * implementation).</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a> *</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a> * DESIGN</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a> * ------</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a> *</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a> * The design is simple: We have a structure representing a job to perform,</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a> * and several worker threads and job queues. Every job type is assigned to</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a> * a specific worker thread, and a single worker may handle several different</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a> * job types.</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a> * Every thread waits for new jobs in its queue, and processes every job</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a> * sequentially.</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a> *</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a> * Jobs handled by the same worker are guaranteed to be processed from the</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a> * least-recently-inserted to the most-recently-inserted (older jobs processed</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a> * first).</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a> *</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a> * Currently there is no way for the creator of the job to be notified about</span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a> * the completion of the operation, this will only be added when/if needed.</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a> *</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a> * ----------------------------------------------------------------------------</span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a> *</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a> * Copyright (c) 2009-2012, Salvatore Sanfilippo &lt;antirez at gmail dot com&gt;</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a> * All rights reserved.</span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a> *</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a> * Redistribution and use in source and binary forms, with or without</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a> * modification, are permitted provided that the following conditions are met:</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a> *</span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a> *   * Redistributions of source code must retain the above copyright notice,</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a> *     this list of conditions and the following disclaimer.</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a> *   * Redistributions in binary form must reproduce the above copyright</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a> *     notice, this list of conditions and the following disclaimer in the</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a> *     documentation and/or other materials provided with the distribution.</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a> *   * Neither the name of Redis nor the names of its contributors may be used</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a> *     to endorse or promote products derived from this software without</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a> *     specific prior written permission.</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a> *</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a> * POSSIBILITY OF SUCH DAMAGE.</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a> */</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a></span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a></span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a>#include &quot;server.h&quot;</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a>#include &quot;bio.h&quot;</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a></span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a>static char* bio_worker_title[] = {</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a>    &quot;bio_close_file&quot;,</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a>    &quot;bio_aof&quot;,</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a>    &quot;bio_lazy_free&quot;,</span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>};</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a></span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>#define BIO_WORKER_NUM (sizeof(bio_worker_title) / sizeof(*bio_worker_title))</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a></span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>static unsigned int bio_job_to_worker[] = {</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>    [BIO_CLOSE_FILE] = 0,</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>    [BIO_AOF_FSYNC] = 1,</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>    [BIO_CLOSE_AOF] = 1,</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>    [BIO_LAZY_FREE] = 2,</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>};</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>static pthread_t bio_threads[BIO_WORKER_NUM];</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>static pthread_mutex_t bio_mutex[BIO_WORKER_NUM];</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a>static pthread_cond_t bio_newjob_cond[BIO_WORKER_NUM];</span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>static list *bio_jobs[BIO_WORKER_NUM];</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>static unsigned long bio_jobs_counter[BIO_NUM_OPS] = {0};</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a></span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>/* This structure represents a background Job. It is only used locally to this</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a> * file as the API does not expose the internals at all. */</span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>typedef union bio_job {</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>    struct {</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>        int type; /* Job-type tag. This needs to appear as the first element in all union members. */</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a>    } header;</span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a></span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>    /* Job specific arguments.*/</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    struct {</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a>        int type;</span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>        int fd; /* Fd for file based background jobs */</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a>        long long offset; /* A job-specific offset, if applicable */</span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>        unsigned need_fsync:1; /* A flag to indicate that a fsync is required before</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>                                * the file is closed. */</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>        unsigned need_reclaim_cache:1; /* A flag to indicate that reclaim cache is required before</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>                                * the file is closed. */</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>    } fd_args;</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a></span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>    struct {</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>        int type;</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a>        lazy_free_fn *free_fn; /* Function that will free the provided arguments */</span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>        void *free_args[]; /* List of arguments to be passed to the free function */</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>    } free_args;</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>} bio_job;</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a></span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>void *bioProcessBackgroundJobs(void *arg);</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a></span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>/* Make sure we have enough stack to perform all the things we do in the</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a> * main thread. */</span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>#define REDIS_THREAD_STACK_SIZE (1024*1024*4)</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a></span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>/* Initialize the background system, spawning the thread. */</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>void bioInit(void) {</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>    pthread_attr_t attr;</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>    pthread_t thread;</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>    size_t stacksize;</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>    unsigned long j;</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a></span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>    /* Initialization of state vars and objects */</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    for (j = 0; j &lt; BIO_WORKER_NUM; j++) {</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a>        pthread_mutex_init(&amp;bio_mutex[j],NULL);</span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>        pthread_cond_init(&amp;bio_newjob_cond[j],NULL);</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>        bio_jobs[j] = listCreate();</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>    }</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a></span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    /* Set the stack size as by default it may be small in some system */</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>    pthread_attr_init(&amp;attr);</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>    pthread_attr_getstacksize(&amp;attr,&amp;stacksize);</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>    if (!stacksize) stacksize = 1; /* The world is full of Solaris Fixes */</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>    while (stacksize &lt; REDIS_THREAD_STACK_SIZE) stacksize *= 2;</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>    pthread_attr_setstacksize(&amp;attr, stacksize);</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a></span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>    /* Ready to spawn our threads. We use the single argument the thread</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>     * function accepts in order to pass the job ID the thread is</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>     * responsible for. */</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>    for (j = 0; j &lt; BIO_WORKER_NUM; j++) {</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>        void *arg = (void*)(unsigned long) j;</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>        if (pthread_create(&amp;thread,&amp;attr,bioProcessBackgroundJobs,arg) != 0) {</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>            serverLog(LL_WARNING, &quot;Fatal: Can&#x27;t initialize Background Jobs. Error message: %s&quot;, strerror(errno));</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>            exit(1);</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>        }</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>        bio_threads[j] = thread;</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>    }</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>}</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a></span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>void bioSubmitJob(int type, bio_job *job) {</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a>    job-&gt;header.type = type;</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a>    unsigned long worker = bio_job_to_worker[type];</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a>    pthread_mutex_lock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a>    listAddNodeTail(bio_jobs[worker],job);</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a>    bio_jobs_counter[type]++;</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a>    pthread_cond_signal(&amp;bio_newjob_cond[worker]);</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a>    pthread_mutex_unlock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a>}</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a></span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a>void bioCreateLazyFreeJob(lazy_free_fn free_fn, int arg_count, ...) {</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a>    va_list valist;</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>    /* Allocate memory for the job structure and all required</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>     * arguments */</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>    bio_job *job = zmalloc(sizeof(*job) + sizeof(void *) * (arg_count));</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>    job-&gt;free_args.free_fn = free_fn;</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a></span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a>    va_start(valist, arg_count);</span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>    for (int i = 0; i &lt; arg_count; i++) {</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>        job-&gt;free_args.free_args[i] = va_arg(valist, void *);</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>    }</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>    va_end(valist);</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    bioSubmitJob(BIO_LAZY_FREE, job);</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a>}</span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a></span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a>void bioCreateCloseJob(int fd, int need_fsync, int need_reclaim_cache) {</span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>    bio_job *job = zmalloc(sizeof(*job));</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>    job-&gt;fd_args.fd = fd;</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>    job-&gt;fd_args.need_fsync = need_fsync;</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a>    job-&gt;fd_args.need_reclaim_cache = need_reclaim_cache;</span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a></span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>    bioSubmitJob(BIO_CLOSE_FILE, job);</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>}</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a></span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>void bioCreateCloseAofJob(int fd, long long offset, int need_reclaim_cache) {</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a>    bio_job *job = zmalloc(sizeof(*job));</span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>    job-&gt;fd_args.fd = fd;</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>    job-&gt;fd_args.offset = offset;</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a>    job-&gt;fd_args.need_fsync = 1;</span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>    job-&gt;fd_args.need_reclaim_cache = need_reclaim_cache;</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a></span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>    bioSubmitJob(BIO_CLOSE_AOF, job);</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a>}</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a></span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a>void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache) {</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a>    bio_job *job = zmalloc(sizeof(*job));</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a>    job-&gt;fd_args.fd = fd;</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a>    job-&gt;fd_args.offset = offset;</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a>    job-&gt;fd_args.need_reclaim_cache = need_reclaim_cache;</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a></span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a>    bioSubmitJob(BIO_AOF_FSYNC, job);</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a>}</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a></span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a>void *bioProcessBackgroundJobs(void *arg) {</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a>    bio_job *job;</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a>    unsigned long worker = (unsigned long) arg;</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a>    sigset_t sigset;</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a></span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a>    /* Check that the worker is within the right interval. */</span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>    serverAssert(worker &lt; BIO_WORKER_NUM);</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a></span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>    redis_set_thread_title(bio_worker_title[worker]);</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a></span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a>    redisSetCpuAffinity(server.bio_cpulist);</span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a></span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>    makeThreadKillable();</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a></span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>    pthread_mutex_lock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>    /* Block SIGALRM so we are sure that only the main thread will</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>     * receive the watchdog signal. */</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>    sigemptyset(&amp;sigset);</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>    sigaddset(&amp;sigset, SIGALRM);</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>    if (pthread_sigmask(SIG_BLOCK, &amp;sigset, NULL))</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>        serverLog(LL_WARNING,</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>            &quot;Warning: can&#x27;t mask SIGALRM in bio.c thread: %s&quot;, strerror(errno));</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a></span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>    while(1) {</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>        listNode *ln;</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a></span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>        /* The loop always starts with the lock hold. */</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>        if (listLength(bio_jobs[worker]) == 0) {</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>            pthread_cond_wait(&amp;bio_newjob_cond[worker], &amp;bio_mutex[worker]);</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>            continue;</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>        }</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>        /* Get the job from the queue. */</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>        ln = listFirst(bio_jobs[worker]);</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>        job = ln-&gt;value;</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>        /* It is now possible to unlock the background system as we know have</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>         * a stand alone job structure to process.*/</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>        pthread_mutex_unlock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a></span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>        /* Process the job accordingly to its type. */</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>        int job_type = job-&gt;header.type;</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a></span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>        if (job_type == BIO_CLOSE_FILE) {</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>            if (job-&gt;fd_args.need_fsync &amp;&amp;</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>                redis_fsync(job-&gt;fd_args.fd) == -1 &amp;&amp;</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>                errno != EBADF &amp;&amp; errno != EINVAL)</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>            {</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>                serverLog(LL_WARNING, &quot;Fail to fsync the AOF file: %s&quot;,strerror(errno));</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>            }</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>            if (job-&gt;fd_args.need_reclaim_cache) {</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>                if (reclaimFilePageCache(job-&gt;fd_args.fd, 0, 0) == -1) {</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>                    serverLog(LL_NOTICE,&quot;Unable to reclaim page cache: %s&quot;, strerror(errno));</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>                }</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>            }</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>            close(job-&gt;fd_args.fd);</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>        } else if (job_type == BIO_AOF_FSYNC || job_type == BIO_CLOSE_AOF) {</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>            /* The fd may be closed by main thread and reused for another</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>             * socket, pipe, or file. We just ignore these errno because</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>             * aof fsync did not really fail. */</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>            if (redis_fsync(job-&gt;fd_args.fd) == -1 &amp;&amp;</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>                errno != EBADF &amp;&amp; errno != EINVAL)</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>            {</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>                int last_status;</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>                atomicGet(server.aof_bio_fsync_status,last_status);</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>                atomicSet(server.aof_bio_fsync_status,C_ERR);</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>                atomicSet(server.aof_bio_fsync_errno,errno);</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>                if (last_status == C_OK) {</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>                    serverLog(LL_WARNING,</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>                        &quot;Fail to fsync the AOF file: %s&quot;,strerror(errno));</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>                }</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>            } else {</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>                atomicSet(server.aof_bio_fsync_status,C_OK);</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>                atomicSet(server.fsynced_reploff_pending, job-&gt;fd_args.offset);</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>            }</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a></span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>            if (job-&gt;fd_args.need_reclaim_cache) {</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>                if (reclaimFilePageCache(job-&gt;fd_args.fd, 0, 0) == -1) {</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>                    serverLog(LL_NOTICE,&quot;Unable to reclaim page cache: %s&quot;, strerror(errno));</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>                }</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>            }</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>            if (job_type == BIO_CLOSE_AOF)</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>                close(job-&gt;fd_args.fd);</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>        } else if (job_type == BIO_LAZY_FREE) {</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>            job-&gt;free_args.free_fn(job-&gt;free_args.free_args);</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>        } else {</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>            serverPanic(&quot;Wrong job type in bioProcessBackgroundJobs().&quot;);</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>        }</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>        zfree(job);</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a></span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>        /* Lock again before reiterating the loop, if there are no longer</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a>         * jobs to process we&#x27;ll block again in pthread_cond_wait(). */</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>        pthread_mutex_lock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>        listDelNode(bio_jobs[worker], ln);</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>        bio_jobs_counter[job_type]--;</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>        pthread_cond_signal(&amp;bio_newjob_cond[worker]);</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a>    }</span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>}</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a></span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>/* Return the number of pending jobs of the specified type. */</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a>unsigned long bioPendingJobsOfType(int type) {</span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>    unsigned int worker = bio_job_to_worker[type];</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a></span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>    pthread_mutex_lock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a>    unsigned long val = bio_jobs_counter[type];</span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>    pthread_mutex_unlock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a></span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>    return val;</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>}</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a></span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>/* Wait for the job queue of the worker for jobs of specified type to become empty. */</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>void bioDrainWorker(int job_type) {</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>    unsigned long worker = bio_job_to_worker[job_type];</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a></span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a>    pthread_mutex_lock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>    while (listLength(bio_jobs[worker]) &gt; 0) {</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>        pthread_cond_wait(&amp;bio_newjob_cond[worker], &amp;bio_mutex[worker]);</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>    }</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>    pthread_mutex_unlock(&amp;bio_mutex[worker]);</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a>}</span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a></span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>/* Kill the running bio threads in an unclean way. This function should be</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a> * used only when it&#x27;s critical to stop the threads for some reason.</span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a> * Currently Redis does this only on crash (for instance on SIGSEGV) in order</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a> * to perform a fast memory check without other threads messing with memory. */</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a>void bioKillThreads(void) {</span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>    int err;</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>    unsigned long j;</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a></span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a>    for (j = 0; j &lt; BIO_WORKER_NUM; j++) {</span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>        if (bio_threads[j] == pthread_self()) continue;</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>        if (bio_threads[j] &amp;&amp; pthread_cancel(bio_threads[j]) == 0) {</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>            if ((err = pthread_join(bio_threads[j],NULL)) != 0) {</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a>                serverLog(LL_WARNING,</span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>                    &quot;Bio worker thread #%lu can not be joined: %s&quot;,</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>                        j, strerror(err));</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>            } else {</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a>                serverLog(LL_WARNING,</span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>                    &quot;Bio worker thread #%lu terminated&quot;,j);</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a>            }</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a>        }</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a>    }</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a>}</span></pre></html>

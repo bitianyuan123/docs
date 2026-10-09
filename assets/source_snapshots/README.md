@@ -2,7 +2,7 @@
 
 此目录保存正文引用的文件，方便单独 clone 后核对依据。HTML 保留原始行号及 `#L234` 锚点，以纯文本显示内容；不是可构建的完整服务源码。
 
-`source_sha256` 为原文件摘要，`sha256` 为 HTML 摘要。连接口令如有遮盖会注明行号。历史分析按原文保存，其结论需要以当前源码复核；官方 PaiRec v2.6.2 快照来自 Go 模块归档，原许可一并保留。
+`source_sha256` 为原文件摘要，`sha256` 为 HTML 摘要。连接口令如有遮盖会注明行号。历史分析按原文保存，其结论需要以当前源码复核；官方 PaiRec v2.6.2 快照来自 Go 模块归档；Redis 7.2.5 快照来自官方固定标签，作为运行机制参考，未指定为部署版本。两者原许可一并保留。
 
 | 文件 | 来源提交或版本 |
 |---|---|
@@ -73,5 +73,16 @@
 | [pairec_sh/pairec-demo/src/stageClient/stageClient.go](pairec_sh/pairec-demo/src/stageClient/stageClient.go.html) | `f7c4c49cbea7` |
 | [pairec_sh/pairec-demo/src/cpp/stageBridge_c.cpp](pairec_sh/pairec-demo/src/cpp/stageBridge_c.cpp.html) | `f7c4c49cbea7` |
 | [prior_design/pairec-orchestration-analysis.md](prior_design/pairec-orchestration-analysis.md.html) | `前期资料` |
+| [OneTrans_HSE_project/cpp/src/serving/flow.h](OneTrans_HSE_project/cpp/src/serving/flow.h.html) | `16aecd6f7bd1` |
+| [pairec_v2.6.2/service/rank/algo_data.go](pairec_v2.6.2/service/rank/algo_data.go.html) | `v2.6.2` |
+| [redis_7.2.5/src/ae.c](redis_7.2.5/src/ae.c.html) | `7.2.5` |
+| [redis_7.2.5/src/ae_epoll.c](redis_7.2.5/src/ae_epoll.c.html) | `7.2.5` |
+| [redis_7.2.5/src/bio.c](redis_7.2.5/src/bio.c.html) | `7.2.5` |
+| [redis_7.2.5/src/db.c](redis_7.2.5/src/db.c.html) | `7.2.5` |
+| [redis_7.2.5/src/networking.c](redis_7.2.5/src/networking.c.html) | `7.2.5` |
+| [redis_7.2.5/src/server.c](redis_7.2.5/src/server.c.html) | `7.2.5` |
+| [redis_7.2.5/src/socket.c](redis_7.2.5/src/socket.c.html) | `7.2.5` |
+| [redis_7.2.5/src/t_string.c](redis_7.2.5/src/t_string.c.html) | `7.2.5` |
+| [redis_7.2.5/COPYING](redis_7.2.5/COPYING.html) | `7.2.5` |
 
 完整来源与校验信息见 [manifest.json](manifest.json)。

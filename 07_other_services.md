@@ -105,6 +105,20 @@ Milvus不可用 → 明确错误
 返回原始ID → 统一融合 → 候选产生后通过BatchGetItemFeatures读取属性
 ```
 
+上图是目标交互。当前 Python 进程的 IPO（输入、处理、输出）不同，需按实际函数拆分负载：
+
+| 执行位置 | 输入 → 处理 → 输出 | 本进程负载与并发边界 |
+|---|---|---|
+| `load_resources`，启动阶段 | checkpoint、词表、画像文件 → 全量装入 → 常驻模型和字典 | 启动文件 I/O、主机内存、可选设备内存；不能计成逐请求读盘 |
+| `recall → build_user_vector`，当前请求处理任务 | `user_id="1"` → 内存查画像、历史 ID 转索引、构造张量、用户塔前向 → `float32[D]` | 当前仍有在线模型计算；CUDA 路径还需取回 CPU 向量，目标离线用户向量将移除这一段 |
+| `search_milvus`，同一任务 | 向量转列表、topk → 同步 `Collection.search` → ID/分数列表 | 编码和网络等待发生在召回进程，检索在 Milvus 进程；不把等待时间当本地 CPU 时间 |
+| `search_local`，替代分支 | 常驻 `item_vectors[N,D]` 与查询向量 → 矩阵乘、选 top-k → 本地候选 | 一次扫描全部 N 项，分配 scores 与选择下标；它与 Milvus 是不同负载，目标禁止静默替换 |
+| JSON 响应 | 候选列表 → 编码 → HTTP 返回 | 输出随返回候选数增长；模型、搜索和响应没有拆成自有阶段队列 |
+
+`N` 为本地物品数，`D` 为实际向量维度。入口显式设置 `threaded=True`，请求处理函数内部仍顺序执行；PyTorch、NumPy、Milvus SDK 的内部线程由实际版本和运行配置决定，不能把一个 HTTP 任务等同于全部算子只有一条线程。[启动与画像](assets/source_snapshots/pairec4tigerllm/inference/dssm_recall_server.py.html#L47)、[前向与检索](assets/source_snapshots/pairec4tigerllm/inference/dssm_recall_server.py.html#L80)、[路由及启动入口](assets/source_snapshots/pairec4tigerllm/inference/dssm_recall_server.py.html#L146)。
+
+高并发时，现状的用户塔、张量复制和 SDK 等待同时增加；目标则主要是校验、协议处理和远端检索等待。OS 侧应分别观察 CPU/调度等待、常驻与在途内存、设备传输、socket 和连接占用。若走本地分支，还要观察内存带宽和按 N 分配的临时数组；不能用该分支的吞吐预测 Milvus。Milvus 内部线程及索引扫描量需按选定版本、索引和实际 profile 另行分析，本地调用方源码不足以给出这些结论。
+
 ### 1.4 物理视图
 
 图法：部署映射示意图（非 UML）。Pod 包含容器，容器列出进程；双向连线表示网络连通。图为目标部署边界，主机与副本数待定。
@@ -262,6 +276,21 @@ sequenceDiagram
 
 真实空词项可明确返回 `empty`，并标记此次未查询索引；不能同时声称 `executed=true` 代表完成了 OpenSearch 查询。真实查询后零命中与后端错误是不同结果。
 
+当前可核对的内部路径仍位于 **PaiRec 进程**，尚无已完成的独立稀疏服务：
+
+```text
+Go召回任务：取video_category字符串
+  → stageClient.Search：C.CString复制index与查询文本
+  → Clis_OpensearchSearch：复制为std::string
+  → Opensearch_Clientor::Search：拼接match.content，CallMethod(done=NULL)
+  → 等HTTP终态：取得响应attachment，复制为std::string和C结果
+  → GoString复制、释放C结果：解析JSON候选
+```
+
+这条 IPO 是“类型字符串 → 同步 HTTP 查询 → 响应 JSON 与候选”，不是目标中的“带权词项 → 结构化 term 查询”。复制和等待边界见[实际 Go/C++ 客户端](assets/source_snapshots/pairec_sh/pairec-demo/src/cpp/brpcClients/opensearch_client.cpp.html#L86)和[通信内部时序](06_rpc.md)。本地任务等 HTTP 期间仍保留查询及响应状态；OpenSearch 的评分工作发生在另一个 JVM 进程。
+
+高并发分析应拆成两边：调用方需要 CPU 做字符串/JSON 处理，内存保存每调用缓冲，调度与网络资源承载同步原生调用；目标后端需要处理长倒排和大量同分候选。只有两种词项意味着某一词项可能匹配很多文档，**topk=50 不等于只检查 50 个文档**，实际检查量取决于索引及查询执行。记录调用方在途数/字节、OpenSearch 搜索队列与拒绝数、各分片查询时间、CPU/GC、页缓存及磁盘读取，才能区分网络等待、搜索计算和冷索引 I/O；本轮不臆测未固定版本的内部线程数。
+
 ### 2.4 物理视图
 
 图法：部署映射示意图（非 UML）。Pod 包含容器，容器列出进程；双向连线表示网络连通。图为目标部署边界，主机与副本数待定。
@@ -408,6 +437,27 @@ sequenceDiagram
 ```
 
 Nginx master 管理 worker 与配置，worker 通过事件机制处理多个连接；不能将每条请求理解为新建一个线程。等待上游时主要保留连接、请求缓冲和超时状态，具体 worker 数与连接上限由实际配置决定。[Nginx 进程模型](https://nginx.org/en/docs/beginners_guide.html)、[worker 与连接配置](https://nginx.org/en/docs/ngx_core_module.html#worker_connections)。这使入口的待处理连接数与 PaiRec 中的推荐任务数成为不同的容量指标。
+
+单个 worker 的内部执行可以用以下程序结构理解。函数名来自 Nginx 官方开发说明；它是机制说明，项目尚未固定 Nginx 构建版本。不同连接的事件在同一个循环内交错，等待某个上游时保留该请求状态，worker 可处理其他就绪事件。
+
+```c
+// ngx_process_events_and_timers 的阶段摘要；不是完整可编译实现。
+timeout = ngx_event_find_timer();       // 最近定时器决定最多等待多久
+ngx_process_events(cycle, timeout, flags); // Linux常用epoll适配，处理就绪事件
+ngx_event_expire_timers();              // 到期事件进入对应处理器
+ngx_event_process_posted(...);          // 处理已投递事件
+// 无就绪事件时可以在epoll_wait休眠；返回可运行后仍需OS分配CPU。
+```
+
+事件回调读写到暂不可继续时保存连接状态，后续由就绪事件或超时推进；不会为这一请求同步等待 PaiRec 完成整个推荐。主进程主要处理管理信号，推荐流量由 worker 处理。[Nginx 事件循环与进程源码说明](https://nginx.org/en/docs/dev/development_guide.html#event_loop)。
+
+| IPO 中的工作 | OS 资源诉求与可能瓶颈 |
+|---|---|
+| HTTP 请求头/体 → 校验与代理请求 → PaiRec 连接 | CPU 解析/复制、socket/fd、请求缓冲；高并发需核对活动连接和容器限制 |
+| 等待上游响应 → 就绪或超时事件 → 响应转发 | 调度延迟、事件处理预算、缓冲内存；上游慢会延长每请求驻留时间 |
+| 响应体 → 发给慢客户端 → 完成及访问日志 | 网络发送缓冲、请求内存、日志 I/O；响应缓冲/临时文件行为取决于代理配置 |
+
+示例中的 `keepalive 16` 是**每 worker 缓存的空闲上游连接数**，不是最多 16 个在途推荐。稳定条件下，入口平均在途请求约为到达率乘平均停留时间；扩大连接额度不能提升 PaiRec 或模型的处理能力。[Nginx keepalive 定义](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#keepalive)
 
 ```yaml
 logging:

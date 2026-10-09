@@ -85,6 +85,8 @@ PaiRec 首期按来源配额和来源次序融合，不把生成的常量分数�
 
 ## 3. 进程视图
 
+### 3.1 目标业务交互
+
 图法：UML 时序图。生成服务处理器与 TRT 模型运行时是同一进程内的两个执行角色，二者间的消息不是额外网络调用；PaiRec、特征服务与 DataSystem 是外部角色。
 
 ```mermaid
@@ -134,9 +136,68 @@ return expand_in_generated_order_then_deduplicate(raw_items, limit=topk)
 
 模型缓存读写由真实块生命周期触发，不能要求每请求固定若干次 Set/Get。特征服务反查是业务数据查询，与模型缓存访问是两种不同操作。模型执行成功但反查数据库失败，应返回阶段失败；反查成功但无合法物品，可以返回真实空候选。
 
-当前原生实现的请求处理器同步调用后端；后端对 `trt_num_samples` 次采样逐次提交 Executor、等待最终结果，再进入下一次采样。等待循环每次向 `awaitResponses` 传入 10 ms 上限，这不是“每 10 ms 忙等一次”，也不是每个请求只执行一次模型。[当前提交与等待](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1074)、[Executor 响应循环](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1358)。
+### 3.2 当前 C++ 进程：输入、处理、输出
 
-因此容量评估须记录采样次数、输入和输出 token 数、Executor 排队及执行时间、实际缓存传输字节。当前进程内等待是否占住 bRPC 工作线程，还取决于所链接 Executor 的等待实现，不能仅凭入口使用 bthread 就宣称等待不占 OS 线程。GPU 计算、CPU 编解码、外部缓存传输与特征反查应分别观测；本轮没有测得它们的占比或吞吐上限。
+以下 IPO（Input / Process / Output，即输入、处理、输出）限定 `trtllm_cpp` 后端，并关闭人工 Set/Get 探针。用户 1 的教学请求含 10 项、每项 4 个整数的历史 SID，生成路 `topk=10`；完整字段见[生成请求](assets/request_example/06_generate.request.json)。SID 与模型词表的匹配还需真实资产验证，不能假造 token ID 或把教学输出当执行记录。
+
+| 源码函数与执行者 | 输入 | 处理及持有的数据 | 输出 |
+|---|---|---|---|
+| `NativeInferenceServiceImpl::Recommend`，RPC 处理任务 | protobuf 请求 | 同步进入后端；本次 response 保持到 `ClosureGuard` 调用完成回调 | RPC 响应或失败 |
+| `BuildPromptTokens`，同一任务 | 10 项历史、只读 tokenizer | 过滤空编码，转换各层 token，加前后缀和分隔符；超长时逐项删旧历史 | 请求私有 `vector<int> prompt_tokens` |
+| `Recommend` 中采样循环 | prompt、服务端采样配置 | 每次 `RunExecutor` 完成后才开始下一次；输出追加到请求私有 `sampled_tokens` | 多次输出 token 的合并数组 |
+| `ParseOutputTokens`，同一任务 | 输出 token、只读 token→SID 表 | 按层收集、去重、排序，空层补 0，再生成全部层间组合 | `semantic_candidates`，可能多于 topk |
+| `FillRecommendations`，同一任务 | SID 组合、本地反向表、请求历史 | 去历史、查原始 ID、去重，至 topk 停止；当前分数固定为 1.0 | `recommendations[]`；目标需改为特征服务反查 |
+
+函数依据：[入口与完成回调](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1775)、[prompt 构造](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1221)、[编码组合与映射](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1427)。只剩一项历史但仍超长时，当前实现会从 token 数组前部截断；目标需要整项容量检查，不能把当前行为写成已保证完整输入。
+
+```python
+# 当前控制流的等价摘录；不是可直接运行的SDK。
+prompt_tokens = BuildPromptTokens(request.history)
+sampled_tokens = []
+base_seed = reserve_seed_range(config.trt_num_samples)
+for sample_index in range(config.trt_num_samples):
+    sampled_tokens.extend(RunExecutor(prompt_tokens, base_seed + sample_index))
+semantic_candidates = ParseOutputTokens(sampled_tokens)
+response = FillRecommendations(request, semantic_candidates)
+# reserve_seed_range对应循环前一次seed_.fetch_add，预留本请求的种子区间。
+```
+
+这里的采样次数、生成 token 上限、采样温度和采样 top-k 来自服务启动 `config`；原生 TRT 路径没有将请求 `temperature/beam_width` 直接传入采样配置。请求 `topk` 只在候选输出截取时使用。验收应记录实际生效配置。[采样配置](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1317)
+
+### 3.3 Executor 提交、等待与完成
+
+图法：UML 时序图，展示一次请求的成功路径。两条生命线都是同一生成进程的代码角色；Executor API 背后的线程、GPU 流和缓存执行者由所链接运行库管理，不凭包装层虚构线程数。
+
+```mermaid
+sequenceDiagram
+    participant H as 当前RPC处理任务
+    participant E as 同进程Executor API
+    H->>H: BuildPromptTokens：10项SID转prompt
+    loop sample_index小于服务端trt_num_samples
+        H->>E: enqueueRequest(prompt,生成配置)
+        E-->>H: executor_request_id
+        loop 尚未收到final且未达到本次采样期限
+            H->>E: awaitResponses(executor_request_id,10ms)
+            Note over E: 等待结果；底层运行库推进计算
+            E-->>H: 空结果或响应列表
+        end
+        H->>H: 复制最终outputTokenIds，追加sampled_tokens
+    end
+    H->>H: ParseOutputTokens，生成SID组合
+    H->>H: FillRecommendations，本地映射和topk截取
+    H->>H: 填充trace，作用域退出时执行done
+```
+
+`enqueueRequest` 返回的是运行库请求 ID，不是模型完成。`awaitResponses` 的 10 ms 是单次等待上限；收到 final 才继续业务代码，响应携带错误或本次采样超时调用 `cancelRequest`；异常捕获分支仅返回错误。调用结束不证明 GPU 或缓存回收已经完成；包装层没有将客户端取消绑定到统一的整次多采样期限。[提交、等待与取消](assets/source_snapshots/pairec4tigerllm/cpp/brpc_gateway/brpc_inference_server.cpp.html#L1299)
+
+| 并发或同步位置 | 代码可确认的事实 | 不能直接推导的结论 |
+|---|---|---|
+| RPC 处理任务 | 处理器内同步调用后端，完成回调在作用域退出时执行 | 不等于一次请求新建一个 OS 线程 |
+| 共享 Executor | 多请求使用同一个 `executor_`；每请求按自己的 ID 等结果，同请求多次采样顺序提交 | `max_batch_size` 是运行库批约束，不是 RPC 总在途数上限 |
+| 等待结果 | 调用所链接运行库的 `awaitResponses`；可能以结果可用或等待期满返回 | 包装层不足以判断底层条件变量、唤醒线程或是否让出 bRPC 工作 pthread；须核对运行库版本与等待栈 |
+| 共享小状态 | seed 和归因 ID 用原子递增；tokenizer、映射表在启动后读取；诊断输出可持 mutex | 原子计数不是串行化所有推理；日志锁也不是已测瓶颈 |
+
+逐次采样使一次请求的等待累加；同时处理多个请求是否能被运行库有效合批，需要测量。10 ms 等待参数不构成“CPU 每 10 ms 忙等”的证据。可选人工缓存探针产生的固定字节和 Set/Get 次数不计入模型业务负载，真实缓存传输仍由块生命周期决定。
 
 ## 4. 物理视图
 
@@ -192,3 +253,30 @@ flowchart TD
 ```
 
 真实历史 ID 见[请求推演](08_request_walkthrough.md)。第 08 篇提供明确标记的教学 SID 与候选，用于说明字段和顺序；这些数值不是本地已发布的模型产物。验收需分别证明：历史编码版本正确、TRT 实际执行、反向查询返回真实物品、碰撞处理稳定、缓存容量有界。
+
+## 6. 业务负载怎样转化为 OS 诉求
+
+先按上一节函数链统计工作量，再判断 CPU、GPU 或等待是否主导。以下公式不代表已测容量。
+
+```text
+λ = 每秒进入本进程的推荐数；S = 一请求实际完成的平均采样次数
+Executor提交率约为 λ×S；失败、取消、重试需按实际提交另计
+N ≈ λ×W，W为请求平均停留秒数，N为稳定状态平均在途推荐数
+# 同请求顺序采样，不能把N×S当作同一时刻活跃模型请求数。
+
+q[l] = 本次合并输出在第l层出现的不同编码数，空层按源码补成1
+编码组合数 = q[0]×q[1]×q[2]×q[3]
+# 教学演算：每层8种值 → 4096组；每层16种值 → 65536组。
+# BuildCartesian先保存全部组合，之后FillRecommendations才按topk截取。
+```
+
+| 子系统 | 哪个业务步骤提出资源诉求 | 高并发下可能如何受限 | 核对什么 |
+|---|---|---|---|
+| CPU | prompt 构造、token 查表、组合枚举、protobuf 编解码 | 多采样增加输出 token；组合数乘法增长，可在 GPU 已结束后继续占 CPU | prompt/parse/map 分段 CPU 时间、组合数、输出字节；墙钟时间另计 |
+| 调度与同步 | RPC 任务、运行库线程、结果等待及回调需及时运行 | 原生阻塞若占满工作线程，会延后新请求或完成处理；CPU 配额节流会延迟已就绪线程 | 各线程等待栈、可运行等待、配额节流、提交至 final 时长；先查实际运行库机制 |
+| 内存 | 只读映射常驻；每请求保存 prompt、所有采样输出及 SID 组合 | 在途数与组合数共同放大堆内存；模型 HBM 和主机缓存又是另一组资源 | RSS、堆分配热点、各队列字节、HBM/主机缓存占用和回收；不只看最终候选大小 |
+| I/O | 启动加载引擎、tokenizer、映射；运行中诊断日志和可能的缓存换入换出 | 冷启动文件读取、同步日志或缓存存储慢，会延长任务占用 | 启动与稳态分开；磁盘、日志、SDK 调用及等待栈分开 |
+| 网络 | 入口 RPC、目标 SID 反查、实际远端缓存传输 | 缓存字节或反查响应增大，网络等待延长进程内对象生命周期 | 每种协议的调用数、字节、连接、重传；不把 Executor 等待全归为网络 |
+| GPU 与驱动 | prefill、逐 token 解码、缓存搬运 | 模型批量、token 预算、HBM 容量和传输竞争；宿主 CPU 不及时提交也可能使 GPU 空闲 | 运行库队列、GPU 执行/传输、token 数、缓存命中及字节；与 OS CPU 调度对齐 |
+
+系统需要可用 CPU 时间、可观测的调度等待、足够的内存和 I/O 能力；**限制在途请求、总 token 与组合数、传播取消并回收对象仍是应用和模型运行库的责任**。增加 bRPC 线程不能消除 GPU 排队或组合数组膨胀。先在固定模型、采样次数、历史长度下增加外部并发，再分别改变这些工作量变量，才能判断瓶颈来自哪里；本轮未执行这类测试。

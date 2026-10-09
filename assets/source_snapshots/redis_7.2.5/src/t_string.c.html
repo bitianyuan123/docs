@@ -1,0 +1,951 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>redis_7.2.5/src/t_string.c</title><style>body{margin:24px;color:#183247;font:14px/1.6 system-ui,sans-serif}pre{font:13px/1.5 monospace;overflow:auto;background:#f5f8fb;padding:12px}.line{display:block;min-height:1.5em}.line:target{background:#ffefa6}.ln{display:inline-block;width:5em;color:#75818f;text-decoration:none;user-select:none}h1{font-size:20px}code{word-break:break-all}</style><h1>redis_7.2.5/src/t_string.c</h1><p>只读审阅快照；不是可构建工程。原文经 HTML 转义，不执行脚本。来自官方 Redis 7.2.5 固定标签，仅作机制参考，非部署版本；许可见根目录 COPYING.html。</p><p>来源版本：<code>官方参考版本 7.2.5</code><br>原文件 SHA256：<code>9fae89d4f0c7355612fe2e5daa8fa859d4df2d8f419fffa78719b07daac60b9f</code></p><pre><span class="line" id="L1"><a class="ln" href="#L1">1</a>/*</span>
+<span class="line" id="L2"><a class="ln" href="#L2">2</a> * Copyright (c) 2009-2012, Salvatore Sanfilippo &lt;antirez at gmail dot com&gt;</span>
+<span class="line" id="L3"><a class="ln" href="#L3">3</a> * All rights reserved.</span>
+<span class="line" id="L4"><a class="ln" href="#L4">4</a> *</span>
+<span class="line" id="L5"><a class="ln" href="#L5">5</a> * Redistribution and use in source and binary forms, with or without</span>
+<span class="line" id="L6"><a class="ln" href="#L6">6</a> * modification, are permitted provided that the following conditions are met:</span>
+<span class="line" id="L7"><a class="ln" href="#L7">7</a> *</span>
+<span class="line" id="L8"><a class="ln" href="#L8">8</a> *   * Redistributions of source code must retain the above copyright notice,</span>
+<span class="line" id="L9"><a class="ln" href="#L9">9</a> *     this list of conditions and the following disclaimer.</span>
+<span class="line" id="L10"><a class="ln" href="#L10">10</a> *   * Redistributions in binary form must reproduce the above copyright</span>
+<span class="line" id="L11"><a class="ln" href="#L11">11</a> *     notice, this list of conditions and the following disclaimer in the</span>
+<span class="line" id="L12"><a class="ln" href="#L12">12</a> *     documentation and/or other materials provided with the distribution.</span>
+<span class="line" id="L13"><a class="ln" href="#L13">13</a> *   * Neither the name of Redis nor the names of its contributors may be used</span>
+<span class="line" id="L14"><a class="ln" href="#L14">14</a> *     to endorse or promote products derived from this software without</span>
+<span class="line" id="L15"><a class="ln" href="#L15">15</a> *     specific prior written permission.</span>
+<span class="line" id="L16"><a class="ln" href="#L16">16</a> *</span>
+<span class="line" id="L17"><a class="ln" href="#L17">17</a> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</span>
+<span class="line" id="L18"><a class="ln" href="#L18">18</a> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</span>
+<span class="line" id="L19"><a class="ln" href="#L19">19</a> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</span>
+<span class="line" id="L20"><a class="ln" href="#L20">20</a> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE</span>
+<span class="line" id="L21"><a class="ln" href="#L21">21</a> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</span>
+<span class="line" id="L22"><a class="ln" href="#L22">22</a> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</span>
+<span class="line" id="L23"><a class="ln" href="#L23">23</a> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</span>
+<span class="line" id="L24"><a class="ln" href="#L24">24</a> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</span>
+<span class="line" id="L25"><a class="ln" href="#L25">25</a> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</span>
+<span class="line" id="L26"><a class="ln" href="#L26">26</a> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</span>
+<span class="line" id="L27"><a class="ln" href="#L27">27</a> * POSSIBILITY OF SUCH DAMAGE.</span>
+<span class="line" id="L28"><a class="ln" href="#L28">28</a> */</span>
+<span class="line" id="L29"><a class="ln" href="#L29">29</a></span>
+<span class="line" id="L30"><a class="ln" href="#L30">30</a>#include &quot;server.h&quot;</span>
+<span class="line" id="L31"><a class="ln" href="#L31">31</a>#include &lt;math.h&gt; /* isnan(), isinf() */</span>
+<span class="line" id="L32"><a class="ln" href="#L32">32</a></span>
+<span class="line" id="L33"><a class="ln" href="#L33">33</a>/* Forward declarations */</span>
+<span class="line" id="L34"><a class="ln" href="#L34">34</a>int getGenericCommand(client *c);</span>
+<span class="line" id="L35"><a class="ln" href="#L35">35</a></span>
+<span class="line" id="L36"><a class="ln" href="#L36">36</a>/*-----------------------------------------------------------------------------</span>
+<span class="line" id="L37"><a class="ln" href="#L37">37</a> * String Commands</span>
+<span class="line" id="L38"><a class="ln" href="#L38">38</a> *----------------------------------------------------------------------------*/</span>
+<span class="line" id="L39"><a class="ln" href="#L39">39</a></span>
+<span class="line" id="L40"><a class="ln" href="#L40">40</a>static int checkStringLength(client *c, long long size, long long append) {</span>
+<span class="line" id="L41"><a class="ln" href="#L41">41</a>    if (mustObeyClient(c))</span>
+<span class="line" id="L42"><a class="ln" href="#L42">42</a>        return C_OK;</span>
+<span class="line" id="L43"><a class="ln" href="#L43">43</a>    /* &#x27;uint64_t&#x27; cast is there just to prevent undefined behavior on overflow */</span>
+<span class="line" id="L44"><a class="ln" href="#L44">44</a>    long long total = (uint64_t)size + append;</span>
+<span class="line" id="L45"><a class="ln" href="#L45">45</a>    /* Test configured max-bulk-len represending a limit of the biggest string object,</span>
+<span class="line" id="L46"><a class="ln" href="#L46">46</a>     * and also test for overflow. */</span>
+<span class="line" id="L47"><a class="ln" href="#L47">47</a>    if (total &gt; server.proto_max_bulk_len || total &lt; size || total &lt; append) {</span>
+<span class="line" id="L48"><a class="ln" href="#L48">48</a>        addReplyError(c,&quot;string exceeds maximum allowed size (proto-max-bulk-len)&quot;);</span>
+<span class="line" id="L49"><a class="ln" href="#L49">49</a>        return C_ERR;</span>
+<span class="line" id="L50"><a class="ln" href="#L50">50</a>    }</span>
+<span class="line" id="L51"><a class="ln" href="#L51">51</a>    return C_OK;</span>
+<span class="line" id="L52"><a class="ln" href="#L52">52</a>}</span>
+<span class="line" id="L53"><a class="ln" href="#L53">53</a></span>
+<span class="line" id="L54"><a class="ln" href="#L54">54</a>/* The setGenericCommand() function implements the SET operation with different</span>
+<span class="line" id="L55"><a class="ln" href="#L55">55</a> * options and variants. This function is called in order to implement the</span>
+<span class="line" id="L56"><a class="ln" href="#L56">56</a> * following commands: SET, SETEX, PSETEX, SETNX, GETSET.</span>
+<span class="line" id="L57"><a class="ln" href="#L57">57</a> *</span>
+<span class="line" id="L58"><a class="ln" href="#L58">58</a> * &#x27;flags&#x27; changes the behavior of the command (NX, XX or GET, see below).</span>
+<span class="line" id="L59"><a class="ln" href="#L59">59</a> *</span>
+<span class="line" id="L60"><a class="ln" href="#L60">60</a> * &#x27;expire&#x27; represents an expire to set in form of a Redis object as passed</span>
+<span class="line" id="L61"><a class="ln" href="#L61">61</a> * by the user. It is interpreted according to the specified &#x27;unit&#x27;.</span>
+<span class="line" id="L62"><a class="ln" href="#L62">62</a> *</span>
+<span class="line" id="L63"><a class="ln" href="#L63">63</a> * &#x27;ok_reply&#x27; and &#x27;abort_reply&#x27; is what the function will reply to the client</span>
+<span class="line" id="L64"><a class="ln" href="#L64">64</a> * if the operation is performed, or when it is not because of NX or</span>
+<span class="line" id="L65"><a class="ln" href="#L65">65</a> * XX flags.</span>
+<span class="line" id="L66"><a class="ln" href="#L66">66</a> *</span>
+<span class="line" id="L67"><a class="ln" href="#L67">67</a> * If ok_reply is NULL &quot;+OK&quot; is used.</span>
+<span class="line" id="L68"><a class="ln" href="#L68">68</a> * If abort_reply is NULL, &quot;$-1&quot; is used. */</span>
+<span class="line" id="L69"><a class="ln" href="#L69">69</a></span>
+<span class="line" id="L70"><a class="ln" href="#L70">70</a>#define OBJ_NO_FLAGS 0</span>
+<span class="line" id="L71"><a class="ln" href="#L71">71</a>#define OBJ_SET_NX (1&lt;&lt;0)          /* Set if key not exists. */</span>
+<span class="line" id="L72"><a class="ln" href="#L72">72</a>#define OBJ_SET_XX (1&lt;&lt;1)          /* Set if key exists. */</span>
+<span class="line" id="L73"><a class="ln" href="#L73">73</a>#define OBJ_EX (1&lt;&lt;2)              /* Set if time in seconds is given */</span>
+<span class="line" id="L74"><a class="ln" href="#L74">74</a>#define OBJ_PX (1&lt;&lt;3)              /* Set if time in ms in given */</span>
+<span class="line" id="L75"><a class="ln" href="#L75">75</a>#define OBJ_KEEPTTL (1&lt;&lt;4)         /* Set and keep the ttl */</span>
+<span class="line" id="L76"><a class="ln" href="#L76">76</a>#define OBJ_SET_GET (1&lt;&lt;5)         /* Set if want to get key before set */</span>
+<span class="line" id="L77"><a class="ln" href="#L77">77</a>#define OBJ_EXAT (1&lt;&lt;6)            /* Set if timestamp in second is given */</span>
+<span class="line" id="L78"><a class="ln" href="#L78">78</a>#define OBJ_PXAT (1&lt;&lt;7)            /* Set if timestamp in ms is given */</span>
+<span class="line" id="L79"><a class="ln" href="#L79">79</a>#define OBJ_PERSIST (1&lt;&lt;8)         /* Set if we need to remove the ttl */</span>
+<span class="line" id="L80"><a class="ln" href="#L80">80</a></span>
+<span class="line" id="L81"><a class="ln" href="#L81">81</a>/* Forward declaration */</span>
+<span class="line" id="L82"><a class="ln" href="#L82">82</a>static int getExpireMillisecondsOrReply(client *c, robj *expire, int flags, int unit, long long *milliseconds);</span>
+<span class="line" id="L83"><a class="ln" href="#L83">83</a></span>
+<span class="line" id="L84"><a class="ln" href="#L84">84</a>void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire, int unit, robj *ok_reply, robj *abort_reply) {</span>
+<span class="line" id="L85"><a class="ln" href="#L85">85</a>    long long milliseconds = 0; /* initialized to avoid any harmness warning */</span>
+<span class="line" id="L86"><a class="ln" href="#L86">86</a>    int found = 0;</span>
+<span class="line" id="L87"><a class="ln" href="#L87">87</a>    int setkey_flags = 0;</span>
+<span class="line" id="L88"><a class="ln" href="#L88">88</a></span>
+<span class="line" id="L89"><a class="ln" href="#L89">89</a>    if (expire &amp;&amp; getExpireMillisecondsOrReply(c, expire, flags, unit, &amp;milliseconds) != C_OK) {</span>
+<span class="line" id="L90"><a class="ln" href="#L90">90</a>        return;</span>
+<span class="line" id="L91"><a class="ln" href="#L91">91</a>    }</span>
+<span class="line" id="L92"><a class="ln" href="#L92">92</a></span>
+<span class="line" id="L93"><a class="ln" href="#L93">93</a>    if (flags &amp; OBJ_SET_GET) {</span>
+<span class="line" id="L94"><a class="ln" href="#L94">94</a>        if (getGenericCommand(c) == C_ERR) return;</span>
+<span class="line" id="L95"><a class="ln" href="#L95">95</a>    }</span>
+<span class="line" id="L96"><a class="ln" href="#L96">96</a></span>
+<span class="line" id="L97"><a class="ln" href="#L97">97</a>    found = (lookupKeyWrite(c-&gt;db,key) != NULL);</span>
+<span class="line" id="L98"><a class="ln" href="#L98">98</a></span>
+<span class="line" id="L99"><a class="ln" href="#L99">99</a>    if ((flags &amp; OBJ_SET_NX &amp;&amp; found) ||</span>
+<span class="line" id="L100"><a class="ln" href="#L100">100</a>        (flags &amp; OBJ_SET_XX &amp;&amp; !found))</span>
+<span class="line" id="L101"><a class="ln" href="#L101">101</a>    {</span>
+<span class="line" id="L102"><a class="ln" href="#L102">102</a>        if (!(flags &amp; OBJ_SET_GET)) {</span>
+<span class="line" id="L103"><a class="ln" href="#L103">103</a>            addReply(c, abort_reply ? abort_reply : shared.null[c-&gt;resp]);</span>
+<span class="line" id="L104"><a class="ln" href="#L104">104</a>        }</span>
+<span class="line" id="L105"><a class="ln" href="#L105">105</a>        return;</span>
+<span class="line" id="L106"><a class="ln" href="#L106">106</a>    }</span>
+<span class="line" id="L107"><a class="ln" href="#L107">107</a></span>
+<span class="line" id="L108"><a class="ln" href="#L108">108</a>    /* When expire is not NULL, we avoid deleting the TTL so it can be updated later instead of being deleted and then created again. */</span>
+<span class="line" id="L109"><a class="ln" href="#L109">109</a>    setkey_flags |= ((flags &amp; OBJ_KEEPTTL) || expire) ? SETKEY_KEEPTTL : 0;</span>
+<span class="line" id="L110"><a class="ln" href="#L110">110</a>    setkey_flags |= found ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST;</span>
+<span class="line" id="L111"><a class="ln" href="#L111">111</a></span>
+<span class="line" id="L112"><a class="ln" href="#L112">112</a>    setKey(c,c-&gt;db,key,val,setkey_flags);</span>
+<span class="line" id="L113"><a class="ln" href="#L113">113</a>    server.dirty++;</span>
+<span class="line" id="L114"><a class="ln" href="#L114">114</a>    notifyKeyspaceEvent(NOTIFY_STRING,&quot;set&quot;,key,c-&gt;db-&gt;id);</span>
+<span class="line" id="L115"><a class="ln" href="#L115">115</a></span>
+<span class="line" id="L116"><a class="ln" href="#L116">116</a>    if (expire) {</span>
+<span class="line" id="L117"><a class="ln" href="#L117">117</a>        setExpire(c,c-&gt;db,key,milliseconds);</span>
+<span class="line" id="L118"><a class="ln" href="#L118">118</a>        /* Propagate as SET Key Value PXAT millisecond-timestamp if there is</span>
+<span class="line" id="L119"><a class="ln" href="#L119">119</a>         * EX/PX/EXAT flag. */</span>
+<span class="line" id="L120"><a class="ln" href="#L120">120</a>        if (!(flags &amp; OBJ_PXAT)) {</span>
+<span class="line" id="L121"><a class="ln" href="#L121">121</a>            robj *milliseconds_obj = createStringObjectFromLongLong(milliseconds);</span>
+<span class="line" id="L122"><a class="ln" href="#L122">122</a>            rewriteClientCommandVector(c, 5, shared.set, key, val, shared.pxat, milliseconds_obj);</span>
+<span class="line" id="L123"><a class="ln" href="#L123">123</a>            decrRefCount(milliseconds_obj);</span>
+<span class="line" id="L124"><a class="ln" href="#L124">124</a>        }</span>
+<span class="line" id="L125"><a class="ln" href="#L125">125</a>        notifyKeyspaceEvent(NOTIFY_GENERIC,&quot;expire&quot;,key,c-&gt;db-&gt;id);</span>
+<span class="line" id="L126"><a class="ln" href="#L126">126</a>    }</span>
+<span class="line" id="L127"><a class="ln" href="#L127">127</a></span>
+<span class="line" id="L128"><a class="ln" href="#L128">128</a>    if (!(flags &amp; OBJ_SET_GET)) {</span>
+<span class="line" id="L129"><a class="ln" href="#L129">129</a>        addReply(c, ok_reply ? ok_reply : shared.ok);</span>
+<span class="line" id="L130"><a class="ln" href="#L130">130</a>    }</span>
+<span class="line" id="L131"><a class="ln" href="#L131">131</a></span>
+<span class="line" id="L132"><a class="ln" href="#L132">132</a>    /* Propagate without the GET argument (Isn&#x27;t needed if we had expire since in that case we completely re-written the command argv) */</span>
+<span class="line" id="L133"><a class="ln" href="#L133">133</a>    if ((flags &amp; OBJ_SET_GET) &amp;&amp; !expire) {</span>
+<span class="line" id="L134"><a class="ln" href="#L134">134</a>        int argc = 0;</span>
+<span class="line" id="L135"><a class="ln" href="#L135">135</a>        int j;</span>
+<span class="line" id="L136"><a class="ln" href="#L136">136</a>        robj **argv = zmalloc((c-&gt;argc-1)*sizeof(robj*));</span>
+<span class="line" id="L137"><a class="ln" href="#L137">137</a>        for (j=0; j &lt; c-&gt;argc; j++) {</span>
+<span class="line" id="L138"><a class="ln" href="#L138">138</a>            char *a = c-&gt;argv[j]-&gt;ptr;</span>
+<span class="line" id="L139"><a class="ln" href="#L139">139</a>            /* Skip GET which may be repeated multiple times. */</span>
+<span class="line" id="L140"><a class="ln" href="#L140">140</a>            if (j &gt;= 3 &amp;&amp;</span>
+<span class="line" id="L141"><a class="ln" href="#L141">141</a>                (a[0] == &#x27;g&#x27; || a[0] == &#x27;G&#x27;) &amp;&amp;</span>
+<span class="line" id="L142"><a class="ln" href="#L142">142</a>                (a[1] == &#x27;e&#x27; || a[1] == &#x27;E&#x27;) &amp;&amp;</span>
+<span class="line" id="L143"><a class="ln" href="#L143">143</a>                (a[2] == &#x27;t&#x27; || a[2] == &#x27;T&#x27;) &amp;&amp; a[3] == &#x27;\0&#x27;)</span>
+<span class="line" id="L144"><a class="ln" href="#L144">144</a>                continue;</span>
+<span class="line" id="L145"><a class="ln" href="#L145">145</a>            argv[argc++] = c-&gt;argv[j];</span>
+<span class="line" id="L146"><a class="ln" href="#L146">146</a>            incrRefCount(c-&gt;argv[j]);</span>
+<span class="line" id="L147"><a class="ln" href="#L147">147</a>        }</span>
+<span class="line" id="L148"><a class="ln" href="#L148">148</a>        replaceClientCommandVector(c, argc, argv);</span>
+<span class="line" id="L149"><a class="ln" href="#L149">149</a>    }</span>
+<span class="line" id="L150"><a class="ln" href="#L150">150</a>}</span>
+<span class="line" id="L151"><a class="ln" href="#L151">151</a></span>
+<span class="line" id="L152"><a class="ln" href="#L152">152</a>/*</span>
+<span class="line" id="L153"><a class="ln" href="#L153">153</a> * Extract the `expire` argument of a given GET/SET command as an absolute timestamp in milliseconds.</span>
+<span class="line" id="L154"><a class="ln" href="#L154">154</a> *</span>
+<span class="line" id="L155"><a class="ln" href="#L155">155</a> * &quot;client&quot; is the client that sent the `expire` argument.</span>
+<span class="line" id="L156"><a class="ln" href="#L156">156</a> * &quot;expire&quot; is the `expire` argument to be extracted.</span>
+<span class="line" id="L157"><a class="ln" href="#L157">157</a> * &quot;flags&quot; represents the behavior of the command (e.g. PX or EX).</span>
+<span class="line" id="L158"><a class="ln" href="#L158">158</a> * &quot;unit&quot; is the original unit of the given `expire` argument (e.g. UNIT_SECONDS).</span>
+<span class="line" id="L159"><a class="ln" href="#L159">159</a> * &quot;milliseconds&quot; is output argument.</span>
+<span class="line" id="L160"><a class="ln" href="#L160">160</a> *</span>
+<span class="line" id="L161"><a class="ln" href="#L161">161</a> * If return C_OK, &quot;milliseconds&quot; output argument will be set to the resulting absolute timestamp.</span>
+<span class="line" id="L162"><a class="ln" href="#L162">162</a> * If return C_ERR, an error reply has been added to the given client.</span>
+<span class="line" id="L163"><a class="ln" href="#L163">163</a> */</span>
+<span class="line" id="L164"><a class="ln" href="#L164">164</a>static int getExpireMillisecondsOrReply(client *c, robj *expire, int flags, int unit, long long *milliseconds) {</span>
+<span class="line" id="L165"><a class="ln" href="#L165">165</a>    int ret = getLongLongFromObjectOrReply(c, expire, milliseconds, NULL);</span>
+<span class="line" id="L166"><a class="ln" href="#L166">166</a>    if (ret != C_OK) {</span>
+<span class="line" id="L167"><a class="ln" href="#L167">167</a>        return ret;</span>
+<span class="line" id="L168"><a class="ln" href="#L168">168</a>    }</span>
+<span class="line" id="L169"><a class="ln" href="#L169">169</a></span>
+<span class="line" id="L170"><a class="ln" href="#L170">170</a>    if (*milliseconds &lt;= 0 || (unit == UNIT_SECONDS &amp;&amp; *milliseconds &gt; LLONG_MAX / 1000)) {</span>
+<span class="line" id="L171"><a class="ln" href="#L171">171</a>        /* Negative value provided or multiplication is gonna overflow. */</span>
+<span class="line" id="L172"><a class="ln" href="#L172">172</a>        addReplyErrorExpireTime(c);</span>
+<span class="line" id="L173"><a class="ln" href="#L173">173</a>        return C_ERR;</span>
+<span class="line" id="L174"><a class="ln" href="#L174">174</a>    }</span>
+<span class="line" id="L175"><a class="ln" href="#L175">175</a></span>
+<span class="line" id="L176"><a class="ln" href="#L176">176</a>    if (unit == UNIT_SECONDS) *milliseconds *= 1000;</span>
+<span class="line" id="L177"><a class="ln" href="#L177">177</a></span>
+<span class="line" id="L178"><a class="ln" href="#L178">178</a>    if ((flags &amp; OBJ_PX) || (flags &amp; OBJ_EX)) {</span>
+<span class="line" id="L179"><a class="ln" href="#L179">179</a>        *milliseconds += commandTimeSnapshot();</span>
+<span class="line" id="L180"><a class="ln" href="#L180">180</a>    }</span>
+<span class="line" id="L181"><a class="ln" href="#L181">181</a></span>
+<span class="line" id="L182"><a class="ln" href="#L182">182</a>    if (*milliseconds &lt;= 0) {</span>
+<span class="line" id="L183"><a class="ln" href="#L183">183</a>        /* Overflow detected. */</span>
+<span class="line" id="L184"><a class="ln" href="#L184">184</a>        addReplyErrorExpireTime(c);</span>
+<span class="line" id="L185"><a class="ln" href="#L185">185</a>        return C_ERR;</span>
+<span class="line" id="L186"><a class="ln" href="#L186">186</a>    }</span>
+<span class="line" id="L187"><a class="ln" href="#L187">187</a></span>
+<span class="line" id="L188"><a class="ln" href="#L188">188</a>    return C_OK;</span>
+<span class="line" id="L189"><a class="ln" href="#L189">189</a>}</span>
+<span class="line" id="L190"><a class="ln" href="#L190">190</a></span>
+<span class="line" id="L191"><a class="ln" href="#L191">191</a>#define COMMAND_GET 0</span>
+<span class="line" id="L192"><a class="ln" href="#L192">192</a>#define COMMAND_SET 1</span>
+<span class="line" id="L193"><a class="ln" href="#L193">193</a>/*</span>
+<span class="line" id="L194"><a class="ln" href="#L194">194</a> * The parseExtendedStringArgumentsOrReply() function performs the common validation for extended</span>
+<span class="line" id="L195"><a class="ln" href="#L195">195</a> * string arguments used in SET and GET command.</span>
+<span class="line" id="L196"><a class="ln" href="#L196">196</a> *</span>
+<span class="line" id="L197"><a class="ln" href="#L197">197</a> * Get specific commands - PERSIST/DEL</span>
+<span class="line" id="L198"><a class="ln" href="#L198">198</a> * Set specific commands - XX/NX/GET</span>
+<span class="line" id="L199"><a class="ln" href="#L199">199</a> * Common commands - EX/EXAT/PX/PXAT/KEEPTTL</span>
+<span class="line" id="L200"><a class="ln" href="#L200">200</a> *</span>
+<span class="line" id="L201"><a class="ln" href="#L201">201</a> * Function takes pointers to client, flags, unit, pointer to pointer of expire obj if needed</span>
+<span class="line" id="L202"><a class="ln" href="#L202">202</a> * to be determined and command_type which can be COMMAND_GET or COMMAND_SET.</span>
+<span class="line" id="L203"><a class="ln" href="#L203">203</a> *</span>
+<span class="line" id="L204"><a class="ln" href="#L204">204</a> * If there are any syntax violations C_ERR is returned else C_OK is returned.</span>
+<span class="line" id="L205"><a class="ln" href="#L205">205</a> *</span>
+<span class="line" id="L206"><a class="ln" href="#L206">206</a> * Input flags are updated upon parsing the arguments. Unit and expire are updated if there are any</span>
+<span class="line" id="L207"><a class="ln" href="#L207">207</a> * EX/EXAT/PX/PXAT arguments. Unit is updated to millisecond if PX/PXAT is set.</span>
+<span class="line" id="L208"><a class="ln" href="#L208">208</a> */</span>
+<span class="line" id="L209"><a class="ln" href="#L209">209</a>int parseExtendedStringArgumentsOrReply(client *c, int *flags, int *unit, robj **expire, int command_type) {</span>
+<span class="line" id="L210"><a class="ln" href="#L210">210</a></span>
+<span class="line" id="L211"><a class="ln" href="#L211">211</a>    int j = command_type == COMMAND_GET ? 2 : 3;</span>
+<span class="line" id="L212"><a class="ln" href="#L212">212</a>    for (; j &lt; c-&gt;argc; j++) {</span>
+<span class="line" id="L213"><a class="ln" href="#L213">213</a>        char *opt = c-&gt;argv[j]-&gt;ptr;</span>
+<span class="line" id="L214"><a class="ln" href="#L214">214</a>        robj *next = (j == c-&gt;argc-1) ? NULL : c-&gt;argv[j+1];</span>
+<span class="line" id="L215"><a class="ln" href="#L215">215</a></span>
+<span class="line" id="L216"><a class="ln" href="#L216">216</a>        if ((opt[0] == &#x27;n&#x27; || opt[0] == &#x27;N&#x27;) &amp;&amp;</span>
+<span class="line" id="L217"><a class="ln" href="#L217">217</a>            (opt[1] == &#x27;x&#x27; || opt[1] == &#x27;X&#x27;) &amp;&amp; opt[2] == &#x27;\0&#x27; &amp;&amp;</span>
+<span class="line" id="L218"><a class="ln" href="#L218">218</a>            !(*flags &amp; OBJ_SET_XX) &amp;&amp; (command_type == COMMAND_SET))</span>
+<span class="line" id="L219"><a class="ln" href="#L219">219</a>        {</span>
+<span class="line" id="L220"><a class="ln" href="#L220">220</a>            *flags |= OBJ_SET_NX;</span>
+<span class="line" id="L221"><a class="ln" href="#L221">221</a>        } else if ((opt[0] == &#x27;x&#x27; || opt[0] == &#x27;X&#x27;) &amp;&amp;</span>
+<span class="line" id="L222"><a class="ln" href="#L222">222</a>                   (opt[1] == &#x27;x&#x27; || opt[1] == &#x27;X&#x27;) &amp;&amp; opt[2] == &#x27;\0&#x27; &amp;&amp;</span>
+<span class="line" id="L223"><a class="ln" href="#L223">223</a>                   !(*flags &amp; OBJ_SET_NX) &amp;&amp; (command_type == COMMAND_SET))</span>
+<span class="line" id="L224"><a class="ln" href="#L224">224</a>        {</span>
+<span class="line" id="L225"><a class="ln" href="#L225">225</a>            *flags |= OBJ_SET_XX;</span>
+<span class="line" id="L226"><a class="ln" href="#L226">226</a>        } else if ((opt[0] == &#x27;g&#x27; || opt[0] == &#x27;G&#x27;) &amp;&amp;</span>
+<span class="line" id="L227"><a class="ln" href="#L227">227</a>                   (opt[1] == &#x27;e&#x27; || opt[1] == &#x27;E&#x27;) &amp;&amp;</span>
+<span class="line" id="L228"><a class="ln" href="#L228">228</a>                   (opt[2] == &#x27;t&#x27; || opt[2] == &#x27;T&#x27;) &amp;&amp; opt[3] == &#x27;\0&#x27; &amp;&amp;</span>
+<span class="line" id="L229"><a class="ln" href="#L229">229</a>                   (command_type == COMMAND_SET))</span>
+<span class="line" id="L230"><a class="ln" href="#L230">230</a>        {</span>
+<span class="line" id="L231"><a class="ln" href="#L231">231</a>            *flags |= OBJ_SET_GET;</span>
+<span class="line" id="L232"><a class="ln" href="#L232">232</a>        } else if (!strcasecmp(opt, &quot;KEEPTTL&quot;) &amp;&amp; !(*flags &amp; OBJ_PERSIST) &amp;&amp;</span>
+<span class="line" id="L233"><a class="ln" href="#L233">233</a>            !(*flags &amp; OBJ_EX) &amp;&amp; !(*flags &amp; OBJ_EXAT) &amp;&amp;</span>
+<span class="line" id="L234"><a class="ln" href="#L234">234</a>            !(*flags &amp; OBJ_PX) &amp;&amp; !(*flags &amp; OBJ_PXAT) &amp;&amp; (command_type == COMMAND_SET))</span>
+<span class="line" id="L235"><a class="ln" href="#L235">235</a>        {</span>
+<span class="line" id="L236"><a class="ln" href="#L236">236</a>            *flags |= OBJ_KEEPTTL;</span>
+<span class="line" id="L237"><a class="ln" href="#L237">237</a>        } else if (!strcasecmp(opt,&quot;PERSIST&quot;) &amp;&amp; (command_type == COMMAND_GET) &amp;&amp;</span>
+<span class="line" id="L238"><a class="ln" href="#L238">238</a>               !(*flags &amp; OBJ_EX) &amp;&amp; !(*flags &amp; OBJ_EXAT) &amp;&amp;</span>
+<span class="line" id="L239"><a class="ln" href="#L239">239</a>               !(*flags &amp; OBJ_PX) &amp;&amp; !(*flags &amp; OBJ_PXAT) &amp;&amp;</span>
+<span class="line" id="L240"><a class="ln" href="#L240">240</a>               !(*flags &amp; OBJ_KEEPTTL))</span>
+<span class="line" id="L241"><a class="ln" href="#L241">241</a>        {</span>
+<span class="line" id="L242"><a class="ln" href="#L242">242</a>            *flags |= OBJ_PERSIST;</span>
+<span class="line" id="L243"><a class="ln" href="#L243">243</a>        } else if ((opt[0] == &#x27;e&#x27; || opt[0] == &#x27;E&#x27;) &amp;&amp;</span>
+<span class="line" id="L244"><a class="ln" href="#L244">244</a>                   (opt[1] == &#x27;x&#x27; || opt[1] == &#x27;X&#x27;) &amp;&amp; opt[2] == &#x27;\0&#x27; &amp;&amp;</span>
+<span class="line" id="L245"><a class="ln" href="#L245">245</a>                   !(*flags &amp; OBJ_KEEPTTL) &amp;&amp; !(*flags &amp; OBJ_PERSIST) &amp;&amp;</span>
+<span class="line" id="L246"><a class="ln" href="#L246">246</a>                   !(*flags &amp; OBJ_EXAT) &amp;&amp; !(*flags &amp; OBJ_PX) &amp;&amp;</span>
+<span class="line" id="L247"><a class="ln" href="#L247">247</a>                   !(*flags &amp; OBJ_PXAT) &amp;&amp; next)</span>
+<span class="line" id="L248"><a class="ln" href="#L248">248</a>        {</span>
+<span class="line" id="L249"><a class="ln" href="#L249">249</a>            *flags |= OBJ_EX;</span>
+<span class="line" id="L250"><a class="ln" href="#L250">250</a>            *expire = next;</span>
+<span class="line" id="L251"><a class="ln" href="#L251">251</a>            j++;</span>
+<span class="line" id="L252"><a class="ln" href="#L252">252</a>        } else if ((opt[0] == &#x27;p&#x27; || opt[0] == &#x27;P&#x27;) &amp;&amp;</span>
+<span class="line" id="L253"><a class="ln" href="#L253">253</a>                   (opt[1] == &#x27;x&#x27; || opt[1] == &#x27;X&#x27;) &amp;&amp; opt[2] == &#x27;\0&#x27; &amp;&amp;</span>
+<span class="line" id="L254"><a class="ln" href="#L254">254</a>                   !(*flags &amp; OBJ_KEEPTTL) &amp;&amp; !(*flags &amp; OBJ_PERSIST) &amp;&amp;</span>
+<span class="line" id="L255"><a class="ln" href="#L255">255</a>                   !(*flags &amp; OBJ_EX) &amp;&amp; !(*flags &amp; OBJ_EXAT) &amp;&amp;</span>
+<span class="line" id="L256"><a class="ln" href="#L256">256</a>                   !(*flags &amp; OBJ_PXAT) &amp;&amp; next)</span>
+<span class="line" id="L257"><a class="ln" href="#L257">257</a>        {</span>
+<span class="line" id="L258"><a class="ln" href="#L258">258</a>            *flags |= OBJ_PX;</span>
+<span class="line" id="L259"><a class="ln" href="#L259">259</a>            *unit = UNIT_MILLISECONDS;</span>
+<span class="line" id="L260"><a class="ln" href="#L260">260</a>            *expire = next;</span>
+<span class="line" id="L261"><a class="ln" href="#L261">261</a>            j++;</span>
+<span class="line" id="L262"><a class="ln" href="#L262">262</a>        } else if ((opt[0] == &#x27;e&#x27; || opt[0] == &#x27;E&#x27;) &amp;&amp;</span>
+<span class="line" id="L263"><a class="ln" href="#L263">263</a>                   (opt[1] == &#x27;x&#x27; || opt[1] == &#x27;X&#x27;) &amp;&amp;</span>
+<span class="line" id="L264"><a class="ln" href="#L264">264</a>                   (opt[2] == &#x27;a&#x27; || opt[2] == &#x27;A&#x27;) &amp;&amp;</span>
+<span class="line" id="L265"><a class="ln" href="#L265">265</a>                   (opt[3] == &#x27;t&#x27; || opt[3] == &#x27;T&#x27;) &amp;&amp; opt[4] == &#x27;\0&#x27; &amp;&amp;</span>
+<span class="line" id="L266"><a class="ln" href="#L266">266</a>                   !(*flags &amp; OBJ_KEEPTTL) &amp;&amp; !(*flags &amp; OBJ_PERSIST) &amp;&amp;</span>
+<span class="line" id="L267"><a class="ln" href="#L267">267</a>                   !(*flags &amp; OBJ_EX) &amp;&amp; !(*flags &amp; OBJ_PX) &amp;&amp;</span>
+<span class="line" id="L268"><a class="ln" href="#L268">268</a>                   !(*flags &amp; OBJ_PXAT) &amp;&amp; next)</span>
+<span class="line" id="L269"><a class="ln" href="#L269">269</a>        {</span>
+<span class="line" id="L270"><a class="ln" href="#L270">270</a>            *flags |= OBJ_EXAT;</span>
+<span class="line" id="L271"><a class="ln" href="#L271">271</a>            *expire = next;</span>
+<span class="line" id="L272"><a class="ln" href="#L272">272</a>            j++;</span>
+<span class="line" id="L273"><a class="ln" href="#L273">273</a>        } else if ((opt[0] == &#x27;p&#x27; || opt[0] == &#x27;P&#x27;) &amp;&amp;</span>
+<span class="line" id="L274"><a class="ln" href="#L274">274</a>                   (opt[1] == &#x27;x&#x27; || opt[1] == &#x27;X&#x27;) &amp;&amp;</span>
+<span class="line" id="L275"><a class="ln" href="#L275">275</a>                   (opt[2] == &#x27;a&#x27; || opt[2] == &#x27;A&#x27;) &amp;&amp;</span>
+<span class="line" id="L276"><a class="ln" href="#L276">276</a>                   (opt[3] == &#x27;t&#x27; || opt[3] == &#x27;T&#x27;) &amp;&amp; opt[4] == &#x27;\0&#x27; &amp;&amp;</span>
+<span class="line" id="L277"><a class="ln" href="#L277">277</a>                   !(*flags &amp; OBJ_KEEPTTL) &amp;&amp; !(*flags &amp; OBJ_PERSIST) &amp;&amp;</span>
+<span class="line" id="L278"><a class="ln" href="#L278">278</a>                   !(*flags &amp; OBJ_EX) &amp;&amp; !(*flags &amp; OBJ_EXAT) &amp;&amp;</span>
+<span class="line" id="L279"><a class="ln" href="#L279">279</a>                   !(*flags &amp; OBJ_PX) &amp;&amp; next)</span>
+<span class="line" id="L280"><a class="ln" href="#L280">280</a>        {</span>
+<span class="line" id="L281"><a class="ln" href="#L281">281</a>            *flags |= OBJ_PXAT;</span>
+<span class="line" id="L282"><a class="ln" href="#L282">282</a>            *unit = UNIT_MILLISECONDS;</span>
+<span class="line" id="L283"><a class="ln" href="#L283">283</a>            *expire = next;</span>
+<span class="line" id="L284"><a class="ln" href="#L284">284</a>            j++;</span>
+<span class="line" id="L285"><a class="ln" href="#L285">285</a>        } else {</span>
+<span class="line" id="L286"><a class="ln" href="#L286">286</a>            addReplyErrorObject(c,shared.syntaxerr);</span>
+<span class="line" id="L287"><a class="ln" href="#L287">287</a>            return C_ERR;</span>
+<span class="line" id="L288"><a class="ln" href="#L288">288</a>        }</span>
+<span class="line" id="L289"><a class="ln" href="#L289">289</a>    }</span>
+<span class="line" id="L290"><a class="ln" href="#L290">290</a>    return C_OK;</span>
+<span class="line" id="L291"><a class="ln" href="#L291">291</a>}</span>
+<span class="line" id="L292"><a class="ln" href="#L292">292</a></span>
+<span class="line" id="L293"><a class="ln" href="#L293">293</a>/* SET key value [NX] [XX] [KEEPTTL] [GET] [EX &lt;seconds&gt;] [PX &lt;milliseconds&gt;]</span>
+<span class="line" id="L294"><a class="ln" href="#L294">294</a> *     [EXAT &lt;seconds-timestamp&gt;][PXAT &lt;milliseconds-timestamp&gt;] */</span>
+<span class="line" id="L295"><a class="ln" href="#L295">295</a>void setCommand(client *c) {</span>
+<span class="line" id="L296"><a class="ln" href="#L296">296</a>    robj *expire = NULL;</span>
+<span class="line" id="L297"><a class="ln" href="#L297">297</a>    int unit = UNIT_SECONDS;</span>
+<span class="line" id="L298"><a class="ln" href="#L298">298</a>    int flags = OBJ_NO_FLAGS;</span>
+<span class="line" id="L299"><a class="ln" href="#L299">299</a></span>
+<span class="line" id="L300"><a class="ln" href="#L300">300</a>    if (parseExtendedStringArgumentsOrReply(c,&amp;flags,&amp;unit,&amp;expire,COMMAND_SET) != C_OK) {</span>
+<span class="line" id="L301"><a class="ln" href="#L301">301</a>        return;</span>
+<span class="line" id="L302"><a class="ln" href="#L302">302</a>    }</span>
+<span class="line" id="L303"><a class="ln" href="#L303">303</a></span>
+<span class="line" id="L304"><a class="ln" href="#L304">304</a>    c-&gt;argv[2] = tryObjectEncoding(c-&gt;argv[2]);</span>
+<span class="line" id="L305"><a class="ln" href="#L305">305</a>    setGenericCommand(c,flags,c-&gt;argv[1],c-&gt;argv[2],expire,unit,NULL,NULL);</span>
+<span class="line" id="L306"><a class="ln" href="#L306">306</a>}</span>
+<span class="line" id="L307"><a class="ln" href="#L307">307</a></span>
+<span class="line" id="L308"><a class="ln" href="#L308">308</a>void setnxCommand(client *c) {</span>
+<span class="line" id="L309"><a class="ln" href="#L309">309</a>    c-&gt;argv[2] = tryObjectEncoding(c-&gt;argv[2]);</span>
+<span class="line" id="L310"><a class="ln" href="#L310">310</a>    setGenericCommand(c,OBJ_SET_NX,c-&gt;argv[1],c-&gt;argv[2],NULL,0,shared.cone,shared.czero);</span>
+<span class="line" id="L311"><a class="ln" href="#L311">311</a>}</span>
+<span class="line" id="L312"><a class="ln" href="#L312">312</a></span>
+<span class="line" id="L313"><a class="ln" href="#L313">313</a>void setexCommand(client *c) {</span>
+<span class="line" id="L314"><a class="ln" href="#L314">314</a>    c-&gt;argv[3] = tryObjectEncoding(c-&gt;argv[3]);</span>
+<span class="line" id="L315"><a class="ln" href="#L315">315</a>    setGenericCommand(c,OBJ_EX,c-&gt;argv[1],c-&gt;argv[3],c-&gt;argv[2],UNIT_SECONDS,NULL,NULL);</span>
+<span class="line" id="L316"><a class="ln" href="#L316">316</a>}</span>
+<span class="line" id="L317"><a class="ln" href="#L317">317</a></span>
+<span class="line" id="L318"><a class="ln" href="#L318">318</a>void psetexCommand(client *c) {</span>
+<span class="line" id="L319"><a class="ln" href="#L319">319</a>    c-&gt;argv[3] = tryObjectEncoding(c-&gt;argv[3]);</span>
+<span class="line" id="L320"><a class="ln" href="#L320">320</a>    setGenericCommand(c,OBJ_PX,c-&gt;argv[1],c-&gt;argv[3],c-&gt;argv[2],UNIT_MILLISECONDS,NULL,NULL);</span>
+<span class="line" id="L321"><a class="ln" href="#L321">321</a>}</span>
+<span class="line" id="L322"><a class="ln" href="#L322">322</a></span>
+<span class="line" id="L323"><a class="ln" href="#L323">323</a>int getGenericCommand(client *c) {</span>
+<span class="line" id="L324"><a class="ln" href="#L324">324</a>    robj *o;</span>
+<span class="line" id="L325"><a class="ln" href="#L325">325</a></span>
+<span class="line" id="L326"><a class="ln" href="#L326">326</a>    if ((o = lookupKeyReadOrReply(c,c-&gt;argv[1],shared.null[c-&gt;resp])) == NULL)</span>
+<span class="line" id="L327"><a class="ln" href="#L327">327</a>        return C_OK;</span>
+<span class="line" id="L328"><a class="ln" href="#L328">328</a></span>
+<span class="line" id="L329"><a class="ln" href="#L329">329</a>    if (checkType(c,o,OBJ_STRING)) {</span>
+<span class="line" id="L330"><a class="ln" href="#L330">330</a>        return C_ERR;</span>
+<span class="line" id="L331"><a class="ln" href="#L331">331</a>    }</span>
+<span class="line" id="L332"><a class="ln" href="#L332">332</a></span>
+<span class="line" id="L333"><a class="ln" href="#L333">333</a>    addReplyBulk(c,o);</span>
+<span class="line" id="L334"><a class="ln" href="#L334">334</a>    return C_OK;</span>
+<span class="line" id="L335"><a class="ln" href="#L335">335</a>}</span>
+<span class="line" id="L336"><a class="ln" href="#L336">336</a></span>
+<span class="line" id="L337"><a class="ln" href="#L337">337</a>void getCommand(client *c) {</span>
+<span class="line" id="L338"><a class="ln" href="#L338">338</a>    getGenericCommand(c);</span>
+<span class="line" id="L339"><a class="ln" href="#L339">339</a>}</span>
+<span class="line" id="L340"><a class="ln" href="#L340">340</a></span>
+<span class="line" id="L341"><a class="ln" href="#L341">341</a>/*</span>
+<span class="line" id="L342"><a class="ln" href="#L342">342</a> * GETEX &lt;key&gt; [PERSIST][EX seconds][PX milliseconds][EXAT seconds-timestamp][PXAT milliseconds-timestamp]</span>
+<span class="line" id="L343"><a class="ln" href="#L343">343</a> *</span>
+<span class="line" id="L344"><a class="ln" href="#L344">344</a> * The getexCommand() function implements extended options and variants of the GET command. Unlike GET</span>
+<span class="line" id="L345"><a class="ln" href="#L345">345</a> * command this command is not read-only.</span>
+<span class="line" id="L346"><a class="ln" href="#L346">346</a> *</span>
+<span class="line" id="L347"><a class="ln" href="#L347">347</a> * The default behavior when no options are specified is same as GET and does not alter any TTL.</span>
+<span class="line" id="L348"><a class="ln" href="#L348">348</a> *</span>
+<span class="line" id="L349"><a class="ln" href="#L349">349</a> * Only one of the below options can be used at a given time.</span>
+<span class="line" id="L350"><a class="ln" href="#L350">350</a> *</span>
+<span class="line" id="L351"><a class="ln" href="#L351">351</a> * 1. PERSIST removes any TTL associated with the key.</span>
+<span class="line" id="L352"><a class="ln" href="#L352">352</a> * 2. EX Set expiry TTL in seconds.</span>
+<span class="line" id="L353"><a class="ln" href="#L353">353</a> * 3. PX Set expiry TTL in milliseconds.</span>
+<span class="line" id="L354"><a class="ln" href="#L354">354</a> * 4. EXAT Same like EX instead of specifying the number of seconds representing the TTL</span>
+<span class="line" id="L355"><a class="ln" href="#L355">355</a> *      (time to live), it takes an absolute Unix timestamp</span>
+<span class="line" id="L356"><a class="ln" href="#L356">356</a> * 5. PXAT Same like PX instead of specifying the number of milliseconds representing the TTL</span>
+<span class="line" id="L357"><a class="ln" href="#L357">357</a> *      (time to live), it takes an absolute Unix timestamp</span>
+<span class="line" id="L358"><a class="ln" href="#L358">358</a> *</span>
+<span class="line" id="L359"><a class="ln" href="#L359">359</a> * Command would either return the bulk string, error or nil.</span>
+<span class="line" id="L360"><a class="ln" href="#L360">360</a> */</span>
+<span class="line" id="L361"><a class="ln" href="#L361">361</a>void getexCommand(client *c) {</span>
+<span class="line" id="L362"><a class="ln" href="#L362">362</a>    robj *expire = NULL;</span>
+<span class="line" id="L363"><a class="ln" href="#L363">363</a>    int unit = UNIT_SECONDS;</span>
+<span class="line" id="L364"><a class="ln" href="#L364">364</a>    int flags = OBJ_NO_FLAGS;</span>
+<span class="line" id="L365"><a class="ln" href="#L365">365</a></span>
+<span class="line" id="L366"><a class="ln" href="#L366">366</a>    if (parseExtendedStringArgumentsOrReply(c,&amp;flags,&amp;unit,&amp;expire,COMMAND_GET) != C_OK) {</span>
+<span class="line" id="L367"><a class="ln" href="#L367">367</a>        return;</span>
+<span class="line" id="L368"><a class="ln" href="#L368">368</a>    }</span>
+<span class="line" id="L369"><a class="ln" href="#L369">369</a></span>
+<span class="line" id="L370"><a class="ln" href="#L370">370</a>    robj *o;</span>
+<span class="line" id="L371"><a class="ln" href="#L371">371</a></span>
+<span class="line" id="L372"><a class="ln" href="#L372">372</a>    if ((o = lookupKeyReadOrReply(c,c-&gt;argv[1],shared.null[c-&gt;resp])) == NULL)</span>
+<span class="line" id="L373"><a class="ln" href="#L373">373</a>        return;</span>
+<span class="line" id="L374"><a class="ln" href="#L374">374</a></span>
+<span class="line" id="L375"><a class="ln" href="#L375">375</a>    if (checkType(c,o,OBJ_STRING)) {</span>
+<span class="line" id="L376"><a class="ln" href="#L376">376</a>        return;</span>
+<span class="line" id="L377"><a class="ln" href="#L377">377</a>    }</span>
+<span class="line" id="L378"><a class="ln" href="#L378">378</a></span>
+<span class="line" id="L379"><a class="ln" href="#L379">379</a>    /* Validate the expiration time value first */</span>
+<span class="line" id="L380"><a class="ln" href="#L380">380</a>    long long milliseconds = 0;</span>
+<span class="line" id="L381"><a class="ln" href="#L381">381</a>    if (expire &amp;&amp; getExpireMillisecondsOrReply(c, expire, flags, unit, &amp;milliseconds) != C_OK) {</span>
+<span class="line" id="L382"><a class="ln" href="#L382">382</a>        return;</span>
+<span class="line" id="L383"><a class="ln" href="#L383">383</a>    }</span>
+<span class="line" id="L384"><a class="ln" href="#L384">384</a></span>
+<span class="line" id="L385"><a class="ln" href="#L385">385</a>    /* We need to do this before we expire the key or delete it */</span>
+<span class="line" id="L386"><a class="ln" href="#L386">386</a>    addReplyBulk(c,o);</span>
+<span class="line" id="L387"><a class="ln" href="#L387">387</a></span>
+<span class="line" id="L388"><a class="ln" href="#L388">388</a>    /* This command is never propagated as is. It is either propagated as PEXPIRE[AT],DEL,UNLINK or PERSIST.</span>
+<span class="line" id="L389"><a class="ln" href="#L389">389</a>     * This why it doesn&#x27;t need special handling in feedAppendOnlyFile to convert relative expire time to absolute one. */</span>
+<span class="line" id="L390"><a class="ln" href="#L390">390</a>    if (((flags &amp; OBJ_PXAT) || (flags &amp; OBJ_EXAT)) &amp;&amp; checkAlreadyExpired(milliseconds)) {</span>
+<span class="line" id="L391"><a class="ln" href="#L391">391</a>        /* When PXAT/EXAT absolute timestamp is specified, there can be a chance that timestamp</span>
+<span class="line" id="L392"><a class="ln" href="#L392">392</a>         * has already elapsed so delete the key in that case. */</span>
+<span class="line" id="L393"><a class="ln" href="#L393">393</a>        int deleted = dbGenericDelete(c-&gt;db, c-&gt;argv[1], server.lazyfree_lazy_expire, DB_FLAG_KEY_EXPIRED);</span>
+<span class="line" id="L394"><a class="ln" href="#L394">394</a>        serverAssert(deleted);</span>
+<span class="line" id="L395"><a class="ln" href="#L395">395</a>        robj *aux = server.lazyfree_lazy_expire ? shared.unlink : shared.del;</span>
+<span class="line" id="L396"><a class="ln" href="#L396">396</a>        rewriteClientCommandVector(c,2,aux,c-&gt;argv[1]);</span>
+<span class="line" id="L397"><a class="ln" href="#L397">397</a>        signalModifiedKey(c, c-&gt;db, c-&gt;argv[1]);</span>
+<span class="line" id="L398"><a class="ln" href="#L398">398</a>        notifyKeyspaceEvent(NOTIFY_GENERIC, &quot;del&quot;, c-&gt;argv[1], c-&gt;db-&gt;id);</span>
+<span class="line" id="L399"><a class="ln" href="#L399">399</a>        server.dirty++;</span>
+<span class="line" id="L400"><a class="ln" href="#L400">400</a>    } else if (expire) {</span>
+<span class="line" id="L401"><a class="ln" href="#L401">401</a>        setExpire(c,c-&gt;db,c-&gt;argv[1],milliseconds);</span>
+<span class="line" id="L402"><a class="ln" href="#L402">402</a>        /* Propagate as PXEXPIREAT millisecond-timestamp if there is</span>
+<span class="line" id="L403"><a class="ln" href="#L403">403</a>         * EX/PX/EXAT/PXAT flag and the key has not expired. */</span>
+<span class="line" id="L404"><a class="ln" href="#L404">404</a>        robj *milliseconds_obj = createStringObjectFromLongLong(milliseconds);</span>
+<span class="line" id="L405"><a class="ln" href="#L405">405</a>        rewriteClientCommandVector(c,3,shared.pexpireat,c-&gt;argv[1],milliseconds_obj);</span>
+<span class="line" id="L406"><a class="ln" href="#L406">406</a>        decrRefCount(milliseconds_obj);</span>
+<span class="line" id="L407"><a class="ln" href="#L407">407</a>        signalModifiedKey(c, c-&gt;db, c-&gt;argv[1]);</span>
+<span class="line" id="L408"><a class="ln" href="#L408">408</a>        notifyKeyspaceEvent(NOTIFY_GENERIC,&quot;expire&quot;,c-&gt;argv[1],c-&gt;db-&gt;id);</span>
+<span class="line" id="L409"><a class="ln" href="#L409">409</a>        server.dirty++;</span>
+<span class="line" id="L410"><a class="ln" href="#L410">410</a>    } else if (flags &amp; OBJ_PERSIST) {</span>
+<span class="line" id="L411"><a class="ln" href="#L411">411</a>        if (removeExpire(c-&gt;db, c-&gt;argv[1])) {</span>
+<span class="line" id="L412"><a class="ln" href="#L412">412</a>            signalModifiedKey(c, c-&gt;db, c-&gt;argv[1]);</span>
+<span class="line" id="L413"><a class="ln" href="#L413">413</a>            rewriteClientCommandVector(c, 2, shared.persist, c-&gt;argv[1]);</span>
+<span class="line" id="L414"><a class="ln" href="#L414">414</a>            notifyKeyspaceEvent(NOTIFY_GENERIC,&quot;persist&quot;,c-&gt;argv[1],c-&gt;db-&gt;id);</span>
+<span class="line" id="L415"><a class="ln" href="#L415">415</a>            server.dirty++;</span>
+<span class="line" id="L416"><a class="ln" href="#L416">416</a>        }</span>
+<span class="line" id="L417"><a class="ln" href="#L417">417</a>    }</span>
+<span class="line" id="L418"><a class="ln" href="#L418">418</a>}</span>
+<span class="line" id="L419"><a class="ln" href="#L419">419</a></span>
+<span class="line" id="L420"><a class="ln" href="#L420">420</a>void getdelCommand(client *c) {</span>
+<span class="line" id="L421"><a class="ln" href="#L421">421</a>    if (getGenericCommand(c) == C_ERR) return;</span>
+<span class="line" id="L422"><a class="ln" href="#L422">422</a>    if (dbSyncDelete(c-&gt;db, c-&gt;argv[1])) {</span>
+<span class="line" id="L423"><a class="ln" href="#L423">423</a>        /* Propagate as DEL command */</span>
+<span class="line" id="L424"><a class="ln" href="#L424">424</a>        rewriteClientCommandVector(c,2,shared.del,c-&gt;argv[1]);</span>
+<span class="line" id="L425"><a class="ln" href="#L425">425</a>        signalModifiedKey(c, c-&gt;db, c-&gt;argv[1]);</span>
+<span class="line" id="L426"><a class="ln" href="#L426">426</a>        notifyKeyspaceEvent(NOTIFY_GENERIC, &quot;del&quot;, c-&gt;argv[1], c-&gt;db-&gt;id);</span>
+<span class="line" id="L427"><a class="ln" href="#L427">427</a>        server.dirty++;</span>
+<span class="line" id="L428"><a class="ln" href="#L428">428</a>    }</span>
+<span class="line" id="L429"><a class="ln" href="#L429">429</a>}</span>
+<span class="line" id="L430"><a class="ln" href="#L430">430</a></span>
+<span class="line" id="L431"><a class="ln" href="#L431">431</a>void getsetCommand(client *c) {</span>
+<span class="line" id="L432"><a class="ln" href="#L432">432</a>    if (getGenericCommand(c) == C_ERR) return;</span>
+<span class="line" id="L433"><a class="ln" href="#L433">433</a>    c-&gt;argv[2] = tryObjectEncoding(c-&gt;argv[2]);</span>
+<span class="line" id="L434"><a class="ln" href="#L434">434</a>    setKey(c,c-&gt;db,c-&gt;argv[1],c-&gt;argv[2],0);</span>
+<span class="line" id="L435"><a class="ln" href="#L435">435</a>    notifyKeyspaceEvent(NOTIFY_STRING,&quot;set&quot;,c-&gt;argv[1],c-&gt;db-&gt;id);</span>
+<span class="line" id="L436"><a class="ln" href="#L436">436</a>    server.dirty++;</span>
+<span class="line" id="L437"><a class="ln" href="#L437">437</a></span>
+<span class="line" id="L438"><a class="ln" href="#L438">438</a>    /* Propagate as SET command */</span>
+<span class="line" id="L439"><a class="ln" href="#L439">439</a>    rewriteClientCommandArgument(c,0,shared.set);</span>
+<span class="line" id="L440"><a class="ln" href="#L440">440</a>}</span>
+<span class="line" id="L441"><a class="ln" href="#L441">441</a></span>
+<span class="line" id="L442"><a class="ln" href="#L442">442</a>void setrangeCommand(client *c) {</span>
+<span class="line" id="L443"><a class="ln" href="#L443">443</a>    robj *o;</span>
+<span class="line" id="L444"><a class="ln" href="#L444">444</a>    long offset;</span>
+<span class="line" id="L445"><a class="ln" href="#L445">445</a>    sds value = c-&gt;argv[3]-&gt;ptr;</span>
+<span class="line" id="L446"><a class="ln" href="#L446">446</a></span>
+<span class="line" id="L447"><a class="ln" href="#L447">447</a>    if (getLongFromObjectOrReply(c,c-&gt;argv[2],&amp;offset,NULL) != C_OK)</span>
+<span class="line" id="L448"><a class="ln" href="#L448">448</a>        return;</span>
+<span class="line" id="L449"><a class="ln" href="#L449">449</a></span>
+<span class="line" id="L450"><a class="ln" href="#L450">450</a>    if (offset &lt; 0) {</span>
+<span class="line" id="L451"><a class="ln" href="#L451">451</a>        addReplyError(c,&quot;offset is out of range&quot;);</span>
+<span class="line" id="L452"><a class="ln" href="#L452">452</a>        return;</span>
+<span class="line" id="L453"><a class="ln" href="#L453">453</a>    }</span>
+<span class="line" id="L454"><a class="ln" href="#L454">454</a></span>
+<span class="line" id="L455"><a class="ln" href="#L455">455</a>    o = lookupKeyWrite(c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L456"><a class="ln" href="#L456">456</a>    if (o == NULL) {</span>
+<span class="line" id="L457"><a class="ln" href="#L457">457</a>        /* Return 0 when setting nothing on a non-existing string */</span>
+<span class="line" id="L458"><a class="ln" href="#L458">458</a>        if (sdslen(value) == 0) {</span>
+<span class="line" id="L459"><a class="ln" href="#L459">459</a>            addReply(c,shared.czero);</span>
+<span class="line" id="L460"><a class="ln" href="#L460">460</a>            return;</span>
+<span class="line" id="L461"><a class="ln" href="#L461">461</a>        }</span>
+<span class="line" id="L462"><a class="ln" href="#L462">462</a></span>
+<span class="line" id="L463"><a class="ln" href="#L463">463</a>        /* Return when the resulting string exceeds allowed size */</span>
+<span class="line" id="L464"><a class="ln" href="#L464">464</a>        if (checkStringLength(c,offset,sdslen(value)) != C_OK)</span>
+<span class="line" id="L465"><a class="ln" href="#L465">465</a>            return;</span>
+<span class="line" id="L466"><a class="ln" href="#L466">466</a></span>
+<span class="line" id="L467"><a class="ln" href="#L467">467</a>        o = createObject(OBJ_STRING,sdsnewlen(NULL, offset+sdslen(value)));</span>
+<span class="line" id="L468"><a class="ln" href="#L468">468</a>        dbAdd(c-&gt;db,c-&gt;argv[1],o);</span>
+<span class="line" id="L469"><a class="ln" href="#L469">469</a>    } else {</span>
+<span class="line" id="L470"><a class="ln" href="#L470">470</a>        size_t olen;</span>
+<span class="line" id="L471"><a class="ln" href="#L471">471</a></span>
+<span class="line" id="L472"><a class="ln" href="#L472">472</a>        /* Key exists, check type */</span>
+<span class="line" id="L473"><a class="ln" href="#L473">473</a>        if (checkType(c,o,OBJ_STRING))</span>
+<span class="line" id="L474"><a class="ln" href="#L474">474</a>            return;</span>
+<span class="line" id="L475"><a class="ln" href="#L475">475</a></span>
+<span class="line" id="L476"><a class="ln" href="#L476">476</a>        /* Return existing string length when setting nothing */</span>
+<span class="line" id="L477"><a class="ln" href="#L477">477</a>        olen = stringObjectLen(o);</span>
+<span class="line" id="L478"><a class="ln" href="#L478">478</a>        if (sdslen(value) == 0) {</span>
+<span class="line" id="L479"><a class="ln" href="#L479">479</a>            addReplyLongLong(c,olen);</span>
+<span class="line" id="L480"><a class="ln" href="#L480">480</a>            return;</span>
+<span class="line" id="L481"><a class="ln" href="#L481">481</a>        }</span>
+<span class="line" id="L482"><a class="ln" href="#L482">482</a></span>
+<span class="line" id="L483"><a class="ln" href="#L483">483</a>        /* Return when the resulting string exceeds allowed size */</span>
+<span class="line" id="L484"><a class="ln" href="#L484">484</a>        if (checkStringLength(c,offset,sdslen(value)) != C_OK)</span>
+<span class="line" id="L485"><a class="ln" href="#L485">485</a>            return;</span>
+<span class="line" id="L486"><a class="ln" href="#L486">486</a></span>
+<span class="line" id="L487"><a class="ln" href="#L487">487</a>        /* Create a copy when the object is shared or encoded. */</span>
+<span class="line" id="L488"><a class="ln" href="#L488">488</a>        o = dbUnshareStringValue(c-&gt;db,c-&gt;argv[1],o);</span>
+<span class="line" id="L489"><a class="ln" href="#L489">489</a>    }</span>
+<span class="line" id="L490"><a class="ln" href="#L490">490</a></span>
+<span class="line" id="L491"><a class="ln" href="#L491">491</a>    if (sdslen(value) &gt; 0) {</span>
+<span class="line" id="L492"><a class="ln" href="#L492">492</a>        o-&gt;ptr = sdsgrowzero(o-&gt;ptr,offset+sdslen(value));</span>
+<span class="line" id="L493"><a class="ln" href="#L493">493</a>        memcpy((char*)o-&gt;ptr+offset,value,sdslen(value));</span>
+<span class="line" id="L494"><a class="ln" href="#L494">494</a>        signalModifiedKey(c,c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L495"><a class="ln" href="#L495">495</a>        notifyKeyspaceEvent(NOTIFY_STRING,</span>
+<span class="line" id="L496"><a class="ln" href="#L496">496</a>            &quot;setrange&quot;,c-&gt;argv[1],c-&gt;db-&gt;id);</span>
+<span class="line" id="L497"><a class="ln" href="#L497">497</a>        server.dirty++;</span>
+<span class="line" id="L498"><a class="ln" href="#L498">498</a>    }</span>
+<span class="line" id="L499"><a class="ln" href="#L499">499</a>    addReplyLongLong(c,sdslen(o-&gt;ptr));</span>
+<span class="line" id="L500"><a class="ln" href="#L500">500</a>}</span>
+<span class="line" id="L501"><a class="ln" href="#L501">501</a></span>
+<span class="line" id="L502"><a class="ln" href="#L502">502</a>void getrangeCommand(client *c) {</span>
+<span class="line" id="L503"><a class="ln" href="#L503">503</a>    robj *o;</span>
+<span class="line" id="L504"><a class="ln" href="#L504">504</a>    long long start, end;</span>
+<span class="line" id="L505"><a class="ln" href="#L505">505</a>    char *str, llbuf[32];</span>
+<span class="line" id="L506"><a class="ln" href="#L506">506</a>    size_t strlen;</span>
+<span class="line" id="L507"><a class="ln" href="#L507">507</a></span>
+<span class="line" id="L508"><a class="ln" href="#L508">508</a>    if (getLongLongFromObjectOrReply(c,c-&gt;argv[2],&amp;start,NULL) != C_OK)</span>
+<span class="line" id="L509"><a class="ln" href="#L509">509</a>        return;</span>
+<span class="line" id="L510"><a class="ln" href="#L510">510</a>    if (getLongLongFromObjectOrReply(c,c-&gt;argv[3],&amp;end,NULL) != C_OK)</span>
+<span class="line" id="L511"><a class="ln" href="#L511">511</a>        return;</span>
+<span class="line" id="L512"><a class="ln" href="#L512">512</a>    if ((o = lookupKeyReadOrReply(c,c-&gt;argv[1],shared.emptybulk)) == NULL ||</span>
+<span class="line" id="L513"><a class="ln" href="#L513">513</a>        checkType(c,o,OBJ_STRING)) return;</span>
+<span class="line" id="L514"><a class="ln" href="#L514">514</a></span>
+<span class="line" id="L515"><a class="ln" href="#L515">515</a>    if (o-&gt;encoding == OBJ_ENCODING_INT) {</span>
+<span class="line" id="L516"><a class="ln" href="#L516">516</a>        str = llbuf;</span>
+<span class="line" id="L517"><a class="ln" href="#L517">517</a>        strlen = ll2string(llbuf,sizeof(llbuf),(long)o-&gt;ptr);</span>
+<span class="line" id="L518"><a class="ln" href="#L518">518</a>    } else {</span>
+<span class="line" id="L519"><a class="ln" href="#L519">519</a>        str = o-&gt;ptr;</span>
+<span class="line" id="L520"><a class="ln" href="#L520">520</a>        strlen = sdslen(str);</span>
+<span class="line" id="L521"><a class="ln" href="#L521">521</a>    }</span>
+<span class="line" id="L522"><a class="ln" href="#L522">522</a></span>
+<span class="line" id="L523"><a class="ln" href="#L523">523</a>    /* Convert negative indexes */</span>
+<span class="line" id="L524"><a class="ln" href="#L524">524</a>    if (start &lt; 0 &amp;&amp; end &lt; 0 &amp;&amp; start &gt; end) {</span>
+<span class="line" id="L525"><a class="ln" href="#L525">525</a>        addReply(c,shared.emptybulk);</span>
+<span class="line" id="L526"><a class="ln" href="#L526">526</a>        return;</span>
+<span class="line" id="L527"><a class="ln" href="#L527">527</a>    }</span>
+<span class="line" id="L528"><a class="ln" href="#L528">528</a>    if (start &lt; 0) start = strlen+start;</span>
+<span class="line" id="L529"><a class="ln" href="#L529">529</a>    if (end &lt; 0) end = strlen+end;</span>
+<span class="line" id="L530"><a class="ln" href="#L530">530</a>    if (start &lt; 0) start = 0;</span>
+<span class="line" id="L531"><a class="ln" href="#L531">531</a>    if (end &lt; 0) end = 0;</span>
+<span class="line" id="L532"><a class="ln" href="#L532">532</a>    if ((unsigned long long)end &gt;= strlen) end = strlen-1;</span>
+<span class="line" id="L533"><a class="ln" href="#L533">533</a></span>
+<span class="line" id="L534"><a class="ln" href="#L534">534</a>    /* Precondition: end &gt;= 0 &amp;&amp; end &lt; strlen, so the only condition where</span>
+<span class="line" id="L535"><a class="ln" href="#L535">535</a>     * nothing can be returned is: start &gt; end. */</span>
+<span class="line" id="L536"><a class="ln" href="#L536">536</a>    if (start &gt; end || strlen == 0) {</span>
+<span class="line" id="L537"><a class="ln" href="#L537">537</a>        addReply(c,shared.emptybulk);</span>
+<span class="line" id="L538"><a class="ln" href="#L538">538</a>    } else {</span>
+<span class="line" id="L539"><a class="ln" href="#L539">539</a>        addReplyBulkCBuffer(c,(char*)str+start,end-start+1);</span>
+<span class="line" id="L540"><a class="ln" href="#L540">540</a>    }</span>
+<span class="line" id="L541"><a class="ln" href="#L541">541</a>}</span>
+<span class="line" id="L542"><a class="ln" href="#L542">542</a></span>
+<span class="line" id="L543"><a class="ln" href="#L543">543</a>void mgetCommand(client *c) {</span>
+<span class="line" id="L544"><a class="ln" href="#L544">544</a>    int j;</span>
+<span class="line" id="L545"><a class="ln" href="#L545">545</a></span>
+<span class="line" id="L546"><a class="ln" href="#L546">546</a>    addReplyArrayLen(c,c-&gt;argc-1);</span>
+<span class="line" id="L547"><a class="ln" href="#L547">547</a>    for (j = 1; j &lt; c-&gt;argc; j++) {</span>
+<span class="line" id="L548"><a class="ln" href="#L548">548</a>        robj *o = lookupKeyRead(c-&gt;db,c-&gt;argv[j]);</span>
+<span class="line" id="L549"><a class="ln" href="#L549">549</a>        if (o == NULL) {</span>
+<span class="line" id="L550"><a class="ln" href="#L550">550</a>            addReplyNull(c);</span>
+<span class="line" id="L551"><a class="ln" href="#L551">551</a>        } else {</span>
+<span class="line" id="L552"><a class="ln" href="#L552">552</a>            if (o-&gt;type != OBJ_STRING) {</span>
+<span class="line" id="L553"><a class="ln" href="#L553">553</a>                addReplyNull(c);</span>
+<span class="line" id="L554"><a class="ln" href="#L554">554</a>            } else {</span>
+<span class="line" id="L555"><a class="ln" href="#L555">555</a>                addReplyBulk(c,o);</span>
+<span class="line" id="L556"><a class="ln" href="#L556">556</a>            }</span>
+<span class="line" id="L557"><a class="ln" href="#L557">557</a>        }</span>
+<span class="line" id="L558"><a class="ln" href="#L558">558</a>    }</span>
+<span class="line" id="L559"><a class="ln" href="#L559">559</a>}</span>
+<span class="line" id="L560"><a class="ln" href="#L560">560</a></span>
+<span class="line" id="L561"><a class="ln" href="#L561">561</a>void msetGenericCommand(client *c, int nx) {</span>
+<span class="line" id="L562"><a class="ln" href="#L562">562</a>    int j;</span>
+<span class="line" id="L563"><a class="ln" href="#L563">563</a></span>
+<span class="line" id="L564"><a class="ln" href="#L564">564</a>    if ((c-&gt;argc % 2) == 0) {</span>
+<span class="line" id="L565"><a class="ln" href="#L565">565</a>        addReplyErrorArity(c);</span>
+<span class="line" id="L566"><a class="ln" href="#L566">566</a>        return;</span>
+<span class="line" id="L567"><a class="ln" href="#L567">567</a>    }</span>
+<span class="line" id="L568"><a class="ln" href="#L568">568</a></span>
+<span class="line" id="L569"><a class="ln" href="#L569">569</a>    /* Handle the NX flag. The MSETNX semantic is to return zero and don&#x27;t</span>
+<span class="line" id="L570"><a class="ln" href="#L570">570</a>     * set anything if at least one key already exists. */</span>
+<span class="line" id="L571"><a class="ln" href="#L571">571</a>    if (nx) {</span>
+<span class="line" id="L572"><a class="ln" href="#L572">572</a>        for (j = 1; j &lt; c-&gt;argc; j += 2) {</span>
+<span class="line" id="L573"><a class="ln" href="#L573">573</a>            if (lookupKeyWrite(c-&gt;db,c-&gt;argv[j]) != NULL) {</span>
+<span class="line" id="L574"><a class="ln" href="#L574">574</a>                addReply(c, shared.czero);</span>
+<span class="line" id="L575"><a class="ln" href="#L575">575</a>                return;</span>
+<span class="line" id="L576"><a class="ln" href="#L576">576</a>            }</span>
+<span class="line" id="L577"><a class="ln" href="#L577">577</a>        }</span>
+<span class="line" id="L578"><a class="ln" href="#L578">578</a>    }</span>
+<span class="line" id="L579"><a class="ln" href="#L579">579</a></span>
+<span class="line" id="L580"><a class="ln" href="#L580">580</a>    int setkey_flags = nx ? SETKEY_DOESNT_EXIST : 0;</span>
+<span class="line" id="L581"><a class="ln" href="#L581">581</a>    for (j = 1; j &lt; c-&gt;argc; j += 2) {</span>
+<span class="line" id="L582"><a class="ln" href="#L582">582</a>        c-&gt;argv[j+1] = tryObjectEncoding(c-&gt;argv[j+1]);</span>
+<span class="line" id="L583"><a class="ln" href="#L583">583</a>        setKey(c, c-&gt;db, c-&gt;argv[j], c-&gt;argv[j + 1], setkey_flags);</span>
+<span class="line" id="L584"><a class="ln" href="#L584">584</a>        notifyKeyspaceEvent(NOTIFY_STRING,&quot;set&quot;,c-&gt;argv[j],c-&gt;db-&gt;id);</span>
+<span class="line" id="L585"><a class="ln" href="#L585">585</a>        /* In MSETNX, It could be that we&#x27;re overriding the same key, we can&#x27;t be sure it doesn&#x27;t exist. */</span>
+<span class="line" id="L586"><a class="ln" href="#L586">586</a>        if (nx)</span>
+<span class="line" id="L587"><a class="ln" href="#L587">587</a>            setkey_flags = SETKEY_ADD_OR_UPDATE;</span>
+<span class="line" id="L588"><a class="ln" href="#L588">588</a>    }</span>
+<span class="line" id="L589"><a class="ln" href="#L589">589</a>    server.dirty += (c-&gt;argc-1)/2;</span>
+<span class="line" id="L590"><a class="ln" href="#L590">590</a>    addReply(c, nx ? shared.cone : shared.ok);</span>
+<span class="line" id="L591"><a class="ln" href="#L591">591</a>}</span>
+<span class="line" id="L592"><a class="ln" href="#L592">592</a></span>
+<span class="line" id="L593"><a class="ln" href="#L593">593</a>void msetCommand(client *c) {</span>
+<span class="line" id="L594"><a class="ln" href="#L594">594</a>    msetGenericCommand(c,0);</span>
+<span class="line" id="L595"><a class="ln" href="#L595">595</a>}</span>
+<span class="line" id="L596"><a class="ln" href="#L596">596</a></span>
+<span class="line" id="L597"><a class="ln" href="#L597">597</a>void msetnxCommand(client *c) {</span>
+<span class="line" id="L598"><a class="ln" href="#L598">598</a>    msetGenericCommand(c,1);</span>
+<span class="line" id="L599"><a class="ln" href="#L599">599</a>}</span>
+<span class="line" id="L600"><a class="ln" href="#L600">600</a></span>
+<span class="line" id="L601"><a class="ln" href="#L601">601</a>void incrDecrCommand(client *c, long long incr) {</span>
+<span class="line" id="L602"><a class="ln" href="#L602">602</a>    long long value, oldvalue;</span>
+<span class="line" id="L603"><a class="ln" href="#L603">603</a>    robj *o, *new;</span>
+<span class="line" id="L604"><a class="ln" href="#L604">604</a></span>
+<span class="line" id="L605"><a class="ln" href="#L605">605</a>    o = lookupKeyWrite(c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L606"><a class="ln" href="#L606">606</a>    if (checkType(c,o,OBJ_STRING)) return;</span>
+<span class="line" id="L607"><a class="ln" href="#L607">607</a>    if (getLongLongFromObjectOrReply(c,o,&amp;value,NULL) != C_OK) return;</span>
+<span class="line" id="L608"><a class="ln" href="#L608">608</a></span>
+<span class="line" id="L609"><a class="ln" href="#L609">609</a>    oldvalue = value;</span>
+<span class="line" id="L610"><a class="ln" href="#L610">610</a>    if ((incr &lt; 0 &amp;&amp; oldvalue &lt; 0 &amp;&amp; incr &lt; (LLONG_MIN-oldvalue)) ||</span>
+<span class="line" id="L611"><a class="ln" href="#L611">611</a>        (incr &gt; 0 &amp;&amp; oldvalue &gt; 0 &amp;&amp; incr &gt; (LLONG_MAX-oldvalue))) {</span>
+<span class="line" id="L612"><a class="ln" href="#L612">612</a>        addReplyError(c,&quot;increment or decrement would overflow&quot;);</span>
+<span class="line" id="L613"><a class="ln" href="#L613">613</a>        return;</span>
+<span class="line" id="L614"><a class="ln" href="#L614">614</a>    }</span>
+<span class="line" id="L615"><a class="ln" href="#L615">615</a>    value += incr;</span>
+<span class="line" id="L616"><a class="ln" href="#L616">616</a></span>
+<span class="line" id="L617"><a class="ln" href="#L617">617</a>    if (o &amp;&amp; o-&gt;refcount == 1 &amp;&amp; o-&gt;encoding == OBJ_ENCODING_INT &amp;&amp;</span>
+<span class="line" id="L618"><a class="ln" href="#L618">618</a>        (value &lt; 0 || value &gt;= OBJ_SHARED_INTEGERS) &amp;&amp;</span>
+<span class="line" id="L619"><a class="ln" href="#L619">619</a>        value &gt;= LONG_MIN &amp;&amp; value &lt;= LONG_MAX)</span>
+<span class="line" id="L620"><a class="ln" href="#L620">620</a>    {</span>
+<span class="line" id="L621"><a class="ln" href="#L621">621</a>        new = o;</span>
+<span class="line" id="L622"><a class="ln" href="#L622">622</a>        o-&gt;ptr = (void*)((long)value);</span>
+<span class="line" id="L623"><a class="ln" href="#L623">623</a>    } else {</span>
+<span class="line" id="L624"><a class="ln" href="#L624">624</a>        new = createStringObjectFromLongLongForValue(value);</span>
+<span class="line" id="L625"><a class="ln" href="#L625">625</a>        if (o) {</span>
+<span class="line" id="L626"><a class="ln" href="#L626">626</a>            dbReplaceValue(c-&gt;db,c-&gt;argv[1],new);</span>
+<span class="line" id="L627"><a class="ln" href="#L627">627</a>        } else {</span>
+<span class="line" id="L628"><a class="ln" href="#L628">628</a>            dbAdd(c-&gt;db,c-&gt;argv[1],new);</span>
+<span class="line" id="L629"><a class="ln" href="#L629">629</a>        }</span>
+<span class="line" id="L630"><a class="ln" href="#L630">630</a>    }</span>
+<span class="line" id="L631"><a class="ln" href="#L631">631</a>    signalModifiedKey(c,c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L632"><a class="ln" href="#L632">632</a>    notifyKeyspaceEvent(NOTIFY_STRING,&quot;incrby&quot;,c-&gt;argv[1],c-&gt;db-&gt;id);</span>
+<span class="line" id="L633"><a class="ln" href="#L633">633</a>    server.dirty++;</span>
+<span class="line" id="L634"><a class="ln" href="#L634">634</a>    addReplyLongLong(c, value);</span>
+<span class="line" id="L635"><a class="ln" href="#L635">635</a>}</span>
+<span class="line" id="L636"><a class="ln" href="#L636">636</a></span>
+<span class="line" id="L637"><a class="ln" href="#L637">637</a>void incrCommand(client *c) {</span>
+<span class="line" id="L638"><a class="ln" href="#L638">638</a>    incrDecrCommand(c,1);</span>
+<span class="line" id="L639"><a class="ln" href="#L639">639</a>}</span>
+<span class="line" id="L640"><a class="ln" href="#L640">640</a></span>
+<span class="line" id="L641"><a class="ln" href="#L641">641</a>void decrCommand(client *c) {</span>
+<span class="line" id="L642"><a class="ln" href="#L642">642</a>    incrDecrCommand(c,-1);</span>
+<span class="line" id="L643"><a class="ln" href="#L643">643</a>}</span>
+<span class="line" id="L644"><a class="ln" href="#L644">644</a></span>
+<span class="line" id="L645"><a class="ln" href="#L645">645</a>void incrbyCommand(client *c) {</span>
+<span class="line" id="L646"><a class="ln" href="#L646">646</a>    long long incr;</span>
+<span class="line" id="L647"><a class="ln" href="#L647">647</a></span>
+<span class="line" id="L648"><a class="ln" href="#L648">648</a>    if (getLongLongFromObjectOrReply(c, c-&gt;argv[2], &amp;incr, NULL) != C_OK) return;</span>
+<span class="line" id="L649"><a class="ln" href="#L649">649</a>    incrDecrCommand(c,incr);</span>
+<span class="line" id="L650"><a class="ln" href="#L650">650</a>}</span>
+<span class="line" id="L651"><a class="ln" href="#L651">651</a></span>
+<span class="line" id="L652"><a class="ln" href="#L652">652</a>void decrbyCommand(client *c) {</span>
+<span class="line" id="L653"><a class="ln" href="#L653">653</a>    long long incr;</span>
+<span class="line" id="L654"><a class="ln" href="#L654">654</a></span>
+<span class="line" id="L655"><a class="ln" href="#L655">655</a>    if (getLongLongFromObjectOrReply(c, c-&gt;argv[2], &amp;incr, NULL) != C_OK) return;</span>
+<span class="line" id="L656"><a class="ln" href="#L656">656</a>    /* Overflow check: negating LLONG_MIN will cause an overflow */</span>
+<span class="line" id="L657"><a class="ln" href="#L657">657</a>    if (incr == LLONG_MIN) {</span>
+<span class="line" id="L658"><a class="ln" href="#L658">658</a>        addReplyError(c, &quot;decrement would overflow&quot;);</span>
+<span class="line" id="L659"><a class="ln" href="#L659">659</a>        return;</span>
+<span class="line" id="L660"><a class="ln" href="#L660">660</a>    }</span>
+<span class="line" id="L661"><a class="ln" href="#L661">661</a>    incrDecrCommand(c,-incr);</span>
+<span class="line" id="L662"><a class="ln" href="#L662">662</a>}</span>
+<span class="line" id="L663"><a class="ln" href="#L663">663</a></span>
+<span class="line" id="L664"><a class="ln" href="#L664">664</a>void incrbyfloatCommand(client *c) {</span>
+<span class="line" id="L665"><a class="ln" href="#L665">665</a>    long double incr, value;</span>
+<span class="line" id="L666"><a class="ln" href="#L666">666</a>    robj *o, *new;</span>
+<span class="line" id="L667"><a class="ln" href="#L667">667</a></span>
+<span class="line" id="L668"><a class="ln" href="#L668">668</a>    o = lookupKeyWrite(c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L669"><a class="ln" href="#L669">669</a>    if (checkType(c,o,OBJ_STRING)) return;</span>
+<span class="line" id="L670"><a class="ln" href="#L670">670</a>    if (getLongDoubleFromObjectOrReply(c,o,&amp;value,NULL) != C_OK ||</span>
+<span class="line" id="L671"><a class="ln" href="#L671">671</a>        getLongDoubleFromObjectOrReply(c,c-&gt;argv[2],&amp;incr,NULL) != C_OK)</span>
+<span class="line" id="L672"><a class="ln" href="#L672">672</a>        return;</span>
+<span class="line" id="L673"><a class="ln" href="#L673">673</a></span>
+<span class="line" id="L674"><a class="ln" href="#L674">674</a>    value += incr;</span>
+<span class="line" id="L675"><a class="ln" href="#L675">675</a>    if (isnan(value) || isinf(value)) {</span>
+<span class="line" id="L676"><a class="ln" href="#L676">676</a>        addReplyError(c,&quot;increment would produce NaN or Infinity&quot;);</span>
+<span class="line" id="L677"><a class="ln" href="#L677">677</a>        return;</span>
+<span class="line" id="L678"><a class="ln" href="#L678">678</a>    }</span>
+<span class="line" id="L679"><a class="ln" href="#L679">679</a>    new = createStringObjectFromLongDouble(value,1);</span>
+<span class="line" id="L680"><a class="ln" href="#L680">680</a>    if (o)</span>
+<span class="line" id="L681"><a class="ln" href="#L681">681</a>        dbReplaceValue(c-&gt;db,c-&gt;argv[1],new);</span>
+<span class="line" id="L682"><a class="ln" href="#L682">682</a>    else</span>
+<span class="line" id="L683"><a class="ln" href="#L683">683</a>        dbAdd(c-&gt;db,c-&gt;argv[1],new);</span>
+<span class="line" id="L684"><a class="ln" href="#L684">684</a>    signalModifiedKey(c,c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L685"><a class="ln" href="#L685">685</a>    notifyKeyspaceEvent(NOTIFY_STRING,&quot;incrbyfloat&quot;,c-&gt;argv[1],c-&gt;db-&gt;id);</span>
+<span class="line" id="L686"><a class="ln" href="#L686">686</a>    server.dirty++;</span>
+<span class="line" id="L687"><a class="ln" href="#L687">687</a>    addReplyBulk(c,new);</span>
+<span class="line" id="L688"><a class="ln" href="#L688">688</a></span>
+<span class="line" id="L689"><a class="ln" href="#L689">689</a>    /* Always replicate INCRBYFLOAT as a SET command with the final value</span>
+<span class="line" id="L690"><a class="ln" href="#L690">690</a>     * in order to make sure that differences in float precision or formatting</span>
+<span class="line" id="L691"><a class="ln" href="#L691">691</a>     * will not create differences in replicas or after an AOF restart. */</span>
+<span class="line" id="L692"><a class="ln" href="#L692">692</a>    rewriteClientCommandArgument(c,0,shared.set);</span>
+<span class="line" id="L693"><a class="ln" href="#L693">693</a>    rewriteClientCommandArgument(c,2,new);</span>
+<span class="line" id="L694"><a class="ln" href="#L694">694</a>    rewriteClientCommandArgument(c,3,shared.keepttl);</span>
+<span class="line" id="L695"><a class="ln" href="#L695">695</a>}</span>
+<span class="line" id="L696"><a class="ln" href="#L696">696</a></span>
+<span class="line" id="L697"><a class="ln" href="#L697">697</a>void appendCommand(client *c) {</span>
+<span class="line" id="L698"><a class="ln" href="#L698">698</a>    size_t totlen;</span>
+<span class="line" id="L699"><a class="ln" href="#L699">699</a>    robj *o, *append;</span>
+<span class="line" id="L700"><a class="ln" href="#L700">700</a></span>
+<span class="line" id="L701"><a class="ln" href="#L701">701</a>    o = lookupKeyWrite(c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L702"><a class="ln" href="#L702">702</a>    if (o == NULL) {</span>
+<span class="line" id="L703"><a class="ln" href="#L703">703</a>        /* Create the key */</span>
+<span class="line" id="L704"><a class="ln" href="#L704">704</a>        c-&gt;argv[2] = tryObjectEncoding(c-&gt;argv[2]);</span>
+<span class="line" id="L705"><a class="ln" href="#L705">705</a>        dbAdd(c-&gt;db,c-&gt;argv[1],c-&gt;argv[2]);</span>
+<span class="line" id="L706"><a class="ln" href="#L706">706</a>        incrRefCount(c-&gt;argv[2]);</span>
+<span class="line" id="L707"><a class="ln" href="#L707">707</a>        totlen = stringObjectLen(c-&gt;argv[2]);</span>
+<span class="line" id="L708"><a class="ln" href="#L708">708</a>    } else {</span>
+<span class="line" id="L709"><a class="ln" href="#L709">709</a>        /* Key exists, check type */</span>
+<span class="line" id="L710"><a class="ln" href="#L710">710</a>        if (checkType(c,o,OBJ_STRING))</span>
+<span class="line" id="L711"><a class="ln" href="#L711">711</a>            return;</span>
+<span class="line" id="L712"><a class="ln" href="#L712">712</a></span>
+<span class="line" id="L713"><a class="ln" href="#L713">713</a>        /* &quot;append&quot; is an argument, so always an sds */</span>
+<span class="line" id="L714"><a class="ln" href="#L714">714</a>        append = c-&gt;argv[2];</span>
+<span class="line" id="L715"><a class="ln" href="#L715">715</a>        if (checkStringLength(c,stringObjectLen(o),sdslen(append-&gt;ptr)) != C_OK)</span>
+<span class="line" id="L716"><a class="ln" href="#L716">716</a>            return;</span>
+<span class="line" id="L717"><a class="ln" href="#L717">717</a></span>
+<span class="line" id="L718"><a class="ln" href="#L718">718</a>        /* Append the value */</span>
+<span class="line" id="L719"><a class="ln" href="#L719">719</a>        o = dbUnshareStringValue(c-&gt;db,c-&gt;argv[1],o);</span>
+<span class="line" id="L720"><a class="ln" href="#L720">720</a>        o-&gt;ptr = sdscatlen(o-&gt;ptr,append-&gt;ptr,sdslen(append-&gt;ptr));</span>
+<span class="line" id="L721"><a class="ln" href="#L721">721</a>        totlen = sdslen(o-&gt;ptr);</span>
+<span class="line" id="L722"><a class="ln" href="#L722">722</a>    }</span>
+<span class="line" id="L723"><a class="ln" href="#L723">723</a>    signalModifiedKey(c,c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L724"><a class="ln" href="#L724">724</a>    notifyKeyspaceEvent(NOTIFY_STRING,&quot;append&quot;,c-&gt;argv[1],c-&gt;db-&gt;id);</span>
+<span class="line" id="L725"><a class="ln" href="#L725">725</a>    server.dirty++;</span>
+<span class="line" id="L726"><a class="ln" href="#L726">726</a>    addReplyLongLong(c,totlen);</span>
+<span class="line" id="L727"><a class="ln" href="#L727">727</a>}</span>
+<span class="line" id="L728"><a class="ln" href="#L728">728</a></span>
+<span class="line" id="L729"><a class="ln" href="#L729">729</a>void strlenCommand(client *c) {</span>
+<span class="line" id="L730"><a class="ln" href="#L730">730</a>    robj *o;</span>
+<span class="line" id="L731"><a class="ln" href="#L731">731</a>    if ((o = lookupKeyReadOrReply(c,c-&gt;argv[1],shared.czero)) == NULL ||</span>
+<span class="line" id="L732"><a class="ln" href="#L732">732</a>        checkType(c,o,OBJ_STRING)) return;</span>
+<span class="line" id="L733"><a class="ln" href="#L733">733</a>    addReplyLongLong(c,stringObjectLen(o));</span>
+<span class="line" id="L734"><a class="ln" href="#L734">734</a>}</span>
+<span class="line" id="L735"><a class="ln" href="#L735">735</a></span>
+<span class="line" id="L736"><a class="ln" href="#L736">736</a>/* LCS key1 key2 [LEN] [IDX] [MINMATCHLEN &lt;len&gt;] [WITHMATCHLEN] */</span>
+<span class="line" id="L737"><a class="ln" href="#L737">737</a>void lcsCommand(client *c) {</span>
+<span class="line" id="L738"><a class="ln" href="#L738">738</a>    uint32_t i, j;</span>
+<span class="line" id="L739"><a class="ln" href="#L739">739</a>    long long minmatchlen = 0;</span>
+<span class="line" id="L740"><a class="ln" href="#L740">740</a>    sds a = NULL, b = NULL;</span>
+<span class="line" id="L741"><a class="ln" href="#L741">741</a>    int getlen = 0, getidx = 0, withmatchlen = 0;</span>
+<span class="line" id="L742"><a class="ln" href="#L742">742</a>    robj *obja = NULL, *objb = NULL;</span>
+<span class="line" id="L743"><a class="ln" href="#L743">743</a></span>
+<span class="line" id="L744"><a class="ln" href="#L744">744</a>    obja = lookupKeyRead(c-&gt;db,c-&gt;argv[1]);</span>
+<span class="line" id="L745"><a class="ln" href="#L745">745</a>    objb = lookupKeyRead(c-&gt;db,c-&gt;argv[2]);</span>
+<span class="line" id="L746"><a class="ln" href="#L746">746</a>    if ((obja &amp;&amp; obja-&gt;type != OBJ_STRING) ||</span>
+<span class="line" id="L747"><a class="ln" href="#L747">747</a>        (objb &amp;&amp; objb-&gt;type != OBJ_STRING))</span>
+<span class="line" id="L748"><a class="ln" href="#L748">748</a>    {</span>
+<span class="line" id="L749"><a class="ln" href="#L749">749</a>        addReplyError(c,</span>
+<span class="line" id="L750"><a class="ln" href="#L750">750</a>            &quot;The specified keys must contain string values&quot;);</span>
+<span class="line" id="L751"><a class="ln" href="#L751">751</a>        /* Don&#x27;t cleanup the objects, we need to do that</span>
+<span class="line" id="L752"><a class="ln" href="#L752">752</a>         * only after calling getDecodedObject(). */</span>
+<span class="line" id="L753"><a class="ln" href="#L753">753</a>        obja = NULL;</span>
+<span class="line" id="L754"><a class="ln" href="#L754">754</a>        objb = NULL;</span>
+<span class="line" id="L755"><a class="ln" href="#L755">755</a>        goto cleanup;</span>
+<span class="line" id="L756"><a class="ln" href="#L756">756</a>    }</span>
+<span class="line" id="L757"><a class="ln" href="#L757">757</a>    obja = obja ? getDecodedObject(obja) : createStringObject(&quot;&quot;,0);</span>
+<span class="line" id="L758"><a class="ln" href="#L758">758</a>    objb = objb ? getDecodedObject(objb) : createStringObject(&quot;&quot;,0);</span>
+<span class="line" id="L759"><a class="ln" href="#L759">759</a>    a = obja-&gt;ptr;</span>
+<span class="line" id="L760"><a class="ln" href="#L760">760</a>    b = objb-&gt;ptr;</span>
+<span class="line" id="L761"><a class="ln" href="#L761">761</a></span>
+<span class="line" id="L762"><a class="ln" href="#L762">762</a>    for (j = 3; j &lt; (uint32_t)c-&gt;argc; j++) {</span>
+<span class="line" id="L763"><a class="ln" href="#L763">763</a>        char *opt = c-&gt;argv[j]-&gt;ptr;</span>
+<span class="line" id="L764"><a class="ln" href="#L764">764</a>        int moreargs = (c-&gt;argc-1) - j;</span>
+<span class="line" id="L765"><a class="ln" href="#L765">765</a></span>
+<span class="line" id="L766"><a class="ln" href="#L766">766</a>        if (!strcasecmp(opt,&quot;IDX&quot;)) {</span>
+<span class="line" id="L767"><a class="ln" href="#L767">767</a>            getidx = 1;</span>
+<span class="line" id="L768"><a class="ln" href="#L768">768</a>        } else if (!strcasecmp(opt,&quot;LEN&quot;)) {</span>
+<span class="line" id="L769"><a class="ln" href="#L769">769</a>            getlen = 1;</span>
+<span class="line" id="L770"><a class="ln" href="#L770">770</a>        } else if (!strcasecmp(opt,&quot;WITHMATCHLEN&quot;)) {</span>
+<span class="line" id="L771"><a class="ln" href="#L771">771</a>            withmatchlen = 1;</span>
+<span class="line" id="L772"><a class="ln" href="#L772">772</a>        } else if (!strcasecmp(opt,&quot;MINMATCHLEN&quot;) &amp;&amp; moreargs) {</span>
+<span class="line" id="L773"><a class="ln" href="#L773">773</a>            if (getLongLongFromObjectOrReply(c,c-&gt;argv[j+1],&amp;minmatchlen,NULL)</span>
+<span class="line" id="L774"><a class="ln" href="#L774">774</a>                != C_OK) goto cleanup;</span>
+<span class="line" id="L775"><a class="ln" href="#L775">775</a>            if (minmatchlen &lt; 0) minmatchlen = 0;</span>
+<span class="line" id="L776"><a class="ln" href="#L776">776</a>            j++;</span>
+<span class="line" id="L777"><a class="ln" href="#L777">777</a>        } else {</span>
+<span class="line" id="L778"><a class="ln" href="#L778">778</a>            addReplyErrorObject(c,shared.syntaxerr);</span>
+<span class="line" id="L779"><a class="ln" href="#L779">779</a>            goto cleanup;</span>
+<span class="line" id="L780"><a class="ln" href="#L780">780</a>        }</span>
+<span class="line" id="L781"><a class="ln" href="#L781">781</a>    }</span>
+<span class="line" id="L782"><a class="ln" href="#L782">782</a></span>
+<span class="line" id="L783"><a class="ln" href="#L783">783</a>    /* Complain if the user passed ambiguous parameters. */</span>
+<span class="line" id="L784"><a class="ln" href="#L784">784</a>    if (getlen &amp;&amp; getidx) {</span>
+<span class="line" id="L785"><a class="ln" href="#L785">785</a>        addReplyError(c,</span>
+<span class="line" id="L786"><a class="ln" href="#L786">786</a>            &quot;If you want both the length and indexes, please just use IDX.&quot;);</span>
+<span class="line" id="L787"><a class="ln" href="#L787">787</a>        goto cleanup;</span>
+<span class="line" id="L788"><a class="ln" href="#L788">788</a>    }</span>
+<span class="line" id="L789"><a class="ln" href="#L789">789</a></span>
+<span class="line" id="L790"><a class="ln" href="#L790">790</a>    /* Detect string truncation or later overflows. */</span>
+<span class="line" id="L791"><a class="ln" href="#L791">791</a>    if (sdslen(a) &gt;= UINT32_MAX-1 || sdslen(b) &gt;= UINT32_MAX-1) {</span>
+<span class="line" id="L792"><a class="ln" href="#L792">792</a>        addReplyError(c, &quot;String too long for LCS&quot;);</span>
+<span class="line" id="L793"><a class="ln" href="#L793">793</a>        goto cleanup;</span>
+<span class="line" id="L794"><a class="ln" href="#L794">794</a>    }</span>
+<span class="line" id="L795"><a class="ln" href="#L795">795</a></span>
+<span class="line" id="L796"><a class="ln" href="#L796">796</a>    /* Compute the LCS using the vanilla dynamic programming technique of</span>
+<span class="line" id="L797"><a class="ln" href="#L797">797</a>     * building a table of LCS(x,y) substrings. */</span>
+<span class="line" id="L798"><a class="ln" href="#L798">798</a>    uint32_t alen = sdslen(a);</span>
+<span class="line" id="L799"><a class="ln" href="#L799">799</a>    uint32_t blen = sdslen(b);</span>
+<span class="line" id="L800"><a class="ln" href="#L800">800</a></span>
+<span class="line" id="L801"><a class="ln" href="#L801">801</a>    /* Setup an uint32_t array to store at LCS[i,j] the length of the</span>
+<span class="line" id="L802"><a class="ln" href="#L802">802</a>     * LCS A0..i-1, B0..j-1. Note that we have a linear array here, so</span>
+<span class="line" id="L803"><a class="ln" href="#L803">803</a>     * we index it as LCS[j+(blen+1)*i] */</span>
+<span class="line" id="L804"><a class="ln" href="#L804">804</a>    #define LCS(A,B) lcs[(B)+((A)*(blen+1))]</span>
+<span class="line" id="L805"><a class="ln" href="#L805">805</a></span>
+<span class="line" id="L806"><a class="ln" href="#L806">806</a>    /* Try to allocate the LCS table, and abort on overflow or insufficient memory. */</span>
+<span class="line" id="L807"><a class="ln" href="#L807">807</a>    unsigned long long lcssize = (unsigned long long)(alen+1)*(blen+1); /* Can&#x27;t overflow due to the size limits above. */</span>
+<span class="line" id="L808"><a class="ln" href="#L808">808</a>    unsigned long long lcsalloc = lcssize * sizeof(uint32_t);</span>
+<span class="line" id="L809"><a class="ln" href="#L809">809</a>    uint32_t *lcs = NULL;</span>
+<span class="line" id="L810"><a class="ln" href="#L810">810</a>    if (lcsalloc &lt; SIZE_MAX &amp;&amp; lcsalloc / lcssize == sizeof(uint32_t)) {</span>
+<span class="line" id="L811"><a class="ln" href="#L811">811</a>        if (lcsalloc &gt; (size_t)server.proto_max_bulk_len) {</span>
+<span class="line" id="L812"><a class="ln" href="#L812">812</a>            addReplyError(c, &quot;Insufficient memory, transient memory for LCS exceeds proto-max-bulk-len&quot;);</span>
+<span class="line" id="L813"><a class="ln" href="#L813">813</a>            goto cleanup;</span>
+<span class="line" id="L814"><a class="ln" href="#L814">814</a>        }</span>
+<span class="line" id="L815"><a class="ln" href="#L815">815</a>        lcs = ztrymalloc(lcsalloc);</span>
+<span class="line" id="L816"><a class="ln" href="#L816">816</a>    }</span>
+<span class="line" id="L817"><a class="ln" href="#L817">817</a>    if (!lcs) {</span>
+<span class="line" id="L818"><a class="ln" href="#L818">818</a>        addReplyError(c, &quot;Insufficient memory, failed allocating transient memory for LCS&quot;);</span>
+<span class="line" id="L819"><a class="ln" href="#L819">819</a>        goto cleanup;</span>
+<span class="line" id="L820"><a class="ln" href="#L820">820</a>    }</span>
+<span class="line" id="L821"><a class="ln" href="#L821">821</a></span>
+<span class="line" id="L822"><a class="ln" href="#L822">822</a>    /* Start building the LCS table. */</span>
+<span class="line" id="L823"><a class="ln" href="#L823">823</a>    for (uint32_t i = 0; i &lt;= alen; i++) {</span>
+<span class="line" id="L824"><a class="ln" href="#L824">824</a>        for (uint32_t j = 0; j &lt;= blen; j++) {</span>
+<span class="line" id="L825"><a class="ln" href="#L825">825</a>            if (i == 0 || j == 0) {</span>
+<span class="line" id="L826"><a class="ln" href="#L826">826</a>                /* If one substring has length of zero, the</span>
+<span class="line" id="L827"><a class="ln" href="#L827">827</a>                 * LCS length is zero. */</span>
+<span class="line" id="L828"><a class="ln" href="#L828">828</a>                LCS(i,j) = 0;</span>
+<span class="line" id="L829"><a class="ln" href="#L829">829</a>            } else if (a[i-1] == b[j-1]) {</span>
+<span class="line" id="L830"><a class="ln" href="#L830">830</a>                /* The len LCS (and the LCS itself) of two</span>
+<span class="line" id="L831"><a class="ln" href="#L831">831</a>                 * sequences with the same final character, is the</span>
+<span class="line" id="L832"><a class="ln" href="#L832">832</a>                 * LCS of the two sequences without the last char</span>
+<span class="line" id="L833"><a class="ln" href="#L833">833</a>                 * plus that last char. */</span>
+<span class="line" id="L834"><a class="ln" href="#L834">834</a>                LCS(i,j) = LCS(i-1,j-1)+1;</span>
+<span class="line" id="L835"><a class="ln" href="#L835">835</a>            } else {</span>
+<span class="line" id="L836"><a class="ln" href="#L836">836</a>                /* If the last character is different, take the longest</span>
+<span class="line" id="L837"><a class="ln" href="#L837">837</a>                 * between the LCS of the first string and the second</span>
+<span class="line" id="L838"><a class="ln" href="#L838">838</a>                 * minus the last char, and the reverse. */</span>
+<span class="line" id="L839"><a class="ln" href="#L839">839</a>                uint32_t lcs1 = LCS(i-1,j);</span>
+<span class="line" id="L840"><a class="ln" href="#L840">840</a>                uint32_t lcs2 = LCS(i,j-1);</span>
+<span class="line" id="L841"><a class="ln" href="#L841">841</a>                LCS(i,j) = lcs1 &gt; lcs2 ? lcs1 : lcs2;</span>
+<span class="line" id="L842"><a class="ln" href="#L842">842</a>            }</span>
+<span class="line" id="L843"><a class="ln" href="#L843">843</a>        }</span>
+<span class="line" id="L844"><a class="ln" href="#L844">844</a>    }</span>
+<span class="line" id="L845"><a class="ln" href="#L845">845</a></span>
+<span class="line" id="L846"><a class="ln" href="#L846">846</a>    /* Store the actual LCS string in &quot;result&quot; if needed. We create</span>
+<span class="line" id="L847"><a class="ln" href="#L847">847</a>     * it backward, but the length is already known, we store it into idx. */</span>
+<span class="line" id="L848"><a class="ln" href="#L848">848</a>    uint32_t idx = LCS(alen,blen);</span>
+<span class="line" id="L849"><a class="ln" href="#L849">849</a>    sds result = NULL;        /* Resulting LCS string. */</span>
+<span class="line" id="L850"><a class="ln" href="#L850">850</a>    void *arraylenptr = NULL; /* Deferred length of the array for IDX. */</span>
+<span class="line" id="L851"><a class="ln" href="#L851">851</a>    uint32_t arange_start = alen, /* alen signals that values are not set. */</span>
+<span class="line" id="L852"><a class="ln" href="#L852">852</a>             arange_end = 0,</span>
+<span class="line" id="L853"><a class="ln" href="#L853">853</a>             brange_start = 0,</span>
+<span class="line" id="L854"><a class="ln" href="#L854">854</a>             brange_end = 0;</span>
+<span class="line" id="L855"><a class="ln" href="#L855">855</a></span>
+<span class="line" id="L856"><a class="ln" href="#L856">856</a>    /* Do we need to compute the actual LCS string? Allocate it in that case. */</span>
+<span class="line" id="L857"><a class="ln" href="#L857">857</a>    int computelcs = getidx || !getlen;</span>
+<span class="line" id="L858"><a class="ln" href="#L858">858</a>    if (computelcs) result = sdsnewlen(SDS_NOINIT,idx);</span>
+<span class="line" id="L859"><a class="ln" href="#L859">859</a></span>
+<span class="line" id="L860"><a class="ln" href="#L860">860</a>    /* Start with a deferred array if we have to emit the ranges. */</span>
+<span class="line" id="L861"><a class="ln" href="#L861">861</a>    uint32_t arraylen = 0;  /* Number of ranges emitted in the array. */</span>
+<span class="line" id="L862"><a class="ln" href="#L862">862</a>    if (getidx) {</span>
+<span class="line" id="L863"><a class="ln" href="#L863">863</a>        addReplyMapLen(c,2);</span>
+<span class="line" id="L864"><a class="ln" href="#L864">864</a>        addReplyBulkCString(c,&quot;matches&quot;);</span>
+<span class="line" id="L865"><a class="ln" href="#L865">865</a>        arraylenptr = addReplyDeferredLen(c);</span>
+<span class="line" id="L866"><a class="ln" href="#L866">866</a>    }</span>
+<span class="line" id="L867"><a class="ln" href="#L867">867</a></span>
+<span class="line" id="L868"><a class="ln" href="#L868">868</a>    i = alen, j = blen;</span>
+<span class="line" id="L869"><a class="ln" href="#L869">869</a>    while (computelcs &amp;&amp; i &gt; 0 &amp;&amp; j &gt; 0) {</span>
+<span class="line" id="L870"><a class="ln" href="#L870">870</a>        int emit_range = 0;</span>
+<span class="line" id="L871"><a class="ln" href="#L871">871</a>        if (a[i-1] == b[j-1]) {</span>
+<span class="line" id="L872"><a class="ln" href="#L872">872</a>            /* If there is a match, store the character and reduce</span>
+<span class="line" id="L873"><a class="ln" href="#L873">873</a>             * the indexes to look for a new match. */</span>
+<span class="line" id="L874"><a class="ln" href="#L874">874</a>            result[idx-1] = a[i-1];</span>
+<span class="line" id="L875"><a class="ln" href="#L875">875</a></span>
+<span class="line" id="L876"><a class="ln" href="#L876">876</a>            /* Track the current range. */</span>
+<span class="line" id="L877"><a class="ln" href="#L877">877</a>            if (arange_start == alen) {</span>
+<span class="line" id="L878"><a class="ln" href="#L878">878</a>                arange_start = i-1;</span>
+<span class="line" id="L879"><a class="ln" href="#L879">879</a>                arange_end = i-1;</span>
+<span class="line" id="L880"><a class="ln" href="#L880">880</a>                brange_start = j-1;</span>
+<span class="line" id="L881"><a class="ln" href="#L881">881</a>                brange_end = j-1;</span>
+<span class="line" id="L882"><a class="ln" href="#L882">882</a>            } else {</span>
+<span class="line" id="L883"><a class="ln" href="#L883">883</a>                /* Let&#x27;s see if we can extend the range backward since</span>
+<span class="line" id="L884"><a class="ln" href="#L884">884</a>                 * it is contiguous. */</span>
+<span class="line" id="L885"><a class="ln" href="#L885">885</a>                if (arange_start == i &amp;&amp; brange_start == j) {</span>
+<span class="line" id="L886"><a class="ln" href="#L886">886</a>                    arange_start--;</span>
+<span class="line" id="L887"><a class="ln" href="#L887">887</a>                    brange_start--;</span>
+<span class="line" id="L888"><a class="ln" href="#L888">888</a>                } else {</span>
+<span class="line" id="L889"><a class="ln" href="#L889">889</a>                    emit_range = 1;</span>
+<span class="line" id="L890"><a class="ln" href="#L890">890</a>                }</span>
+<span class="line" id="L891"><a class="ln" href="#L891">891</a>            }</span>
+<span class="line" id="L892"><a class="ln" href="#L892">892</a>            /* Emit the range if we matched with the first byte of</span>
+<span class="line" id="L893"><a class="ln" href="#L893">893</a>             * one of the two strings. We&#x27;ll exit the loop ASAP. */</span>
+<span class="line" id="L894"><a class="ln" href="#L894">894</a>            if (arange_start == 0 || brange_start == 0) emit_range = 1;</span>
+<span class="line" id="L895"><a class="ln" href="#L895">895</a>            idx--; i--; j--;</span>
+<span class="line" id="L896"><a class="ln" href="#L896">896</a>        } else {</span>
+<span class="line" id="L897"><a class="ln" href="#L897">897</a>            /* Otherwise reduce i and j depending on the largest</span>
+<span class="line" id="L898"><a class="ln" href="#L898">898</a>             * LCS between, to understand what direction we need to go. */</span>
+<span class="line" id="L899"><a class="ln" href="#L899">899</a>            uint32_t lcs1 = LCS(i-1,j);</span>
+<span class="line" id="L900"><a class="ln" href="#L900">900</a>            uint32_t lcs2 = LCS(i,j-1);</span>
+<span class="line" id="L901"><a class="ln" href="#L901">901</a>            if (lcs1 &gt; lcs2)</span>
+<span class="line" id="L902"><a class="ln" href="#L902">902</a>                i--;</span>
+<span class="line" id="L903"><a class="ln" href="#L903">903</a>            else</span>
+<span class="line" id="L904"><a class="ln" href="#L904">904</a>                j--;</span>
+<span class="line" id="L905"><a class="ln" href="#L905">905</a>            if (arange_start != alen) emit_range = 1;</span>
+<span class="line" id="L906"><a class="ln" href="#L906">906</a>        }</span>
+<span class="line" id="L907"><a class="ln" href="#L907">907</a></span>
+<span class="line" id="L908"><a class="ln" href="#L908">908</a>        /* Emit the current range if needed. */</span>
+<span class="line" id="L909"><a class="ln" href="#L909">909</a>        uint32_t match_len = arange_end - arange_start + 1;</span>
+<span class="line" id="L910"><a class="ln" href="#L910">910</a>        if (emit_range) {</span>
+<span class="line" id="L911"><a class="ln" href="#L911">911</a>            if (minmatchlen == 0 || match_len &gt;= minmatchlen) {</span>
+<span class="line" id="L912"><a class="ln" href="#L912">912</a>                if (arraylenptr) {</span>
+<span class="line" id="L913"><a class="ln" href="#L913">913</a>                    addReplyArrayLen(c,2+withmatchlen);</span>
+<span class="line" id="L914"><a class="ln" href="#L914">914</a>                    addReplyArrayLen(c,2);</span>
+<span class="line" id="L915"><a class="ln" href="#L915">915</a>                    addReplyLongLong(c,arange_start);</span>
+<span class="line" id="L916"><a class="ln" href="#L916">916</a>                    addReplyLongLong(c,arange_end);</span>
+<span class="line" id="L917"><a class="ln" href="#L917">917</a>                    addReplyArrayLen(c,2);</span>
+<span class="line" id="L918"><a class="ln" href="#L918">918</a>                    addReplyLongLong(c,brange_start);</span>
+<span class="line" id="L919"><a class="ln" href="#L919">919</a>                    addReplyLongLong(c,brange_end);</span>
+<span class="line" id="L920"><a class="ln" href="#L920">920</a>                    if (withmatchlen) addReplyLongLong(c,match_len);</span>
+<span class="line" id="L921"><a class="ln" href="#L921">921</a>                    arraylen++;</span>
+<span class="line" id="L922"><a class="ln" href="#L922">922</a>                }</span>
+<span class="line" id="L923"><a class="ln" href="#L923">923</a>            }</span>
+<span class="line" id="L924"><a class="ln" href="#L924">924</a>            arange_start = alen; /* Restart at the next match. */</span>
+<span class="line" id="L925"><a class="ln" href="#L925">925</a>        }</span>
+<span class="line" id="L926"><a class="ln" href="#L926">926</a>    }</span>
+<span class="line" id="L927"><a class="ln" href="#L927">927</a></span>
+<span class="line" id="L928"><a class="ln" href="#L928">928</a>    /* Signal modified key, increment dirty, ... */</span>
+<span class="line" id="L929"><a class="ln" href="#L929">929</a></span>
+<span class="line" id="L930"><a class="ln" href="#L930">930</a>    /* Reply depending on the given options. */</span>
+<span class="line" id="L931"><a class="ln" href="#L931">931</a>    if (arraylenptr) {</span>
+<span class="line" id="L932"><a class="ln" href="#L932">932</a>        addReplyBulkCString(c,&quot;len&quot;);</span>
+<span class="line" id="L933"><a class="ln" href="#L933">933</a>        addReplyLongLong(c,LCS(alen,blen));</span>
+<span class="line" id="L934"><a class="ln" href="#L934">934</a>        setDeferredArrayLen(c,arraylenptr,arraylen);</span>
+<span class="line" id="L935"><a class="ln" href="#L935">935</a>    } else if (getlen) {</span>
+<span class="line" id="L936"><a class="ln" href="#L936">936</a>        addReplyLongLong(c,LCS(alen,blen));</span>
+<span class="line" id="L937"><a class="ln" href="#L937">937</a>    } else {</span>
+<span class="line" id="L938"><a class="ln" href="#L938">938</a>        addReplyBulkSds(c,result);</span>
+<span class="line" id="L939"><a class="ln" href="#L939">939</a>        result = NULL;</span>
+<span class="line" id="L940"><a class="ln" href="#L940">940</a>    }</span>
+<span class="line" id="L941"><a class="ln" href="#L941">941</a></span>
+<span class="line" id="L942"><a class="ln" href="#L942">942</a>    /* Cleanup. */</span>
+<span class="line" id="L943"><a class="ln" href="#L943">943</a>    sdsfree(result);</span>
+<span class="line" id="L944"><a class="ln" href="#L944">944</a>    zfree(lcs);</span>
+<span class="line" id="L945"><a class="ln" href="#L945">945</a></span>
+<span class="line" id="L946"><a class="ln" href="#L946">946</a>cleanup:</span>
+<span class="line" id="L947"><a class="ln" href="#L947">947</a>    if (obja) decrRefCount(obja);</span>
+<span class="line" id="L948"><a class="ln" href="#L948">948</a>    if (objb) decrRefCount(objb);</span>
+<span class="line" id="L949"><a class="ln" href="#L949">949</a>    return;</span>
+<span class="line" id="L950"><a class="ln" href="#L950">950</a>}</span>
+<span class="line" id="L951"><a class="ln" href="#L951">951</a></span></pre></html>

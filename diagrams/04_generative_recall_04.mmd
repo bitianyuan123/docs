@@ -1,17 +1,17 @@
-flowchart LR
-    subgraph PP[Pod：推荐编排]
-        P[容器：PaiRec<br/>进程：推荐程序]
+sequenceDiagram
+    participant H as 当前RPC处理任务
+    participant E as 同进程Executor API
+    H->>H: BuildPromptTokens：10项SID转prompt
+    loop sample_index小于服务端trt_num_samples
+        H->>E: enqueueRequest(prompt,生成配置)
+        E-->>H: executor_request_id
+        loop 尚未收到final且未达到本次采样期限
+            H->>E: awaitResponses(executor_request_id,10ms)
+            Note over E: 等待结果；底层运行库推进计算
+            E-->>H: 空结果或响应列表
+        end
+        H->>H: 复制最终outputTokenIds，追加sampled_tokens
     end
-    subgraph GP[Pod：生成式召回]
-        G[容器：生成服务<br/>进程：brpc_inference_server<br/>内含 TRT Executor]
-    end
-    subgraph FP[Pod：特征服务]
-        F[容器：特征服务<br/>进程：特征查询程序]
-    end
-    subgraph WP[Pod 类型：模型缓存]
-        K[容器：DataSystem worker<br/>进程：worker]
-    end
-    P <-->|bRPC| G
-    P <-->|特征RPC| F
-    G <-->|编码反查RPC| F
-    G <-->|SDK连接| K
+    H->>H: ParseOutputTokens，生成SID组合
+    H->>H: FillRecommendations，本地映射和topk截取
+    H->>H: 填充trace，作用域退出时执行done
